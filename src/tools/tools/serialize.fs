@@ -345,13 +345,17 @@ type internal Serializer(stream: BinaryWriter, marked: Dictionary<obj, int>, typ
         | _ -> failwith <| sprintf "Unknown primitive type %A" (obj.GetType())
 
     let writeMemoryBlittableArray (elType: Type, arrObj: Array, memStream: MemoryStream) =
-        let sizeInBytes = arrObj.Length * Marshal.SizeOf(elType)
-        let curPos = int memStream.Position
-        let newLen = int64 (curPos + sizeInBytes)
-        memStream.SetLength newLen
-        let buffer = memStream.GetBuffer()
-        Buffer.BlockCopy(arrObj, 0, buffer, curPos, sizeInBytes)
-        memStream.Position <- newLen
+        match memStream with
+            | :? BufferListStream<byte> as ms ->
+                ms.WriteArrT(arrObj, 0, arrObj.Length)
+            | _ as memStream ->
+                let sizeInBytes = arrObj.Length * Marshal.SizeOf(elType)
+                let curPos = int memStream.Position
+                let newLen = int64 (curPos + sizeInBytes)
+                memStream.SetLength newLen
+                let buffer = memStream.GetBuffer()
+                Buffer.BlockCopy(arrObj, 0, buffer, curPos, sizeInBytes)
+                memStream.Position <- newLen
 
     let writePrimitiveArray : Type * int[] * int[] * Array -> unit = 
         let writePrimitiveArrayOneByOne(elType: Type, lowerBounds: int[], lengths: int[], arrObj: Array) = 
@@ -510,10 +514,14 @@ type internal Deserializer(reader: BinaryReader, marked: List<obj>, typeSerializ
         | _ -> failwith <| sprintf "Unknown primitive type %A" objType
 
     let readMemoryBlittableArray (elType: Type, arrObj: Array, memStream: MemoryStream) =
-        let buffer = memStream.GetBuffer()
-        let sizeInBytes = arrObj.Length * Marshal.SizeOf(elType)
-        Buffer.BlockCopy(buffer, int memStream.Position, arrObj, 0, sizeInBytes)
-        memStream.Position <- memStream.Position + int64 sizeInBytes
+        match memStream with
+            | :? BufferListStream<byte> as ms ->
+                ms.ReadArrT(arrObj, 0, arrObj.Length) |> ignore
+            | _ as memStream ->
+                let buffer = memStream.GetBuffer()
+                let sizeInBytes = arrObj.Length * Marshal.SizeOf(elType)
+                Buffer.BlockCopy(buffer, int memStream.Position, arrObj, 0, sizeInBytes)
+                memStream.Position <- memStream.Position + int64 sizeInBytes
 
     let readPrimitiveArray : Type -> Array -> unit = 
         let readPrimitiveArrayOneByOne (elType: Type) (arrObj: Array) = 

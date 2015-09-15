@@ -1450,14 +1450,14 @@ type internal MemoryStreamB(defaultBufSize : int, toAvoidConfusion : byte) =
     member x.WriteArrWLen<'T>(v : 'T[]) =
         x.WriteArr(BitConverter.GetBytes(v.Length))
         x.WriteArr(v, 0, v.Length)
-    member x.GenericWrite<'T>(v : 'T) =
-        let t = typeof<'T>
-        if (t.IsArray) then
-            let arr = unbox<System.Array>(v)
-            x.WriteInt32(arr.Length)
-            x.WriteArrT(arr, 0, arr.Length)
-        else 
-            Serialize.Serialize<'T> x v
+//    member x.GenericWrite<'T>(v : 'T) =
+//        let t = typeof<'T>
+//        if (t.IsArray) then
+//            let arr = unbox<System.Array>(v)
+//            x.WriteInt32(arr.Length)
+//            x.WriteArrT(arr, 0, arr.Length)
+//        else 
+//            Serialize.Serialize<'T> x v
 
     // Read functions
     override x.ReadByte() =
@@ -1522,14 +1522,14 @@ type internal MemoryStreamB(defaultBufSize : int, toAvoidConfusion : byte) =
         let arr = Array.zeroCreate<'T>(len)
         x.ReadArr<'T>(arr, 0, len) |> ignore
         arr
-    member x.GenericRead<'T>() =
-        let t = typeof<'T>
-        if (t.IsArray) then
-            let len = x.ReadInt32()
-            let tArr = typeof<'T>
-            let arr = Array.CreateInstance(tArr.GetElementType(), [|len|])
-            x.ReadArrT(arr, 0, len) |> ignore
-            box(arr) :?> 'T
-        else
-            Serialize.Deserialize<'T> x
+//    member x.GenericRead<'T>() =
+//        let t = typeof<'T>
+//        if (t.IsArray) then
+//            let len = x.ReadInt32()
+//            let tArr = typeof<'T>
+//            let arr = Array.CreateInstance(tArr.GetElementType(), [|len|])
+//            x.ReadArrT(arr, 0, len) |> ignore
+//            box(arr) :?> 'T
+//        else
+//            Serialize.Deserialize<'T> x
 

@@ -1510,8 +1510,8 @@ and [<AllowNullLiteral; Serializable>]
                                         // Start pos will not be the end of stream, garanteed by state not null 
                                         let ms = new MemoryStreamB()
                                         ms.Info <- "Replicated stream"
-                                        ms.AppendNoCopy(buf, pos, length) // this is a write operation, position moves forward
-                                        ms.Seek(0L, SeekOrigin.Begin) |> ignore
+                                        ms.AppendNoCopy(buf, 0L, pos+length) // this is a write operation, position moves forward
+                                        ms.Seek(pos, SeekOrigin.Begin) |> ignore
                                         ms
                                 let stateFunc() = 
                                     if bCommonStatePerNode || Utils.IsNull state then 

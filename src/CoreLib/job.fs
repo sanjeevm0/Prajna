@@ -121,10 +121,10 @@ type internal FunctionParam internal (ty:FunctionParamType, o: DistributedObject
     member val Object = o with get, set
     new () = 
         FunctionParam( FunctionParamType.None, null, -1 ) 
-    member x.Pack( ms:MemStream ) = 
+    member x.Pack( ms:Stream ) = 
         ms.WriteByte( byte x.ParamType )
         ms.WriteVInt32( x.BlobIndex ) 
-    static member Unpack( ms:StreamBase<byte> ) = 
+    static member Unpack( ms:Stream ) = 
         let ty = ms.ReadByte()
         let blobIndex = ms.ReadVInt32() 
         FunctionParam( enum<_>(ty), null, blobIndex )
@@ -1203,7 +1203,7 @@ and
     /// Pack to send the job information to client
     /// Define blobs that is used to identify data/metadata to be used during the job. 
     /// Job version is generated during pack, based on assemblies. 
-    member x.Pack( ms:MemStream ) =
+    member x.Pack( ms:StreamBase<byte> ) =
         if not x.IsContainer then 
             x.TryLoadSrcMetadata() |> ignore
             x.DeterminePersistence()

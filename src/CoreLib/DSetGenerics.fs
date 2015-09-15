@@ -628,26 +628,6 @@ type DSet<'U> () =
         x
 
     /// <summary>
-    /// Create a distributed dataset on the distributed cluster, with each element created by a functional delegate, using
-    /// a given number of parallel execution per node.
-    /// <param name="initFunc"> The functional delegate that create each element in the dataset, the integer index passed to the function 
-    /// indicates the partition, and the second integer passed to the function index (from 0) element within the partition. 
-    /// </param> 
-    /// <param name="partitionSizeFunc"> The functional delegate that returns the size of the partition,  the integer index passed to the function 
-    /// indicates the partition. 
-    /// </param> 
-    /// </summary> 
-    member x.InitN(initFunc, partitionSizeFunc : int->int->int) =
-        x.NumPartitions <- x.Cluster.NumNodes * x.NumParallelExecution
-        x.NumReplications <- 1
-        x.Dependency <- Source
-        x.Function <- Function.Init<'U>( initFunc, partitionSizeFunc x.NumPartitions ) 
-        // Trigger of setting the serialization limit parameter within functions. 
-        // Automatic set serialization limit
-        // x.SerializationLimit <- x.SerializationLimit
-        x
-
-    /// <summary>
     /// Create a distributed dataset on the distributed cluster, with each element created by a functional delegate.
     /// </summary> 
     /// <param name="initFunc"> The functional delegate that create each element in the dataset, the integer index passed to the function 
@@ -677,6 +657,40 @@ type DSet<'U> () =
     /// <param name="partitionSize"> Size of each partition </param> 
     static member initS initFunc partitionSize (x:DSet<'U>) =
         x.InitS(initFunc, partitionSize)
+
+    /// <summary>
+    /// Create a distributed dataset on the distributed cluster, with each element created by a functional delegate, using
+    /// a given number of parallel execution per node.
+    /// <param name="initFunc"> The functional delegate that create each element in the dataset, the integer index passed to the function 
+    /// indicates the partition, and the second integer passed to the function index (from 0) element within the partition. 
+    /// </param> 
+    /// <param name="partitionSizeFunc"> The functional delegate that returns the size of the partition,  the integer index passed to the function 
+    /// indicates the partition. 
+    /// </param> 
+    /// </summary> 
+    member x.InitN(initFunc, partitionSizeFunc : int->int->int) =
+        x.NumPartitions <- x.Cluster.NumNodes * x.NumParallelExecution
+        x.NumReplications <- 1
+        x.Dependency <- Source
+        x.Function <- Function.Init<'U>( initFunc, partitionSizeFunc x.NumPartitions ) 
+        // Trigger of setting the serialization limit parameter within functions. 
+        // Automatic set serialization limit
+        // x.SerializationLimit <- x.SerializationLimit
+        x
+
+    /// <summary>
+    /// Create a distributed dataset on the distributed cluster, with each element created by a functional delegate, using
+    /// a given number of parallel execution per node.
+    /// <param name="initFunc"> The functional delegate that create each element in the dataset, the integer index passed to the function 
+    /// indicates the partition, and the second integer passed to the function index (from 0) element within the partition. 
+    /// </param> 
+    /// <param name="partitionSizeFunc"> The functional delegate that returns the size of the partition,  the integer index passed to the function 
+    /// indicates the partition. 
+    /// </param> 
+    /// <param name="x"> The DSet to operate on </param>
+    /// </summary> 
+    static member initN(initFunc, partitionSizeFunc : int->int->int) (x:DSet<'U>) =
+        x.InitN(initFunc, partitionSizeFunc)
 
     /// <summary> 
     /// Generate a distributed dataset through a customerized seq functional delegate running on each of the machine. 
