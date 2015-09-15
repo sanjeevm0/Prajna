@@ -259,8 +259,13 @@ module  FileTools =
                             // Can't open for read, may wait
                             let curTicks = (PerfADateTime.UtcNowTicks())
                             let secondsElapse = int (( curTicks - lastTicksRead ) / TimeSpan.TicksPerSecond)
+<<<<<<< HEAD
                             if secondsElapse > 1 + ( len >>> 20 ) then 
                                 message := sprintf "WriteBytesToFileConcurrentP: timeout to wait for file %s to be readable (towrite=%dB, wait %d sec), last exception is %A"
+=======
+                            if secondsElapse > 4 + ( len >>> 20 ) then 
+                                message <- sprintf "WriteBytesToFileConcurrentP: timeout to wait for file %s to be readable (towrite=%dB, wait %d sec), last exception is %A"
+>>>>>>> 1f62487bc7bebc64dbbf75bc90b33527612a8353
                                                         filename len secondsElapse e
                                 nVerified := -1 
                                 bDone <- true
