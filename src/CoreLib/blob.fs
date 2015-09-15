@@ -83,33 +83,33 @@ type internal BlobFactory() =
         // enqueue the trigger function
         epQueue.Enqueue(triggerFunc)
         // run trigger immediately if stream already available
-        if (Utils.IsNotNull !refMS) then
-            let refValue = ref Unchecked.defaultof<_>
-            while epQueue.TryDequeue( refValue ) do 
-                let triggerFunc = !refValue
-                triggerFunc( !refMS, epSignature )
-            (!refMS).DecRef() // done with stream now, triggerFunc keeps copy of stream
-        refMS := null
+//        if (Utils.IsNotNull !refMS) then
+//            let refValue = ref Unchecked.defaultof<_>
+//            while epQueue.TryDequeue( refValue ) do 
+//                let triggerFunc = !refValue
+//                triggerFunc( !refMS, epSignature )
+//            (!refMS).DecRef() // done with stream now, triggerFunc keeps copy of stream
+//        refMS := null
 
-    /// Store object info into the Factory class, apply trigger if there are any function waiting to be executed. 
-    member x.Store( id:byte[], ms: StreamBase<byte>, epSignature:int64 ) = 
-        let addFunc _ = 
-            ms.AddRef()
-            ref ms, ref (PerfDateTime.UtcNowTicks()), ConcurrentQueue<_>(), ConcurrentDictionary<_,_>()
-        let tuple = x.Collection.GetOrAdd( id, addFunc )
-        let refMS, refTicks, epQueue, epDic = tuple 
-        if (Utils.IsNotNull (!refMS)) then
-            (!refMS).DecRef()
-        ms.AddRef()
-        refMS := ms
-        refTicks := (PerfDateTime.UtcNowTicks())
-        epDic.GetOrAdd( epSignature, true ) |> ignore
-        let refValue = ref Unchecked.defaultof<_>
-        while epQueue.TryDequeue( refValue ) do 
-            let triggerFunc = !refValue
-            triggerFunc( ms, epSignature )
-        ms.DecRef() // triggers complete
-        refMS := null
+//    /// Store object info into the Factory class, apply trigger if there are any function waiting to be executed. 
+//    member x.Store( id:byte[], ms: StreamBase<byte>, epSignature:int64 ) = 
+//        let addFunc _ = 
+//            ms.AddRef()
+//            ref ms, ref (PerfDateTime.UtcNowTicks()), ConcurrentQueue<_>(), ConcurrentDictionary<_,_>()
+//        let tuple = x.Collection.GetOrAdd( id, addFunc )
+//        let refMS, refTicks, epQueue, epDic = tuple 
+//        if (Utils.IsNotNull (!refMS)) then
+//            (!refMS).DecRef()
+//        ms.AddRef()
+//        refMS := ms
+//        refTicks := (PerfDateTime.UtcNowTicks())
+//        epDic.GetOrAdd( epSignature, true ) |> ignore
+//        let refValue = ref Unchecked.defaultof<_>
+//        while epQueue.TryDequeue( refValue ) do 
+//            let triggerFunc = !refValue
+//            triggerFunc( ms, epSignature )
+//        ms.DecRef() // triggers complete
+//        refMS := null
 
     /// Retrieve object info from the Factory class. 
     member x.Retrieve( id ) = 
@@ -126,18 +126,18 @@ type internal BlobFactory() =
         let bExist, tuple = x.Collection.TryGetValue( id )
         if bExist then 
             let refMS, refTicks, epQueue, epDic = tuple 
-            if (Utils.IsNotNull (!refMS)) then
-                (!refMS).DecRef()
-            ms.AddRef()
-            refMS := ms
+//            if (Utils.IsNotNull (!refMS)) then
+//                (!refMS).DecRef()
+//            ms.AddRef()
+//            refMS := ms
             refTicks := (PerfDateTime.UtcNowTicks())
             epDic.GetOrAdd( epSignature, true ) |> ignore
             let refValue = ref Unchecked.defaultof<_>
             while epQueue.TryDequeue( refValue ) do 
                 let triggerFunc = !refValue
-                triggerFunc( !refMS, epSignature )
-            ms.DecRef() // triggers complete
-            refMS := null
+                triggerFunc( ms, epSignature )
+//            ms.DecRef() // triggers complete
+//            refMS := null
             true
         else
             false
@@ -151,20 +151,16 @@ type internal BlobFactory() =
             if !refTime < t1 then 
                 Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "remove blob %A after %d secs of inactivity"
                                                                        pair.Key BlobFactory.InactiveSecondsToEvictBlob ))
-                let mutable tuple = Unchecked.defaultof<(_*_*_*_)>
-                let ret = x.Collection.TryRemove( pair.Key, &tuple )
-                if (ret) then
-                    let refMS, refTicks, epQueue, epDic = tuple
-                    if (Utils.IsNotNull (!refMS)) then
-                        (!refMS).DecRef()
+                x.Remove(pair.Key)
     /// Remove a certain entry
     member x.Remove( id ) = 
-        let mutable tuple = Unchecked.defaultof<(_*_*_*_)>
-        let ret = x.Collection.TryRemove( id, &tuple )
-        if (ret) then
-            let refMS, refTicks, epQueue, epDic = tuple
-            if (Utils.IsNotNull (!refMS)) then
-                (!refMS).DecRef()
+        x.Collection.TryRemove(id) |> ignore
+//        let mutable tuple = Unchecked.defaultof<(_*_*_*_)>
+//        let ret = x.Collection.TryRemove( id, &tuple )
+//        if (ret) then
+//            let refMS, refTicks, epQueue, epDic = tuple
+//            if (Utils.IsNotNull (!refMS)) then
+//                (!refMS).DecRef()
     /// Refresh timer entry of an object
     member x.Refresh( id ) = 
         let bExist, tuple = x.Collection.TryGetValue( id ) 
@@ -190,8 +186,8 @@ type internal BlobFactory() =
         |> Seq.toArray
     static member register tuple = 
         BlobFactory.Current.Register tuple
-    static member store tuple = 
-        BlobFactory.Current.Store tuple
+//    static member store tuple = 
+//        BlobFactory.Current.Store tuple
     static member retrieve( id ) = 
         BlobFactory.Current.Retrieve( id )
     static member receiveWriteBlob tuple = 
