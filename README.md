@@ -5,9 +5,20 @@ Prajna
 
 **Prajna** is a distributed functional programming platform for Interactive Big Data Analytics and Cloud Service Building
 
-Documentation: 
+Documentation
 =======
 http://MSRCCS.github.io/Prajna
+
+For users
+======
+To use Prajna, please read the wiki page on [Use Prajna](https://github.com/MSRCCS/Prajna/wiki/Use-Prajna)
+
+For contributors
+======
+To contribute, please read the wiki page on [Contribute](https://github.com/MSRCCS/Prajna/wiki/Contribute)
+* [Contribute process](https://github.com/MSRCCS/Prajna/wiki/Contribute#contribute-via-github)
+* [How to build](https://github.com/MSRCCS/Prajna/wiki/Contribute#build)
+* [Use Visual Studio](https://github.com/MSRCCS/Prajna/wiki/Contribute#visual-studio)
 
 License
 =======
