@@ -1827,7 +1827,8 @@ and [<AllowNullLiteral; Serializable>]
                                         let cmd = ControllerCommand( ControllerVerb.Write, ControllerNoun.DSet )
                                         let bSendout = ref false
                                         while Utils.IsNotNull hostQueue && not hostQueue.Shutdown && not !bSendout do
-                                            if hostQueue.CanSend && hostQueue.SendQueueLength<5 && hostQueue.UnProcessedCmdInBytes < int64 curDSet.SendingQueueLimit then 
+                                            //if hostQueue.CanSend && hostQueue.SendQueueLength<5 && hostQueue.UnProcessedCmdInBytes < int64 curDSet.SendingQueueLimit then 
+                                            if hostQueue.CanSend then
                                                 hostQueue.ToSend( cmd, msWire )
                                                 bSendout := true
                                             else

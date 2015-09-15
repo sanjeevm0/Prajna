@@ -801,7 +801,8 @@ and [<AllowNullLiteral>]
                     if Utils.IsNotNull peerQueue && (not peerQueue.Shutdown) then 
                         // A certain peer is not active, and replication fails. 
                         // However, this is considered OK in replication, the host should try to repair. 
-                        if peerQueue.CanSend && peerQueue.SendQueueLength<5 && int peerQueue.UnProcessedCmdInBytes <= x.SendingQueueLimit / x.NumActiveConnection then 
+                        //if peerQueue.CanSend && peerQueue.SendQueueLength<5 && int peerQueue.UnProcessedCmdInBytes <= x.SendingQueueLimit / x.NumActiveConnection then 
+                        if peerQueue.CanSend then
                             let bFirstCommand = x.FirstCommand.[peeri] 
                             x.DoFirstWrite( peeri )
                             bPeerInReplicate.[peeri] <- true

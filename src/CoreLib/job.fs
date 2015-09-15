@@ -2433,8 +2433,9 @@ and
                         x.OutgoingQueueStatuses.[peeri] <- x.OutgoingQueueStatuses.[peeri] ||| PerQueueJobStatus.AvailabilitySent
                         bIOActivity <- true
                     if x.BlobSync=BlobSyncMethod.Unicast && // bAllSrcAvailable && 
-                        (x.OutgoingQueueStatuses.[peeri] &&& PerQueueJobStatus.SentAllMetadata)=PerQueueJobStatus.None && 
-                        outstandingSendingQueue < x.SendingQueueLimit then 
+                        (x.OutgoingQueueStatuses.[peeri] &&& PerQueueJobStatus.SentAllMetadata)=PerQueueJobStatus.None 
+                        //&& outstandingSendingQueue < x.SendingQueueLimit 
+                        then 
                         // Calculate outstanding queue length 
                         // Sent all metadata 
                         let peerAvail = x.AvailPeer.[peeri]
@@ -2447,8 +2448,9 @@ and
                                     if peerBlobAvail = byte BlobStatus.NotAvailable || 
                                         peerBlobAvail = byte BlobStatus.Initial then 
                                         // Not sent other wise, the status will change to PartialAvailable 
-                                        if queue.SendQueueLength<5 && int queue.UnProcessedCmdInBytes<=x.SendingQueueLimit / x.OutgoingQueues.Count && 
-                                            outstandingSendingQueue<x.SendingQueueLimit then 
+//                                        if queue.SendQueueLength<5 && int queue.UnProcessedCmdInBytes<=x.SendingQueueLimit / x.OutgoingQueues.Count && 
+//                                            outstandingSendingQueue<x.SendingQueueLimit then 
+                                        if (queue.CanSend) then
                                             // Send blob to peeri to start the job
                                             let stream = x.SendBlobPeeri peeri queue blobi 
                                             outstandingSendingQueue <- outstandingSendingQueue + (int stream.Length)
