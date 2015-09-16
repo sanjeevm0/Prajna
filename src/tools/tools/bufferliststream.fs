@@ -53,7 +53,7 @@ type [<AllowNullLiteral>] IRefCounter<'K> =
 
 #if DEBUG
 type internal BufferListDebugging =
-    static member DebugLeak = false
+    static member DebugLeak = true
 #endif
 
 // A shared pool of RefCounters

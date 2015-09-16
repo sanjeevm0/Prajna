@@ -1696,6 +1696,13 @@ UnprocessedCmD:%d bytes Status:%A"
             let showLists = channelLists |> Seq.truncate NetworkConnections.MaxChannelsToMonitor
             Seq.append seqHeader (Seq.map printChannelInfo showLists) |> String.concat( Environment.NewLine )
         )
+        Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "SA Recv Stack size %d %d" x.BufStackRecv.StackSize x.BufStackRecv.GetStack.Size)
+        Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "SA Send Stack size %d %d" x.BufStackSend.StackSize x.BufStackSend.GetStack.Size)
+        Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Memory Stream Stack size %d %d" BufferListStream<byte>.MemStack.StackSize BufferListStream<byte>.MemStack.GetStack.Size)
+        BufferListStream<byte>.DumpStreamsInUse()
+        BufferListStream<byte>.MemStack.DumpInUse(LogLevel.MildVerbose)
+        x.BufStackRecv.DumpInUse(LogLevel.MildVerbose)
+        x.BufStackSend.DumpInUse(LogLevel.MildVerbose)
 
     member val private nCloseCalled = ref 0 with get, set
     member val private EvCloseExecuted = new ManualResetEvent(false) with get
