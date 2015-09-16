@@ -41,7 +41,9 @@ open Prajna.Tools.FSharp
 // A basic refcounter interface
 type [<AllowNullLiteral>] IRefCounter<'K> =
     interface   
-        //abstract Allocs : ConcurrentDictionary<string, string> with get // for debugging allocations
+#if DEBUGALLOCS
+        abstract Allocs : ConcurrentDictionary<string, string> with get // for debugging allocations
+#endif
         abstract DebugInfo : 'K with get, set
         abstract Key : 'K with get
         abstract Release : (IRefCounter<'K>->unit) with get, set
@@ -82,8 +84,10 @@ type [<AllowNullLiteral>] internal SharedPool<'K,'T when 'T :> IRefCounter<'K> a
                 let sb = new System.Text.StringBuilder()
                 for o in usedList do
                     sb.AppendLine(sprintf "Used object %A : %A : %A : %A" o.Key o.Value o.Value.Key o.Value.DebugInfo) |> ignore
-                    //for a in o.Value.Allocs do
-                    //    sb.AppendLine(sprintf "Ref from %s : %s" a.Key a.Value) |> ignore
+#if DEBUGALLOCS
+                    for a in o.Value.Allocs do
+                        sb.AppendLine(sprintf "Ref from %s : %s" a.Key a.Value) |> ignore
+#endif
                 sb.ToString()
             )
 #endif
@@ -164,8 +168,10 @@ type SafeRefCnt<'T when 'T:null and 'T:(new:unit->'T) and 'T :> IRefCounter<stri
             x.RC.AddRef()
             let e : 'T = x.Element
             x.info <- infoStr + ":" + x.Id.ToString()
-            //x.Element.Allocs.[x.info] <- Environment.StackTrace
-            //Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Also using %s for id %d - refcount %d" x.Element.Key x.Id x.Element.GetRef)
+#if DEBUGALLOCS
+            x.Element.Allocs.[x.info] <- Environment.StackTrace
+            Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Also using %s for id %d - refcount %d" x.Element.Key x.Id x.Element.GetRef)
+#endif
     
     static member internal GetFromPool<'TP when 'TP:null and 'TP:(new:unit->'TP) and 'TP :> IRefCounter<string>>
                            (infoStr : string, pool : SharedPool<string,'TP>, createNew : unit->SafeRefCnt<'T>) : ManualResetEvent*SafeRefCnt<'T> =
@@ -179,8 +185,10 @@ type SafeRefCnt<'T when 'T:null and 'T:(new:unit->'T) and 'T :> IRefCounter<stri
             x.InitElem()
             x.RC.SetRef(1L)
             x.info <- infoStr + ":" + x.Id.ToString()
-            //x.Element.Allocs.[x.info] <- Environment.StackTrace
-            //Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Using element %s for id %d - refcount %d" x.Element.Key x.Id x.Element.GetRef)
+#if DEBUGALLOCS
+            x.Element.Allocs.[x.info] <- Environment.StackTrace
+            Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Using element %s for id %d - refcount %d" x.Element.Key x.Id x.Element.GetRef)
+#endif
             (event, x)
         else
             (event, null)
@@ -194,8 +202,10 @@ type SafeRefCnt<'T when 'T:null and 'T:(new:unit->'T) and 'T :> IRefCounter<stri
         if (Interlocked.CompareExchange(bRelease, 1, 0) = 0) then
             if (Utils.IsNotNull elem) then
                 let bFinalize = defaultArg bFinalize false
-                //x.Element.Allocs.TryRemove(x.info) |> ignore
-                //Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Releasing %s with id %d elemId %s finalize %b - refcount %d" infoStr id x.RC.Key bFinalize x.Element.GetRef)
+#if DEBUGALLOCS
+                x.Element.Allocs.TryRemove(x.info) |> ignore
+                Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Releasing %s with id %d elemId %s finalize %b - refcount %d" infoStr id x.RC.Key bFinalize x.Element.GetRef)
+#endif
                 x.RC.DecRef()
 
     member x.Release(?bFinalize : bool) =
@@ -238,7 +248,9 @@ type [<AbstractClass>] [<AllowNullLiteral>] RefCountBase() =
         key <- k
 
     interface IRefCounter<string> with
-        //override val Allocs = new ConcurrentDictionary<string, string>() with get
+#if DEBUGALLOCS
+        override val Allocs = new ConcurrentDictionary<string, string>() with get
+#endif
         override x.Key with get() = key
         override val DebugInfo : string = "" with get, set
         override val Release : IRefCounter<string>->unit = (fun _ -> ()) with get, set
