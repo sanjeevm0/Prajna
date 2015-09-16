@@ -344,9 +344,9 @@ type DeploymentSettings() =
     /// set the parameter to LogLevel.Info will touch dependecy/assembly when they are written. 
     static member val ExecutionLevelTouchAssembly = LogLevel.ExtremeVerbose with get, set
     /// Travel Level for Blob Send/Receive 
-    static member val internal TraceLevelBlobIO = LogLevel.MildVerbose with get, set
+    static member val internal TraceLevelBlobIO = LogLevel.MediumVerbose with get, set
     /// Validate Hash 
-    static member val internal TraceLevelBlobValidateHash = LogLevel.MildVerbose with get, set
+    static member val internal TraceLevelBlobValidateHash = LogLevel.MediumVerbose with get, set
     /// Trace Level to Monitor Seq Function
     static member val internal TraceLevelSeqFunction = LogLevel.MildVerbose with get, set
     /// Trace level for WaitHandle

@@ -1831,8 +1831,8 @@ and
         msSend.WriteVInt32( blobi ) 
         msSend.Append(buf, int64 pos, int64 count)
         //msSend.WriteBytesWithOffset( buf, pos, count ) 
-        Logger.LogF( LogLevel.MildVerbose, ( fun _ -> let blob = x.Blobs.[blobi]
-                                                      sprintf "Write, Blob %d type %A, name %s to %s" 
+        Logger.LogF( LogLevel.MediumVerbose, ( fun _ -> let blob = x.Blobs.[blobi]
+                                                        sprintf "Write, Blob %d type %A, name %s to %s" 
                                                                blobi blob.TypeOf blob.Name (LocalDNS.GetShowInfo(queue.RemoteEndPoint)) ))
         queue.ToSend( ControllerCommand( ControllerVerb.Write, ControllerNoun.Blob), msSend )
         msSend.DecRef()
@@ -1842,17 +1842,17 @@ and
         let stream = x.EncodeToBlob( blob )
         match blob.TypeOf with 
         |  BlobKind.ClusterWithInJobInfo -> 
-            Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "send Write, Blob of blob %d type %A, name %s to program %s, pos %d, count %d length %d" 
-                                                                   blobi blob.TypeOf blob.Name (LocalDNS.GetShowInfo(queue.RemoteEndPoint)) 
-                                                                   stream.Position (stream.Length-stream.Position)
-                                                                   stream.Length ))
+            Logger.LogF( DeploymentSettings.TraceLevelBlobIO, ( fun _ -> sprintf "send Write, Blob of blob %d type %A, name %s to program %s, pos %d, count %d length %d" 
+                                                                           blobi blob.TypeOf blob.Name (LocalDNS.GetShowInfo(queue.RemoteEndPoint)) 
+                                                                           stream.Position (stream.Length-stream.Position)
+                                                                           stream.Length ))
             queue.ToSend( ControllerCommand( ControllerVerb.Write, ControllerNoun.Blob), stream )
             stream.DecRef()
         |  _ -> 
-            Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "send Set, Blob of blob %d type %A to program %s, pos %d, count %d length %d" 
-                                                                   blobi blob.TypeOf (LocalDNS.GetShowInfo(queue.RemoteEndPoint)) 
-                                                                   stream.Position (stream.Length-stream.Position)
-                                                                   stream.Length ))
+            Logger.LogF( DeploymentSettings.TraceLevelBlobIO, ( fun _ -> sprintf "send Set, Blob of blob %d type %A to program %s, pos %d, count %d length %d" 
+                                                                           blobi blob.TypeOf (LocalDNS.GetShowInfo(queue.RemoteEndPoint)) 
+                                                                           stream.Position (stream.Length-stream.Position)
+                                                                           stream.Length ))
             queue.ToSend( ControllerCommand( ControllerVerb.Set, ControllerNoun.Blob), stream )
             stream.DecRef()
     /// Send blob to peer i, used by client
