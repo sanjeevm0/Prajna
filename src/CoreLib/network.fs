@@ -78,98 +78,6 @@ type internal VerificationCmd =
     | AESVerificationUsingRSA = 8uy
     | AESVerificationUsingPwd = 9uy
 
-/// <summary>
-/// Network Performance statistics (only activate when service is in use)
-/// </summary>
-[<AllowNullLiteral>]
-type NetworkPerformance() = 
-    let startTime = (PerfADateTime.UtcNow())
-    /// <summary> Number of Rtt samples to statistics </summary>
-    static member val RTTSamples = 32 with get, set
-    /// <summary> Threshold above which the RTT value is deemed unreliable, and the sample will be discarded </summary>
-    static member val RTTFilterThreshold = 100000. with get, set
-    // Guid written at the end to make sure that the entire blob is currently formatted 
-    static member val internal BlobIntegrityGuid = System.Guid("D1742033-5D26-4982-8459-3617C2FF13C4") with get
-    member val internal RttArray = Array.zeroCreate<_> NetworkPerformance.RTTSamples with get
-    /// Filter out 1st RTT value, as it contains initialization cost, which is not part of network RTT
-    member val internal RttCount = ref -2L with get
-    /// Last RTT from the remote node. 
-    member val LastRtt = 0. with get, set
-    member val internal nInitialized = ref 0 with get
-    /// Last ticks that service is sent from this queue
-    member val LastSendTicks = DateTime.MinValue with get, set
-    member val internal LastRcvdSendTicks = 0L with get, set
-    member val internal TickDiffsInReceive = 0L with get, set
-    member internal x.RTT with get() = 0
-    member internal x.FirstTime() = 
-        Interlocked.CompareExchange( x.nInitialized, 1, 0 ) = 0
-    member internal x.PacketReport( tickDIffsInReceive:int64, sendTicks ) = 
-        x.LastRcvdSendTicks <- sendTicks
-        let ticksCur = (PerfADateTime.UtcNowTicks())
-        x.TickDiffsInReceive <- ticksCur - sendTicks
-        if tickDIffsInReceive<>0L then 
-            // Valid ticks 
-            let rttTicks = ticksCur - sendTicks + tickDIffsInReceive
-            let rtt = TimeSpan( rttTicks ).TotalMilliseconds
-            Logger.LogF( LogLevel.ExtremeVerbose, ( fun _ -> sprintf "Packet Received, send = %s, diff = %d, diffrcvd: %d"                                                                         
-                                                                       (VersionToString(DateTime(sendTicks)))
-                                                                       x.TickDiffsInReceive
-                                                                       tickDIffsInReceive ) )
-            if rtt >= 0. && rtt < NetworkPerformance.RTTFilterThreshold then 
-                x.LastRtt <- rtt
-                let idx = int (Interlocked.Increment( x.RttCount ))
-                if idx >= 0 then 
-                    x.RttArray.[idx % NetworkPerformance.RTTSamples ] <- rtt
-            else
-                Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "receive packet with unreasonable rtt of %f ms, cur %d, send %d, diff %d thrown away..."
-                                                                rtt 
-                                                                ticksCur sendTicks tickDIffsInReceive ) )
-        else
-            Logger.LogF( LogLevel.WildVerbose, ( fun _ -> sprintf "receive packet, unable to calculate RTT as TicksDiff is 0, send = %s, diff = %d" 
-                                                                       (VersionToString(DateTime(sendTicks)))
-                                                                       x.TickDiffsInReceive
-                                                                        ) )
-    /// Whether connection receives some valid data
-    member x.ConnectionReady() = 
-        (!x.RttCount)>=0L
-    /// Get the RTT of the connection
-    member x.GetRtt() = 
-        let sumRtt = Array.sum x.RttArray
-        let numRtt = Math.Min( (!x.RttCount)+1L, int64 NetworkPerformance.RTTSamples )
-        if numRtt<=0L then 
-            1000.
-        else
-            sumRtt / float numRtt
-    member internal x.SendPacket() = 
-        x.LastSendTicks <- (PerfADateTime.UtcNow())
-    /// The ticks that the connection is initialized. 
-    member x.StartTime with get() = startTime
-    /// Wrap header for RTT estimation 
-    member internal x.WriteHeader( ms: MemStream ) = 
-        let diff = x.TickDiffsInReceive
-        ms.WriteInt64( diff )
-        let curTicks = (PerfADateTime.UtcNowTicks())
-        ms.WriteInt64( curTicks )
-        Logger.LogF( LogLevel.ExtremeVerbose, ( fun _ -> sprintf "to send packet, diff = %d" 
-                                                                   diff ))
-    /// Validate header for RTT estimation 
-    member internal x.ReadHeader( ms: StreamBase<byte> ) = 
-        let tickDIffsInReceive = ms.ReadInt64( ) 
-        let sendTicks = ms.ReadInt64()
-        x.PacketReport( tickDIffsInReceive, sendTicks )
-    /// Write end marker 
-    member internal x.WriteEndMark( ms: StreamBase<byte> ) = 
-        ms.WriteBytes( NetworkPerformance.BlobIntegrityGuid.ToByteArray() )
-        x.SendPacket()
-    /// Validate end marker
-    member internal x.ReadEndMark( ms: StreamBase<byte>) = 
-        let data = Array.zeroCreate<_> 16
-        ms.ReadBytes( data ) |> ignore
-        let guid = Guid( data )
-        guid = NetworkPerformance.BlobIntegrityGuid
-    static member val internal ConstructNetworkPerformance = ( fun () -> NetworkPerformance() ) with get, set
-    static member val internal ConvertToNetworkPerformance  = ( fun (perf:NetworkPerformance) -> perf ) with get, set
-
 type [<AllowNullLiteral>] NetworkCommand() =
     let bReleased = ref 0
 
@@ -456,8 +364,6 @@ type [<AllowNullLiteral>] NetworkCommandQueue() as x =
     member internal x.CompSend with get() = xCSend
     /// The internal receiving component which processes NetworkCommand objects
     member internal x.CompRecv with get() = xCRecv
-    /// Used for network performance
-    member val internal NetworkPerf = NetworkPerformance.ConstructNetworkPerformance() with get, set
 
     member private x.RecvCmdQ with get() = recvCmdQ and set(v) = recvCmdQ <- v
     member private x.SendCmdQ with get() = sendCmdQ and set(v) = sendCmdQ <- v
@@ -1321,8 +1227,6 @@ type [<AllowNullLiteral>] NetworkCommandQueue() as x =
         //sendQ.EnqueueSyncSize cmd (int64 (cmd.CmdLen())) |> ignore
         x.EQSendCmdSyncSizeNonBlock cmd |> ignore
         x.LastSendTicks <- (PerfDateTime.UtcNow())
-        
-
 
     /// Add command to sender queue - enqueue takes place synchronously, blocks caller
     /// <param name="command">The ControllerCommand to send</param>
@@ -1766,17 +1670,32 @@ and [<AllowNullLiteral>] NetworkConnections() as x =
         channelsCollection |> Seq.map( fun pair -> pair.Value )
     /// Monitor information
     member private x.MonitorChannels( channelLists ) = 
-        Logger.LogF(NetworkConnections.ChannelMonitorLevel, ( fun _ -> 
-                                let numChannels = Seq.length channelLists
-                                let showLists = channelLists |> Seq.truncate NetworkConnections.MaxChannelsToMonitor
-                                Seq.append (seq { 
-                                                let currentProcess = System.Diagnostics.Process.GetCurrentProcess()
-                                                let gcinfo = GCPolicy.GetGCStatistics()
-                                                yield sprintf "Number of active channels ........... %d .... Memory %d MB ... %s" numChannels (currentProcess.WorkingSet64>>>20) gcinfo
-                                                }) 
-                                                (Seq.map ( fun (ch:NetworkCommandQueue) -> (sprintf "Channel :%A, Last ToSent Ticks: %A, Last Socket Sent Ticks: %A, sendcount %d, finishsendcout %d, sending queue:%d, receiving queue:%d, sending cmd queue: %d receiving command queue: %d sending queue size:%d recv queue size: %d UnprocessedCmD:%d bytes Status:%A" (LocalDNS.GetShowInfo(ch.RemoteEndPoint)) ch.LastSendTicks ch.Conn.LastSendTicks ch.Conn.SendCounter ch.Conn.FinishSendCounter (ch.SendQueueLength) (ch.ReceivingQueueLength) (ch.SendCommandQueueLength) (ch.ReceivingCommandQueueLength) (ch.SendQueueSize) (ch.RecvQueueSize) (ch.UnProcessedCmdInBytes) ch.ConnectionStatus )) showLists)
-                                |> String.concat( Environment.NewLine )
-                                )) 
+        Logger.LogF(NetworkConnections.ChannelMonitorLevel, fun _ -> 
+            let numChannels = Seq.length channelLists
+            let seqHeader = seq {
+                let currentProcess = System.Diagnostics.Process.GetCurrentProcess()
+                let gcinfo = GCPolicy.GetGCStatistics()
+                yield sprintf "Number of active channels ........... %d .... Memory %d MB ... %s" 
+                                numChannels (currentProcess.WorkingSet64>>>20) gcinfo
+            }
+            let printChannelInfo = (fun (ch:NetworkCommandQueue) ->
+                sprintf "\
+Channel :%A \
+Last ToSent Ticks: %A Last Socket Sent Ticks: %A sendcount: %d finishsendcount: %d \
+Last Socket Recv Start: %A recvcount: %d finishrecvcount: %d \
+sending cmd queue: %d sending queue:%d receiving queue:%d receiving command queue: %d \
+sending queue size:%d recv queue size: %d \
+UnprocessedCmD:%d bytes Status:%A" 
+                    (LocalDNS.GetShowInfo(ch.RemoteEndPoint)) 
+                    ch.LastSendTicks ch.Conn.LastSendTicks ch.Conn.SendCounter ch.Conn.FinishSendCounter 
+                    ch.Conn.LastRecvTicks ch.Conn.RecvCounter ch.Conn.FinishRecvCounter
+                    (ch.SendCommandQueueLength) (ch.SendQueueLength) (ch.ReceivingQueueLength) (ch.ReceivingCommandQueueLength) 
+                    (ch.SendQueueSize) (ch.RecvQueueSize) 
+                    (ch.UnProcessedCmdInBytes) ch.ConnectionStatus
+            )
+            let showLists = channelLists |> Seq.truncate NetworkConnections.MaxChannelsToMonitor
+            Seq.append seqHeader (Seq.map printChannelInfo showLists) |> String.concat( Environment.NewLine )
+        )
 
     member val private nCloseCalled = ref 0 with get, set
     member val private EvCloseExecuted = new ManualResetEvent(false) with get

@@ -367,7 +367,7 @@ type DeploymentSettings() =
     /// Monitor Interval for StandardError 
     static member val internal StandardOutputMonitorIntervalInMs = 1000 with get, set
     /// Monitor Interval for Network Status
-    static member val internal NetworkActivityMonitorIntervalInMs = 120000L with get, set
+    static member val internal NetworkActivityMonitorIntervalInMs = 20000L with get, set
 
     /// Warning on long blocking send socket (in milliseconds)
     static member val internal WarningLongBlockingSendSocketInMilliseconds = 100. with get, set

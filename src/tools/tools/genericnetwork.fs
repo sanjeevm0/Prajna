@@ -157,8 +157,7 @@ and [<AllowNullLiteral>] GenericConn() as x =
     // processing of send thread pool ===
     let eSendStackWait = new ManualResetEvent(true)
     let eSendFinished = new ManualResetEvent(false)
-    let mutable sendCounter = 0L
-    let mutable finishSendCounter = 0L
+
     // processing of send without tokens
     let processSendWithoutTokens(sa : RBufPart<byte>) =
         eSendSA <- sa
@@ -166,7 +165,7 @@ and [<AllowNullLiteral>] GenericConn() as x =
         e.UserToken <- x
         eSendFinished.Reset() |> ignore
         //Logger.LogF( LogLevel.MildVerbose, fun _ -> sprintf "Start send %d bytes" e.Count )
-        sendCounter <- sendCounter + 1L
+        x.SendCounter <- x.SendCounter + 1L
         NetUtils.SendOrClose(xConn, GenericConn.FinishSendBuf, e)
         x.LastSendTicks <- DateTime.UtcNow
         (true, eSendFinished)
@@ -203,10 +202,13 @@ and [<AllowNullLiteral>] GenericConn() as x =
     let mutable curBufSendRem = 0
     let mutable curBufSendOffset = 0
 
-    member x.SendCounter with get() = sendCounter
-    member val FinishSendCounter = 0L with get, set
-
+    member val internal SendCounter = 0L with get, set
+    member val internal FinishSendCounter = 0L with get, set
+    member val internal RecvCounter = 0L with get, set
+    member val internal FinishRecvCounter = 0L with get, set
     member val LastSendTicks = DateTime.MinValue with get,set
+    member val LastRecvTicks = DateTime.MinValue with get, set
+
     /// The internal Component used for sending SocketAsyncEventArgs
     member x.CompSend with get() = xSendC
     /// The internal Component used for receiving SocketAsyncEventArgs
@@ -431,6 +433,8 @@ and [<AllowNullLiteral>] GenericConn() as x =
             //Logger.LogF( LogLevel.MildVerbose, fun _ -> sprintf "Starting NextReceive" )
             eRecvNetwork.SA.UserToken <- x
             NetUtils.RecvOrClose(x, GenericConn.FinishRecvBuf, eRecvNetwork.SA)
+            x.RecvCounter <- x.RecvCounter + 1L
+            x.LastRecvTicks <- DateTime.UtcNow
         //else
         //    Logger.LogF( LogLevel.MildVerbose, fun _ -> sprintf "Still waiting" )
         event
@@ -443,6 +447,7 @@ and [<AllowNullLiteral>] GenericConn() as x =
 
     static member internal FinishRecvBuf(e : SocketAsyncEventArgs) =
         let x = e.UserToken :?> GenericConn
+        x.FinishRecvCounter <- x.FinishRecvCounter + 1L
         x.ContinueReceive(null, false)
 
     /// The function to call to enqueue received SocketAsyncEventArgs
@@ -457,7 +462,7 @@ and [<AllowNullLiteral>] GenericConn() as x =
                 x.NextReceive()
             else
                 // enqueue if queue has elements for fairness
-                //Logger.LogF( LogLevel.MildVerbose, fun _ -> sprintf "Request Enqueue" )
+                //Logger.LogF( LogLevel.MildVerbose, fun _ -> sprintf "Recv Request Enqueue" )
                 x.Net.BufStackRecvComp.Q.EnqueueSync(box(x.NextReceiveOne)) |> ignore
         else
             //Logger.LogF( LogLevel.MildVerbose, fun _ -> sprintf "cannot Enqueue %d bytes from %s; TCP Buffer: %d" eRecvNetwork.BytesTransferred (LocalDNS.GetShowInfo(xConn.Socket.RemoteEndPoint)) xConn.Socket.ReceiveBufferSize  )
