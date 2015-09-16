@@ -103,7 +103,6 @@ type internal ClientLauncher() =
 
 
     static member Main orgargs = 
-        //System.Threading.ThreadPool.SetMinThreads(500,100) |> ignore
         let args = Array.copy orgargs
         let firstParse = ArgumentParser(args, false)  
         let logdir = firstParse.ParseString( "-dirlog", (DeploymentSettings.LogFolder) )

@@ -659,7 +659,7 @@ type [<AllowNullLiteral>] internal ComponentBase() =
         let maxIOThreads = ref 0
         let availThreads = ref 0
         let availIOThreads = ref 0
-        System.Threading.ThreadPool.SetMinThreads(6, 6) |> ignore
+        //System.Threading.ThreadPool.SetMinThreads(6, 6) |> ignore
         System.Threading.ThreadPool.GetMinThreads(minThreads, minIOThreads)
         System.Threading.ThreadPool.GetMaxThreads(maxThreads, maxIOThreads)
         System.Threading.ThreadPool.GetAvailableThreads(availThreads, availIOThreads)
