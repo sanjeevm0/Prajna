@@ -79,7 +79,7 @@
     <Optimize>true</Optimize>
     <Tailcalls>true</Tailcalls>
     <OutputPath>bin\Releasex64\</OutputPath>
-    <DefineConstants>TRACE</DefineConstants>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
     <WarningLevel>3</WarningLevel>
     <DocumentationFile>bin\Releasex64\Prajna.Tools.XML</DocumentationFile>
     <PlatformTarget>x64</PlatformTarget>
