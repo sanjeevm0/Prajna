@@ -1831,7 +1831,7 @@ and
         msSend.WriteVInt32( blobi ) 
         msSend.Append(buf, int64 pos, int64 count)
         //msSend.WriteBytesWithOffset( buf, pos, count ) 
-        Logger.LogF( LogLevel.WildVerbose, ( fun _ -> let blob = x.Blobs.[blobi]
+        Logger.LogF( LogLevel.MildVerbose, ( fun _ -> let blob = x.Blobs.[blobi]
                                                       sprintf "Write, Blob %d type %A, name %s to %s" 
                                                                blobi blob.TypeOf blob.Name (LocalDNS.GetShowInfo(queue.RemoteEndPoint)) ))
         queue.ToSend( ControllerCommand( ControllerVerb.Write, ControllerNoun.Blob), msSend )
@@ -1842,7 +1842,7 @@ and
         let stream = x.EncodeToBlob( blob )
         match blob.TypeOf with 
         |  BlobKind.ClusterWithInJobInfo -> 
-            Logger.LogF( LogLevel.WildVerbose, ( fun _ -> sprintf "send Write, Blob of blob %d type %A, name %s to program %s, pos %d, count %d length %d" 
+            Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "send Write, Blob of blob %d type %A, name %s to program %s, pos %d, count %d length %d" 
                                                                    blobi blob.TypeOf blob.Name (LocalDNS.GetShowInfo(queue.RemoteEndPoint)) 
                                                                    stream.Position (stream.Length-stream.Position)
                                                                    stream.Length ))
