@@ -129,6 +129,11 @@ type [<AllowNullLiteral>] NetworkCommand() =
             if (Utils.IsNotNull x.ms) then
                 x.ms.DecRef()
 
+    interface IDisposable with
+        override x.Dispose() =
+            x.Release()
+            GC.SuppressFinalize(x)
+
     override x.Finalize() =
         x.Release()
 
@@ -192,7 +197,7 @@ type [<AllowNullLiteral>] NetworkCommandQueue() as x =
     let mutable bLocalVerified = false
     let mutable bRemoteVerified = false
 
-
+    let rcvdCommandSerialPosition = 6L
 
     // command thread pool for send commands - used for assembling into SocketAsyncEventArgs
     let mutable sendLenRem = 0L
@@ -1016,7 +1021,7 @@ type [<AllowNullLiteral>] NetworkCommandQueue() as x =
 
     member private x.UpdateHeader(cmd : NetworkCommand) =
         let pos = cmd.ms.Position
-        cmd.ms.Seek(6L, SeekOrigin.Begin) |> ignore
+        cmd.ms.Seek(rcvdCommandSerialPosition, SeekOrigin.Begin) |> ignore
         cmd.ms.WriteUInt16(Operators.uint16(x.RcvdCommandSerial))
         cmd.ms.Seek(pos, SeekOrigin.Begin) |> ignore
 

@@ -236,9 +236,10 @@ let main orgargs =
         let dkvRepart = dkvGen.RepartitionP(repartParam, partitionFunc)
         let t3 = DateTime.UtcNow
         //let verifyCount = dkvGen |> DSet.fold (fun cnt x -> cnt + 1) (fun a b -> a + b) 0
-        let foldFunc = (fun cnt x ->
-            cnt + 1
-        )
+        // allow us to set breakpoint inside
+//        let foldFunc = (fun cnt x ->
+//            cnt + 1
+//        )
         let verifyCount = dkvRepart |> DSet.fold (fun cnt x -> cnt + 1) (fun a b -> a + b) 0
         //let verifyCount = dkvRepart |> DSet.fold foldFunc foldFunc 0
         let t2 = DateTime.UtcNow
