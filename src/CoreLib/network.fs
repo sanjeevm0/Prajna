@@ -1539,7 +1539,11 @@ and [<AllowNullLiteral>] NetworkConnections() as x =
                 maxNumStackBufs <- 50UL
             if (bufSize < 64000) then
                 failwith "Not sufficient memory"
-            x.InitStack(Math.Min(DeploymentSettings.InitNetworkSocketAsyncEventArgBuffers, int maxNumStackBufs), bufSize, int maxNumStackBufs)
+            let numInitBufs = Math.Min(DeploymentSettings.InitNetworkSocketAsyncEventArgBuffers, int maxNumStackBufs)
+            let bufSize = bufSize // make it unmutable so it can be captured by closure
+            let maxNumStackBufs = maxNumStackBufs
+            Logger.LogF(LogLevel.Info, fun _ -> sprintf "Initialize network stack with initial buffers: %d max buffers: %d buffer size: %d" numInitBufs maxNumStackBufs bufSize)
+            x.InitStack(numInitBufs, bufSize, int maxNumStackBufs)
             // for internal queues of SocketAsyncEventArgs in genericnetwork.fs
             // since flow control takes into account NetworkCommand->SocketAsyncEventArgs and reverse conversion
             // no need to control queue size here since unProcessedBytes is representative of bytes:
