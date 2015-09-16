@@ -260,7 +260,7 @@ type DeploymentSettings() =
     /// Maximum network stack memory (total across all connections), 0 means unbounded (in bytes)
     static member val MaxNetworkStackMemory = 1024 * 1024 * 1024 * 4 with get, set
     /// Maximum network stack memory (total across all connections) as percentage of total (as percent)
-    static member val MaxNetworkStackMemoryPercentage = 0.1 with get, set
+    static member val MaxNetworkStackMemoryPercentage = 0.5 with get, set
     /// The buffer size used by SocketAsyncEventArgs
     static member val NetworkSocketAsyncEventArgBufferSize = 128000 with get, set
     /// The initial # of buffers in SocketAsyncEventArg stack
