@@ -1377,7 +1377,7 @@ and [<AllowNullLiteral; Serializable>]
                         | ( ControllerVerb.Start, ControllerNoun.Service ) ->
                             let serviceName = ms.ReadString() 
                             let service = ms.Deserialize() :?> WorkerRoleEntryPoint
-                            let param = Strm.DeserializeObjectWithTypeName(ms) 
+                            let param = ms.DeserializeObjectWithTypeName() 
                             Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "attempt to start service %s ..." serviceName ))
                             ServiceCollection.Current.BeginStartService( serviceName, service, param, 
                                                             fun bInitializeSuccess -> let msInfo = new MemStream( 1024 )
@@ -1493,7 +1493,7 @@ and [<AllowNullLiteral; Serializable>]
                                 let state = 
                                     // Some function may not have a parameter, and that is OK. 
                                     if ms.Position < ms.Length then 
-                                        Strm.CustomizableDeserializeToTypeName( ms, stateTypeName )
+                                        ms.CustomizableDeserializeToTypeName( stateTypeName )
                                     else
                                         null
                                 let endpos = ms.Position
@@ -1524,7 +1524,7 @@ and [<AllowNullLiteral; Serializable>]
                                             let msRead = replicateMsStreamFunc()
                                             // msRead will not be null, as the null condition is checked above
                                             let stateTypeName = msRead.ReadString() 
-                                            let s = Strm.CustomizableDeserializeToTypeName( msRead, stateTypeName )
+                                            let s = msRead.CustomizableDeserializeToTypeName( stateTypeName )
                                             msRead.DecRef()
                                             s
                                 ta := ThreadTracking.StartThreadForFunction ( fun _ -> sprintf "Job Thread, DSet Fold %s" dsetName) ( fun _ -> x.DSetFoldAsSeparateApp( queue, endPoint, useDSet, usePartitions, foldFunc, aggregateFunc, serializeFunc, stateFunc, buf ) )

@@ -1194,7 +1194,7 @@ type internal GVSerialize<'K>( ) =
     inherit GVSerialize( 
         let wrapperFunc (ms:MemStream) (O1:Object) =
             let state1 = O1 :?> 'K
-            Strm.SerializeFrom( ms, state1 )
+            ms.SerializeFrom( state1 )
             ms
         wrapperFunc )
 

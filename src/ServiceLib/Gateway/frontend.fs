@@ -691,7 +691,7 @@ type FrontEndInstance< 'StartParamType
                     ms.ReadBytes( buf ) |> ignore
                     let reqID = Guid( buf ) 
                     let qPerf = SingleQueryPerformance.Unpack( ms ) 
-                    let replyObject = Strm.DeserializeObjectWithTypeName( ms )
+                    let replyObject = ms.DeserializeObjectWithTypeName()
                     if Utils.IsNull replyObject then 
                         Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "Reply, Request from %s received Null Object, Rtt = %f ms." (LocalDNS.GetShowInfo( queue.RemoteEndPoint )) (health.GetRtt()) ) )
                         x.ProcessReply( queue, health, reqID, qPerf, replyObject ) 
@@ -965,7 +965,7 @@ type FrontEndInstance< 'StartParamType
         health.WriteHeader( msRequest ) 
         msRequest.WriteBytes( reqID.ToByteArray() )
         msRequest.WriteBytes( serviceInstanceBasic.ServiceID.ToByteArray() )
-        Strm.SerializeObjectWithTypeName( msRequest, reqHolder.ReqObject )
+        msRequest.SerializeObjectWithTypeName( reqHolder.ReqObject )
         health.WriteEndMark( msRequest )
         queue.ToSend( ControllerCommand( ControllerVerb.Request, ControllerNoun.QueryReply), msRequest )
         Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "send req %s to backend %s, to return (%s, %s) " (reqID.ToString()) (LocalDNS.GetShowInfo( queue.RemoteEndPoint)) (health.ExpectedLatencyInfo()) (health.QueueInfo()) ))

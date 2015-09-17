@@ -35,6 +35,7 @@ open System.Runtime.Serialization
 open System.Collections.Concurrent
 open System.Reflection
 open System.Runtime.Serialization
+open System.Runtime.CompilerServices
 open System.Threading
 
 open Prajna.Tools
@@ -355,9 +356,9 @@ module GenericSerialization =
 ///// </summary> 
 //type MemStream with 
 
-// Use static class as we wish to support StreamBase<byte> instead of just MemStream
-/// Contains extensions to StreamBase<byte> to allow for custom serialization
-type Strm =
+/// Extensions to StreamBase<byte> to allow for custom serialization
+[<Extension>]
+type StreamBaseExtension =
     /// <summary> 
     /// Serialize a particular object to bytestream, allow use of customizable serializer if installed. 
     /// If obj is null, it is serialized to a specific reserved NullObjectGuid for null. 
@@ -366,6 +367,7 @@ type Strm =
     /// </summary>
     /// <param name="obj"> Object to be serialized </param> 
     /// <param name="fullname"> TypeName of the Object to be used to lookup for installed customizable serializer </param>
+    [<Extension>]
     static member CustomizableSerializeFromTypeName( x : StreamBase<byte>, obj: Object, fullname:string )=
         let mutable bCustomized = false
         if Utils.IsNull obj then 
@@ -409,6 +411,7 @@ type Strm =
     /// For other GUID, installed customized deserailizer is used to deserialize the object. 
     /// </summary>
     /// <param name="fullname"> Should always be null </param>
+    [<Extension>]
     static member CustomizableDeserializeToTypeName( x : StreamBase<byte>, fullname:string ) =
         let buf = Array.zeroCreate<_> 16 
         let pos = x.Position
@@ -453,27 +456,36 @@ type Strm =
 
     /// Serialize a particular object to bytestream, allow use of customizable serializer if one is installed. 
     /// The customized serializer is of typeof<'U>.FullName, even the object passed in is of a derivative type. 
-    static member SerializeFromWithTypeName( x, obj: 'U )=
-        Strm.CustomizableSerializeFromTypeName( x, obj, typeof<'U>.FullName )
+    [<Extension>]
+    static member SerializeFromWithTypeName( x : StreamBase<byte>, obj: 'U )=
+        StreamBaseExtension.CustomizableSerializeFromTypeName( x, obj, typeof<'U>.FullName )
+
     /// <summary>
     /// Serialize a particular object to bytestream, allow use of customizable serializer if one is installed. 
     /// The customized serializer is of name obj.GetType().FullName. 
     /// </summary> 
-    static member SerializeObjectWithTypeName( x, obj: Object )=
+    [<Extension>]
+    static member SerializeObjectWithTypeName( x : StreamBase<byte>, obj: Object )=
         let objName = if Utils.IsNull obj then null else obj.GetType().FullName
-        Strm.CustomizableSerializeFromTypeName( x, obj, objName )
+        StreamBaseExtension.CustomizableSerializeFromTypeName( x, obj, objName )
+
     /// Deserialize a particular object from bytestream, allow use of customizable serializer if one is installed.  
-    static member DeserializeObjectWithTypeName( x ) =
-        Strm.CustomizableDeserializeToTypeName( x, null ) 
+    [<Extension>]
+    static member DeserializeObjectWithTypeName( x : StreamBase<byte> ) =
+        StreamBaseExtension.CustomizableDeserializeToTypeName( x, null ) 
+
     /// Serialize a particular object to bytestream, allow use of customizable serializer if one is installed. 
     /// The customized serializer is of typeof<'U>.FullName, even the object passed in is of a derivative type. 
-    static member SerializeFrom( x, obj: 'U )=
+    [<Extension>]
+    static member SerializeFrom( x : StreamBase<byte>, obj: 'U )=
         /// x.BinaryFormatterSerializeFromTypeName( obj, typeof<'U>.FullName )
-        Strm.CustomizableSerializeFromTypeName( x, obj, typeof<'U>.FullName ) 
+        StreamBaseExtension.CustomizableSerializeFromTypeName( x, obj, typeof<'U>.FullName ) 
+ 
     /// Deserialize a particular object from bytestream, allow use of customizable serializer if one is installed.  
-    static member DeserializeTo<'U>(x) =
+    [<Extension>]
+    static member DeserializeTo<'U>(x : StreamBase<byte>) =
         // x.BinaryFormatterDeserializeToTypeName( typeof<'U>.FullName ) :?> 'U
-        let obj = Strm.CustomizableDeserializeToTypeName( x, null ) 
+        let obj = StreamBaseExtension.CustomizableDeserializeToTypeName( x, null ) 
         if Utils.IsNull obj then
             Unchecked.defaultof<_>
         else

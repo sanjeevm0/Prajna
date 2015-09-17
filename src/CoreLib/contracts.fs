@@ -154,7 +154,7 @@ type internal ContractStoreCommon() =
             fun param ->    
                 // No need to 
                 let msAction, _ = ContractStoreCommon.RemoteInvoke( name ) 
-                Strm.SerializeFromWithTypeName( msAction, param )
+                msAction.SerializeFromWithTypeName( param )
                 sendFunc( msAction )
        )
     /// <summary>
@@ -163,7 +163,7 @@ type internal ContractStoreCommon() =
     static member internal ParseRemoteAction<'T> (act:Action<'T>) (queueSignature:int64, ms:StreamBase<byte> ) = 
         let reqID = ms.ReadGuid() 
         let errorMsg = ref null 
-        let obj = Strm.DeserializeObjectWithTypeName(ms)
+        let obj = ms.DeserializeObjectWithTypeName()
         match obj with 
         | :? 'T as param -> 
             act.Invoke( param ) 
@@ -191,7 +191,7 @@ type internal ContractStoreCommon() =
         let reqID = ms.ReadGuid()
         let errorMsg = ref null 
         if true then 
-            let obj = Strm.DeserializeObjectWithTypeName(ms)
+            let obj = ms.DeserializeObjectWithTypeName()
             let en = 
                 if Utils.IsNull obj then 
                     func.Invoke( Unchecked.defaultof<_> ).GetEnumerator()
@@ -218,7 +218,7 @@ type internal ContractStoreCommon() =
                             let arr = lst.ToArray()
                             let msReply = new MemStream() 
                             msReply.WriteGuid( reqID )
-                            Strm.SerializeObjectWithTypeName( msReply, arr )
+                            msReply.SerializeObjectWithTypeName( arr )
                             Logger.LogF( DeploymentSettings.TraceLevelSeqFunction, ( fun _ -> sprintf "ParseRemoteSeqFunction: Reply, Contract to send %d count of %s as reply for req %A (%dB)"
                                                                                                 arr.Length
                                                                                                 typeof<'TResult>.Name
@@ -233,7 +233,7 @@ type internal ContractStoreCommon() =
                         let arr = lst.ToArray()
                         let msReply = new MemStream() 
                         msReply.WriteGuid( reqID )
-                        Strm.SerializeObjectWithTypeName( msReply, arr )
+                        msReply.SerializeObjectWithTypeName( arr )
                         Logger.LogF( DeploymentSettings.TraceLevelSeqFunction, ( fun _ -> sprintf "ParseRemoteSeqFunction: Reply, Contract to send FINAL %d count of %s (+null) as reply for req %A (%dB)"
                                                                                             arr.Length
                                                                                             typeof<'TResult>.Name
@@ -248,7 +248,7 @@ type internal ContractStoreCommon() =
                     /// Signal the end of the reply 
                     let msEnd = new MemStream() 
                     msEnd.WriteGuid( reqID )
-                    Strm.SerializeObjectWithTypeName( msEnd, null )
+                    msEnd.SerializeObjectWithTypeName( null )
                     queue.ToSend( ControllerCommand( ControllerVerb.Reply, ControllerNoun.Contract), msEnd )
         if not (Utils.IsNull !errorMsg) then 
             Logger.Log( LogLevel.MildVerbose, !errorMsg )
@@ -266,7 +266,7 @@ type internal ContractStoreCommon() =
         let errorMsg = ref null 
         let resultRef = ref Unchecked.defaultof<_>
         if true then 
-            let obj = Strm.DeserializeObjectWithTypeName(ms)
+            let obj = ms.DeserializeObjectWithTypeName()
             if Utils.IsNull obj then 
                 resultRef := func.Invoke( Unchecked.defaultof<_> )
             else
@@ -281,7 +281,7 @@ type internal ContractStoreCommon() =
             if bSuccess then 
                 let msReply = new MemStream( 64 )
                 msReply.WriteGuid( reqID ) 
-                Strm.SerializeObjectWithTypeName( msReply, !resultRef )
+                msReply.SerializeObjectWithTypeName( !resultRef )
                 queue.ToSend( ControllerCommand( ControllerVerb.Reply, ControllerNoun.Contract), msReply )
             else
                 let msError = new MemStream( (!errorMsg).Length * 2 + 20 )
@@ -297,7 +297,7 @@ type internal ContractStoreCommon() =
         let reqID = ms.ReadGuid()
         let errorMsg = ref null 
         if true then 
-            let obj = Strm.DeserializeObjectWithTypeName(ms)
+            let obj = ms.DeserializeObjectWithTypeName()
             let ta = 
                 if Utils.IsNull obj then 
                     func.Invoke( Unchecked.defaultof<_> )
@@ -315,7 +315,7 @@ type internal ContractStoreCommon() =
                     if not ( Utils.IsNull queue ) && queue.CanSend then 
                         let msReply = new MemStream() 
                         msReply.WriteGuid( reqID )
-                        Strm.SerializeObjectWithTypeName( msReply, reply.Result )
+                        msReply.SerializeObjectWithTypeName( reply.Result )
                         queue.ToSend( ControllerCommand( ControllerVerb.Reply, ControllerNoun.Contract), msReply )
                 let ta2 = ta.ContinueWith( sendResult )
                 ta.Start() 
@@ -338,7 +338,7 @@ type internal ContractStoreCommon() =
         Func<'T, Task<'TResult>>( 
             fun param ->    
                 let msFunc, reqID = ContractStoreCommon.RemoteInvoke( name ) 
-                Strm.SerializeFromWithTypeName( msFunc, param )
+                msFunc.SerializeFromWithTypeName( param )
                 sendFunc( reqID, msFunc )
                 let ta = registerFunc( reqID) 
                 // Wait for result to become available. 
@@ -796,7 +796,7 @@ type internal ContractResolver( name ) =
             let msRequest = new MemStream( )
             msRequest.WriteStringV( name )
             msRequest.WriteGuid( reqID ) 
-            Strm.SerializeObjectWithTypeName( msRequest, inp )
+            msRequest.SerializeObjectWithTypeName( inp )
             for queue in epList do 
                 queue.ToSend( ControllerCommand( ControllerVerb.Request, ControllerNoun.Contract), msRequest )
                 if not (Utils.IsNull reqHolder) then 
@@ -822,7 +822,7 @@ type internal ContractRequestManagerForFunc<'TResult>( reqID ) =
     member val Result = Unchecked.defaultof<_> with get, set
     override x.ParseFunc( ms, queueSignature ) = 
         let bRemove, _ = x.EndPointCollection.TryRemove( queueSignature ) 
-        let obj = Strm.DeserializeObjectWithTypeName( ms ) 
+        let obj = ms.DeserializeObjectWithTypeName() 
         match obj with 
         | :? 'TResult as res -> 
             x.Result <- res 
@@ -865,7 +865,7 @@ type internal ContractRequestManagerForSeqFunc<'TResult>( reqID ) =
     member val CurrentArrayRef = ref null with get
     member val RcvdResult = ConcurrentQueue<'TResult[]>() with get
     override x.ParseFunc( ms, queueSignature ) = 
-        let obj = Strm.DeserializeObjectWithTypeName( ms ) 
+        let obj = ms.DeserializeObjectWithTypeName() 
         if Utils.IsNull obj then 
             // End of a certain collection 
             Logger.LogF( LogLevel.WildVerbose, ( fun _ -> sprintf "ContractRequestManagerForFunc receives null type %s[] for req %A from %s"

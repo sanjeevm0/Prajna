@@ -169,7 +169,7 @@ type internal CastFunction<'U>() =
         | :? (('U)[]) as arr ->
             arr
         | :? StreamBase<byte> as ms -> 
-            Strm.DeserializeTo<'U[]>(ms)
+            ms.DeserializeTo<'U[]>()
         | _ -> 
             let msg = sprintf "CastFunction.CastTo, the input object is not of type ('U)[] or MemStream, but type %A with information %A" (o.GetType()) o
             Logger.Log( LogLevel.Error, msg )
@@ -183,7 +183,7 @@ type internal CastFunction<'U>() =
         | MapToKind.MEMSTREAM -> 
             let ms = new MemStream() 
             let orgpos = ms.Position // Position 0, 
-            Strm.SerializeFrom( ms, elemArray )
+            ms.SerializeFrom( elemArray )
             ms.Seek( orgpos, SeekOrigin.Begin ) |> ignore
             ms :> Object
         | _ -> 
@@ -224,7 +224,7 @@ type internal MetaFunction<'U>() as x =
         // Decode Key Value
         try
             if Utils.IsNotNull ms then 
-                let elemArray = Strm.DeserializeTo<'U[]>(ms)
+                let elemArray = ms.DeserializeTo<'U[]>()
                 if Utils.IsNull elemArray then 
                     let msg = ( sprintf "in MetaFunction<'U>.DecodeFunc, it is unusual for a null key value object to be stored (and deserialized): %s" (MetaFunction.MetaString(meta))  )
                     Logger.Log( LogLevel.Warning, msg )
@@ -271,7 +271,7 @@ type internal MetaFunction<'U>() as x =
             let ms = new MemoryStreamB() :> StreamBase<byte>
             ms.Info <- sprintf "EncodeFunc:"
             let orgpos = ms.Position // Position 0, 
-            Strm.SerializeFrom( ms, elemArray )
+            ms.SerializeFrom( elemArray )
 //            if Utils.IsNotNull valueArray then 
 //                if numElems<>valueArray.Length then 
 //                    let msg = sprintf "Error in MetaFunction<'K, 'V>.encodeFunc, the length of value array doesn't match that of numElems, part:%d, serial:%d, numElems:%d (%d keys, %d values)" parti serial numElems keyArray.Length valueArray.Length
@@ -1318,7 +1318,7 @@ type internal CrossJoinChooseFunctionWrapper<'U0,'U1,'U>(mapFunc: 'U0->'U1->'U o
             | :? (('U1)[]) as arr ->
                 arr
             | :? StreamBase<byte> as ms -> 
-                Strm.DeserializeTo<'U1[]>(ms)
+                ms.DeserializeTo<'U1[]>()
             | _ -> 
                 let msg = sprintf "CrossJoinFunctionWrapper.CrossJoinMapFunc, the input object is not of type ('U1)[] or MemStream, but type %A with information %A" (obj.GetType()) obj
                 Logger.Log( LogLevel.Error, msg )
@@ -1372,7 +1372,7 @@ type internal CrossJoinFoldFunctionWrapper<'U0,'U1,'U,'S>(mapFunc: 'U0->'U1->'U,
             | :? (('U1)[]) as arr ->
                 arr
             | :? StreamBase<byte> as ms -> 
-                Strm.DeserializeTo<'U1[]>(ms)
+                ms.DeserializeTo<'U1[]>()
             | _ -> 
                 let msg = sprintf "CrossJoinFunctionWrapper.CrossJoinMapFunc, the input object is not of type ('U1)[] or MemStream, but type %A with information %A" (obj.GetType()) obj
                 Logger.Log( LogLevel.Error, msg )

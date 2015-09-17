@@ -588,7 +588,7 @@ type BackEndInstance< 'StartParamType
                     let reqID = Guid( buf ) 
                     ms.ReadBytes( buf ) |> ignore
                     let serviceID = Guid( buf ) 
-                    let requestObject = Strm.DeserializeObjectWithTypeName(ms)
+                    let requestObject = ms.DeserializeObjectWithTypeName()
                     Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "from %s received request %A %dB, Rtt = %f ms." 
                                                                            (LocalDNS.GetShowInfo( queue.RemoteEndPoint )) 
                                                                            reqID
@@ -818,7 +818,7 @@ type BackEndInstance< 'StartParamType
             health.WriteHeader( msReply )         
             msReply.WriteBytes( reqID.ToByteArray() ) 
             SingleQueryPerformance.Pack( qPerf, msReply )
-            Strm.SerializeObjectWithTypeName( msReply, replyObject ) 
+            msReply.SerializeObjectWithTypeName( replyObject ) 
             health.WriteEndMark( msReply ) 
             Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "query %s has been served and returned with a reply of %dB (%s)" (reqID.ToString()) (msReply.Length) (qPerf.BackEndInfo()) ))
             queue.ToSend( ControllerCommand( ControllerVerb.Reply, ControllerNoun.QueryReply ), msReply )
