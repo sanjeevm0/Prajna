@@ -72,6 +72,8 @@ and internal CustomizedSerialization() =
     static member val internal NullObjectGuid = Guid( "45BD7C41-0595-4854-A375-0A1895B10AAD" ) with get
     /// Use default system serializer
     static member val internal DefaultSerializerGuid = Guid( "4721F23B-65D3-499D-9750-2D6FE6A6AE54" ) with get
+    /// Byte[] serializer  
+    static member val internal ArrSerializerGuid = Guid("0C57DE71-CAB7-46DE-9A51-133E003862D1") with get  
     /// Memstream[] serializer
     static member val internal MStreamSerializerGuid = Guid("4D6BD747-AC4C-43A9-BDDA-2EB007B4C601") with get
     /// Collection of Customized Serializer by name
@@ -417,6 +419,13 @@ type StreamBaseExtension =
                     bCustomized <- true
         if not bCustomized then 
             match (obj) with
+                | :? ((System.Byte)[][]) as arr ->  
+                    x.WriteBytes( CustomizedSerialization.ArrSerializerGuid.ToByteArray() )  
+                    x.WriteInt32(arr.Length)  
+                    for i=0 to arr.Length-1 do  
+                        x.WriteInt32(arr.[i].Length)  
+                        x.WriteBytes(arr.[i])  
+
                 | :? ((StreamBase<byte>)[]) as arr ->
                     x.WriteBytes( CustomizedSerialization.MStreamSerializerGuid.ToByteArray() )
                     x.WriteInt32(arr.Length)
@@ -430,7 +439,7 @@ type StreamBaseExtension =
                     let fmt = GenericSerialization.GetDefaultFormatter()
                     StreamBaseExtension.FormatterSerializeFromTypeName( x, obj, fullname, fmt )
 
-    //static member ArrToReadTo = Array.zeroCreate<byte>(50000)
+    static member ArrToReadTo = Array.zeroCreate<byte>(50000)
 
     /// <summary> 
     /// Deserialize a particular object from bytestream, allow use of customizable serializer if installed. 
@@ -447,6 +456,15 @@ type StreamBaseExtension =
         let markerGuid = Guid( buf ) 
         if markerGuid = CustomizedSerialization.NullObjectGuid then 
             null 
+        elif markerGuid = CustomizedSerialization.ArrSerializerGuid then  
+            let arr = Array.zeroCreate<System.Byte[]>(x.ReadInt32())  
+            for i=0 to arr.Length-1 do  
+//                arr.[i] <- Array.zeroCreate<System.Byte>(x.ReadInt32())  
+//                x.ReadBytes(arr.[i]) |> ignore  
+                let len = x.ReadInt32()  
+                x.Seek(int64 len, SeekOrigin.Current) |> ignore  
+                arr.[i] <- StreamBaseExtension.ArrToReadTo  
+            box(arr)  
         elif markerGuid = CustomizedSerialization.MStreamSerializerGuid then
             let len = x.ReadInt32()
             let arr = Array.zeroCreate<StreamBase<byte>>(len)
