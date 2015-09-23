@@ -678,16 +678,22 @@ type [<AllowNullLiteral>] NetworkCommandQueue() as x =
                 bLocalVerified <- true // not really, but can continue, other side will terminate if fails
             | VerificationCmd.AESKeyUsingPwd ->
                 Logger.LogF( LogLevel.Info, (fun _ -> "Receive Pwd Encrypted information"))
-                let decryptBuf = Crypt.DecryptWithParams(recvBuf, x.ONet.Password)
-                x.SetRecvAES(decryptBuf)
                 use ms = new MemStream()
-                ms.WriteBytes(x.MyGuid.ToByteArray())
-                ms.WriteBytesWLen(Crypt.RSAToPublicKey x.MyAuthRSA)
-                ms.WriteBytesWLen(Crypt.RSAToPublicKey x.MyExchangeRSA)
-                let cryptBuf = Crypt.EncryptWithParams(ms.GetValidBuffer(), x.ONet.Password)
-                let bufToSend = Array.concat([[|byte VerificationCmd.AESVerificationUsingPwd|]; HashByteArray(decryptBuf); cryptBuf])
-                x.AsyncSendBufWSizeTryCatch(bufToSend, 0, bufToSend.Length)
-                bLocalVerified <- true
+                try 
+                    let decryptBuf = Crypt.DecryptWithParams(recvBuf, x.ONet.Password)
+                    x.SetRecvAES(decryptBuf)
+                    ms.WriteBytes(x.MyGuid.ToByteArray())
+                    ms.WriteBytesWLen(Crypt.RSAToPublicKey x.MyAuthRSA)
+                    ms.WriteBytesWLen(Crypt.RSAToPublicKey x.MyExchangeRSA)
+                    let cryptBuf = Crypt.EncryptWithParams(ms.GetValidBuffer(), x.ONet.Password)
+                    let bufToSend = Array.concat([[|byte VerificationCmd.AESVerificationUsingPwd|]; HashByteArray(decryptBuf); cryptBuf])
+                    x.AsyncSendBufWSizeTryCatch(bufToSend, 0, bufToSend.Length)
+                    bLocalVerified <- true
+                with e ->
+                    let str = "Invalid password during authentication, connection terminates"
+                    Logger.LogF(LogLevel.Info, fun _ -> str)
+                    x.MarkFail()
+                    raise(Exception(str))
                 ms.DecRef()
             | VerificationCmd.AESVerificationUsingRSA ->
                 let (key, signBuf) = o :?> byte[]*byte[]
