@@ -733,6 +733,7 @@ and
                                     config.PortsRange)
 
     member val internal MsgToHost=List<(ControllerCommand*MemStream)>() with get
+    member val private PeerIndexFromEndpoint = new ConcurrentDictionary<EndPoint, int>() with get
     member internal x.Queues with get() = queues
                              and set( q ) = queues <- q
     member val internal QueuesInitialized = ref 0 with get
@@ -1198,6 +1199,7 @@ and
                     NodeConnectionFactory.Current.DaemonConnect( x.Nodes.[peeri].MachineName, x.Nodes.[peeri].MachinePort, 
                         (fun queue -> Cluster.ParseHostCommand queue peeri), 
                         (fun _ -> x.Queues.[peeri] <- null) )
+                x.PeerIndexFromEndpoint.[x.Queues.[peeri].RemoteEndPoint] <- peeri
                 queue := x.Queues.[peeri]
                 // Read some receiving command to unblock
                 Logger.LogF( LogLevel.WildVerbose, (fun _ -> sprintf "Attempt to connect to %s:%d as peer %d" x.Nodes.[peeri].MachineName x.Nodes.[peeri].MachinePort peeri ))
@@ -1379,8 +1381,8 @@ and
                             x <- fst !cbRefTuple
                             cb <- snd !cbRefTuple
                         if Utils.IsNotNull cb then 
-        //                                        cb.CallbackEx( cmd, i, ms, name, ver, x )
-                            bNotBlocked <- cb.Callback( cmd, i, ms, name, ver, x )
+                            let peerIndex = x.PeerIndexFromEndpoint.[q.RemoteEndPoint]
+                            bNotBlocked <- cb.Callback( cmd, peerIndex, ms, name, ver, x )
                             ()
                     if Utils.IsNull cb then 
                         match ( cmd.Verb, cmd.Noun ) with
