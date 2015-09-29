@@ -40,12 +40,6 @@ module internal AssemblyProperties =
 #else
     [<assembly: AssemblyConfiguration("Release")>]
 #endif 
-    [<assembly: InternalsVisibleTo("azurevm")>]
-    [<assembly: InternalsVisibleTo("common")>]
-    [<assembly: InternalsVisibleTo("NetTest")>]
-    [<assembly: InternalsVisibleTo("MemStreamTest")>]
-    [<assembly: InternalsVisibleTo("ProgTest")>]
-
     [<assembly: InternalsVisibleTo("Prajna")>]
 
     [<assembly: InternalsVisibleTo("PrajnaClient")>]
