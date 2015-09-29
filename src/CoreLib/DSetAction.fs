@@ -76,8 +76,8 @@ type internal DSetAction() =
                             x.Param <- p
     /// Hold a Job object
     member x.Job with get() = jobInternal
-                 and set(v: Job) = Volatile.Write( jobLifecycleRef, JobLifeCycleCollectionApp.BeginJob() )
-                                   let jobLifecycle = Volatile.Read( jobLifecycleRef )
+                 and set(v: Job) = jobLifecycleRef := JobLifeCycleCollectionApp.BeginJob()
+                                   let jobLifecycle = !jobLifecycleRef
                                    jobLifecycle.OnCancellationFS( x.SendCancelJobToAllPeers )
                                    jobLifecycle.OnDisposeFS( x.EndAction )
                                    v.JobID <- jobLifecycle.JobID
@@ -90,7 +90,7 @@ type internal DSetAction() =
     /// Grab a single job action object, when secured, the cancellation of the underlying jobLifeCycle object will be delayed 
     /// until this action completes. 
     member internal x.TryExecuteSingleJobAction() = 
-        let writeObj = Volatile.Read( jobLifecycleRef )
+        let writeObj = !jobLifecycleRef 
         SingleJobActionApp.TryEnterAndThrow( writeObj )
     /// Get a job instance associated with a particular DSet
     member x.GetJobInstance( curDSet: DSet ) = 
@@ -317,8 +317,8 @@ type internal DSetAction() =
         x.Job.FreeJobResource()
 
         /// Free resource associated with the jobLifecyle object 
-        let objLifecyle = Volatile.Read( jobLifecycleRef ) 
-        Volatile.Write( jobLifecycleRef, null )
+        let objLifecyle = !jobLifecycleRef 
+        jobLifecycleRef := null
         if Utils.IsNotNull objLifecyle then 
             // Unregister will be automatically called before dispose. 
             // JobLifeCycleCollectionApp.UnregisterJob( objLifecyle )  
@@ -335,7 +335,7 @@ type internal DSetAction() =
             // Only Perform EndAction once. 
             if ( Volatile.Read( nNormalEnd)=0 ) then 
                 /// Abnormal end, (e.g., job disposed, cancelled).
-                let objLifecyle = Volatile.Read( jobLifecycleRef ) 
+                let objLifecyle = !jobLifecycleRef
                 if Utils.IsNotNull objLifecyle then 
                     objLifecyle.CancelJob()
             x.BaseEndAction()
