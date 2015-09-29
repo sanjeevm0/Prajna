@@ -942,11 +942,14 @@ type [<AllowNullLiteral>] NetworkCommandQueue() as x =
         let command = new ControllerCommand(enum<ControllerVerb>(int headerRecv.[4]), enum<ControllerNoun>(int headerRecv.[5]))
         if (command.Verb = ControllerVerb.Decrypt) then
             // decrypt the body
-            let (decryptBuf, bufLen) = Crypt.Decrypt(x.AESRecv, body)
-            let command = new ControllerCommand(enum<ControllerVerb>(int decryptBuf.[4]), enum<ControllerNoun>(int decryptBuf.[5]))
+            let decryptMs = Crypt.DecryptStream(x.AESRecv, body)
             body.DecRef()
-            // form a memory stream using this buffer01
-            let ms = new MemStream(decryptBuf, 8, bufLen-8)
+            decryptMs.ReadInt32() |> ignore
+            let verb = enum<ControllerVerb>(int (decryptMs.ReadByte()))
+            let noun = enum<ControllerNoun>(int (decryptMs.ReadByte()))
+            let command = new ControllerCommand(verb, noun)
+            let ms = decryptMs.Replicate(decryptMs.Position, decryptMs.Length-decryptMs.Position)
+            decryptMs.DecRef()
             ms.Info <- sprintf "Cmd:%A:" command
             curRecvCmd <- new NetworkCommand(command, ms)
         else
@@ -1206,13 +1209,12 @@ type [<AllowNullLiteral>] NetworkCommandQueue() as x =
         let ms = new MemStream(arrCount + 8)
         x.BuildHeader(command, arrCount + 4, ms)
         ms.Write(arr, offset, arrCount)
-        let encryptMs = Crypt.Encrypt(x.AESSend, ms.GetBuffer())
+        let encryptMs = Crypt.EncryptStream(x.AESSend, ms)
         ms.DecRef()
         let cmd = new NetworkCommand(ControllerCommand(ControllerVerb.Decrypt, ControllerNoun.Message), encryptMs)
         x.CommandSizeQ.Enqueue(int(cmd.CmdLen()))
         Interlocked.Add(unProcessedBytes, int64 (cmd.CmdLen())) |> ignore
         let sendQ = xCSend.Q :?> FixedSizeQ<NetworkCommand>
-        //sendQ.EnqueueSyncSize cmd (int64 (cmd.CmdLen())) |> ignore
         x.EQSendCmdSyncSize cmd |> ignore
 
     // ===========================================

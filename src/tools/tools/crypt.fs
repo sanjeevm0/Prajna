@@ -24,11 +24,13 @@ open Prajna.Tools
 
 [<AbstractClass>]
 type internal Crypt() =
+    static let zeroBlk = Array.zeroCreate<byte>(Crypt.MaxBlkSize >>> 8)
 
     static member SaltBytes = 32
     static member DeriveByteIter = 10000
     static member DefaultKeySize = 256
     static member DefaultBlkSize = 128
+    static member MaxBlkSize = 1024
 
     // symmetric key rjnd encrypt/decrypt byte[] -> byte[]
     static member Encrypt(clearBuf : byte[], pwd : string, keySize : int, blkSize : int) =
@@ -279,6 +281,24 @@ type internal Crypt() =
         cs.Flush()
         ms
 
+    static member EncryptStream(rjnd : AesCryptoServiceProvider, msOrig : StreamBase<byte>) : StreamBase<byte> =
+        if (rjnd.BlockSize > Crypt.MaxBlkSize) then
+            failwith "Illegal block size"
+        rjnd.GenerateIV()
+        let blkBytes = byte (rjnd.BlockSize >>> 3)
+        let mutable nPadding = blkBytes - byte (msOrig.Length % int64 blkBytes)
+        rjnd.Padding <- PaddingMode.None
+        let ms = msOrig.GetNew()
+        ms.WriteByte(nPadding)
+        ms.WriteBytesWLen(rjnd.IV)
+        let cs = new CryptoStream(ms, rjnd.CreateEncryptor(), CryptoStreamMode.Write)
+        use sr = new Prajna.Tools.StreamReader<byte>(msOrig, 0L)
+        sr.ApplyFnToBuffers(fun (buf, offset, cnt) -> cs.Write(buf, offset, cnt))
+        if (nPadding <> 0uy) then
+            cs.Write(zeroBlk, 0, int nPadding)
+        cs.Flush()
+        ms
+
     static member Decrypt(rjnd : AesCryptoServiceProvider, ms : StreamBase<byte>) : byte[]*int =
         let nPadding = ms.ReadByte()
         rjnd.IV <- ms.ReadBytesWLen()
@@ -291,6 +311,17 @@ type internal Crypt() =
         let clearBuf = Array.zeroCreate<byte>((int ms.Length)-(int ms.Position))
         cs.Read(clearBuf, 0, clearBuf.Length) |> ignore
         (clearBuf, clearBuf.Length-nPadding)
+
+    static member DecryptStream(rjnd : AesCryptoServiceProvider, ms : StreamBase<byte>) : StreamBase<byte> =
+        let nPadding = ms.ReadByte()
+        rjnd.IV <- ms.ReadBytesWLen()
+        rjnd.Padding <- PaddingMode.None
+        let cs = new CryptoStream(ms, rjnd.CreateDecryptor(), CryptoStreamMode.Read)
+        let clearStream = ms.GetNew()
+        clearStream.WriteFromStream(cs, ms.Length-ms.Position)
+        let clearStreamNoPad = clearStream.Replicate(0L, clearStream.Length - (int64 nPadding))
+        clearStream.DecRef()
+        clearStreamNoPad
 
     static member Decrypt(rjnd : AesCryptoServiceProvider, buf : byte[]) : byte[]*int =
         use ms = new MemStream(buf)

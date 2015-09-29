@@ -140,6 +140,7 @@ type [<AllowNullLiteral>] internal SharedPool<'K,'T when 'T :> IRefCounter<'K> a
         event
 
 [<AllowNullLiteral>]
+[<AbstractClass>]
 type SafeRefCnt<'T when 'T:null and 'T:(new:unit->'T) and 'T :> IRefCounter<string>> (infoStr : string, bAlloc : bool)=
     [<DefaultValue>] val mutable private info : string
 
@@ -151,14 +152,6 @@ type SafeRefCnt<'T when 'T:null and 'T:(new:unit->'T) and 'T :> IRefCounter<stri
             new 'T()
         else
             null
-
-//    new(infoStr : string) as x =
-//        new SafeRefCnt<'T>(infoStr, true)
-//        then
-//            let r : IRefCounter<string> = x.RC
-//            x.InitElem()
-//            x.RC.SetRef(1L)
-//            r.DebugInfo <- infoStr + ":" + x.Id.ToString()
 
     new(infoStr : string, e : SafeRefCnt<'T>) as x =
         new SafeRefCnt<'T>(infoStr, false)
@@ -266,6 +259,11 @@ type [<AbstractClass>] [<AllowNullLiteral>] RefCountBase() =
             else if (newCount < 0L) then
                 failwith (sprintf "RefCount object %s has Illegal ref count of %d" key !x.RefCount)
 
+type IdCounter() =
+    static let id = ref -1
+    static member GetNext() =
+        Interlocked.Increment(id)
+
 // ======================================
 
 // use AddRef/DecRef to acquire / release resource
@@ -284,7 +282,6 @@ type [<AllowNullLiteral>] RefCntBuf<'T>() =
     static let g_id = ref -1
     let id = Interlocked.Increment(g_id)
 
-    let bRelease = ref 0
     let mutable buffer : 'T[] = null
 
     new(size : int) as x =
@@ -299,7 +296,6 @@ type [<AllowNullLiteral>] RefCntBuf<'T>() =
 
     member x.Reset() =
         x.RC.SetRef(0L)
-        bRelease := 0
 
     abstract Alloc : int->unit
     default x.Alloc (size : int) =
@@ -310,18 +306,10 @@ type [<AllowNullLiteral>] RefCntBuf<'T>() =
         x.RC.Release <- releaseFn
 
     member internal x.Id with get() = id
-    member internal x.SetBuffer(v : 'T[]) =
+    member private x.SetBuffer(v : 'T[]) =
         buffer <- v
-    member internal x.GetBuffer() =
-        buffer
+    member internal x.Buffer with get() = buffer
 
-    member x.Buffer 
-        with get() =
-            if (!bRelease = 1) then
-                failwith (sprintf "Buffer %d already released" id)
-                null
-            else
-                buffer
     member val UserToken : obj = null with get, set
 
 type [<AllowNullLiteral>] RBufPart<'T> =
@@ -337,11 +325,6 @@ type [<AllowNullLiteral>] RBufPart<'T> =
         { inherit SafeRefCnt<RefCntBuf<'T>>("RBufPart", bAlloc) }
         then
             x.Init()
-
-//    new() as x =
-//        { inherit SafeRefCnt<RefCntBuf<'T>>("RBufPart") }
-//        then
-//            x.Init()
 
     new(e : RBufPart<'T>) as x =
         { inherit SafeRefCnt<RefCntBuf<'T>>("RBufPart", e) }
@@ -416,11 +399,6 @@ type [<AllowNullLiteral>] internal SharedMemoryPool<'T,'TBase when 'T :> RefCntB
         if (Utils.IsNull event) then
             (!elem).Reset()
         event
-
-type IdCounter() =
-    static let id = ref -1
-    static member GetNext() =
-        Interlocked.Increment(id)
 
 // put counter in separate class as classes without primary constructor do not allow let bindings
 // and static val fields cannot be easily initialized, also makes it independent of type 'T
@@ -505,6 +483,12 @@ type [<AllowNullLiteral>] [<AbstractClass>] StreamBase<'T> =
         if (count > 0L) then
             s.Write(x.GetBuffer(), int offset*sizeof<'T>, int count*sizeof<'T>)
 
+    abstract member WriteFromStream : Stream*int64 -> unit
+    default x.WriteFromStream(s : Stream, count : int64) =
+        let buf = Array.zeroCreate<byte>(int count)
+        let read = s.Read(buf, 0, int count)
+        x.Write(buf, 0, read)
+
     abstract member ComputeHash : Security.Cryptography.HashAlgorithm*int64*int64 -> byte[]
     default x.ComputeHash(hasher : Security.Cryptography.HashAlgorithm, offset : int64, len : int64) =
         hasher.ComputeHash(x.GetBuffer(), int offset, int len)
@@ -542,6 +526,8 @@ type [<AllowNullLiteral>] [<AbstractClass>] StreamBase<'T> =
         ms.AppendNoCopy(x, 0L, x.Length)
         ms.Seek(x.Position, SeekOrigin.Begin) |> ignore
         ms
+
+    abstract member Replicate : int64*int64->StreamBase<'T>
 
     member private x.Init() =
         x.Id <- StreamBaseCounter.GetNext()
@@ -673,6 +659,15 @@ type internal StreamReader<'T>(_bls : StreamBase<'T>, _bufPos : int64, _maxLen :
             else
                 bDone <- true
 
+    member x.ApplyFnToParts (fn : RBufPart<'T> -> unit) =
+        let mutable bDone = false
+        while (not bDone) do
+            let part = x.GetMoreBufferPart()
+            if (Utils.IsNotNull part) then
+                fn(part)
+            else
+                bDone <- true
+
 [<AllowNullLiteral>] 
 type StreamBaseByte =
     inherit StreamBase<byte>
@@ -748,6 +743,9 @@ type StreamBaseByte =
         let ms = new StreamBaseByte(x.GetBuffer(), 0, int x.Length, false, true)
         ms.Seek(x.Position, SeekOrigin.Begin) |> ignore
         ms :> StreamBase<byte>
+
+    override x.Replicate(pos : int64, cnt : int64) =
+        new StreamBaseByte(x.GetBuffer(), int pos, int cnt, false, true) :> StreamBase<byte>
 
     override x.AddRef() = ()
     override x.DecRef() = ()
@@ -829,7 +827,12 @@ type internal BufferListStream<'T>(defaultBufSize : int, doNotUseDefault : bool)
         for b in x.BufList do
             e.WriteRBufNoCopy(b)
         e.Seek(x.Position, SeekOrigin.Begin) |> ignore
-        e :> StreamBase<'T>        
+        e :> StreamBase<'T>
+        
+    override x.Replicate(pos : int64, cnt : int64) =
+        let e = new BufferListStream<'T>()
+        e.AppendNoCopy(x, pos, cnt)
+        e :> StreamBase<'T>
 
     override x.GetNew() =
         new BufferListStream<'T>() :> StreamBase<'T>
@@ -1366,13 +1369,13 @@ type internal MemoryStreamB(defaultBufSize : int, toAvoidConfusion : byte) =
 
     // Write functions
     // add elements from file - cannot be in generic as file read only supports byte
-    member x.WriteFromStream(fh : Stream, count : int) =
+    override x.WriteFromStream(fh : Stream, count : int64) =
         let mutable bCount = count
-        while (bCount > 0) do
+        while (bCount > 0L) do
             let (buf, pos, amt) = x.GetWriteBuffer()
-            let toRead = Math.Min(bCount, amt)
+            let toRead = int (Math.Min(bCount, int64 amt))
             let writeAmt = fh.Read(buf.Buffer, pos, toRead)
-            bCount <- bCount - writeAmt
+            bCount <- bCount - int64 writeAmt
             x.MoveForwardAfterWrite(writeAmt)
             if (writeAmt <> toRead) then
                 failwith "Write to memstream from file fails as file is out data"

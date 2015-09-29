@@ -1993,6 +1993,7 @@ and
                         x.GenerateSignature( null )
                     /// Create a job to launch a container. 
                     let y = Job.ContainerJobCollection.GetOrAdd( x.AssemblyHash, fun _ -> Job( IsContainer = true) )
+                    y.IsContainer <- true
                     y.PrepareRemoteExecutionRoster( curJob, x )
                     bSuccess <- y.ReadyStatus
         bSuccess      

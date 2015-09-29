@@ -34,9 +34,8 @@ type [<AllowNullLiteral>] RefCntBufSA() =
 
     override x.Alloc(size : int) =
         base.Alloc(size)
-        let buf = x.GetBuffer()
         x.SA <- new SocketAsyncEventArgs()
-        x.SA.SetBuffer(buf, 0, size)
+        x.SA.SetBuffer(x.Buffer, 0, size)
 
     member val SA : SocketAsyncEventArgs = null with get, set
 

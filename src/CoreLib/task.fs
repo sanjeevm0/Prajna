@@ -2941,6 +2941,7 @@ and internal TaskQueue() =
                         let msSend = new MemStream( 1024 )
                         msSend.WriteString( task.Name ) 
                         msSend.WriteInt64( task.Version.Ticks )
+                        Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "TaskHolder or TaskHolder.CurNodeInfo is null for Job %s" task.Name))
                         Some( ControllerCommand( ControllerVerb.NonExist, ControllerNoun.Job ), msSend )  
                     else
                         let nodeInfo = taskHolder.CurNodeInfo
@@ -3011,6 +3012,7 @@ and internal TaskQueue() =
                 let msSend = new MemStream( 1024 )
                 msSend.WriteString( name ) 
                 msSend.WriteInt64( verNumber )
+                Logger.LogF (LogLevel.Warning, fun _ -> sprintf "Task %s:%d does not exist" name verNumber)
                 Some( ControllerCommand( ControllerVerb.NonExist, ControllerNoun.Job ), msSend )  
 //
 // Don't use error. 
