@@ -372,7 +372,8 @@ type internal JobLifeCycle(jobID:Guid) =
     let onException = ConcurrentQueue<Action<Exception>>()
     let numExceptionCallback = ref 0
     let exCollections = ConcurrentQueue<Exception>()
-    static member val MaxWaitToEndJobInMilliseconds = 30000 with get, set 
+    /// If a job is idle for this much time, it is considered to have problems, and may be cancelled. 
+    static member val MaxWaitToEndJobInMilliseconds = DeploymentSettings.MaxWaitToEndJobInMilliseconds with get, set 
     member val numJobActionsInProcess = ref 0 with get
     /// Exception to throw here
     member x.Exception with get() = if exCollections.IsEmpty then null else AggregateException( exCollections )
