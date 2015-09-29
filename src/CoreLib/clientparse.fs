@@ -644,10 +644,11 @@ type internal Listener =
                         let cmdVerb = ms.ReadByte()
                         let cmdNoun = ms.ReadByte()
                         let cmd = ControllerCommand( enum<_>(cmdVerb), enum<_>(cmdNoun) ) 
+                        let startPos = ms.Position
                         for i = 0 to endPoints.Length - 1 do 
                             let queueSend = x.Connects.LookforConnect( endPoints.[i] )
                             if Utils.IsNotNull queueSend && queueSend.CanSend then 
-                                queueSend.ToSend( cmd, ms )
+                                queueSend.ToSendFromPos( cmd, ms, startPos )
                                 Logger.LogF( LogLevel.WildVerbose, ( fun _ -> sprintf "Forward command %A (%dB) to %A ... " 
                                                                                    cmd ms.Length
                                                                                    (LocalDNS.GetShowInfo(queueSend.RemoteEndPoint)) ))
