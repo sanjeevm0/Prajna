@@ -46,32 +46,12 @@ type internal ClientLauncher() =
     inherit System.MarshalByRefObject() 
     static let Usage = "PrajnaClient \n\
         Command line arguments:\n\
-        -allowad Allow AppDoamin execution \n\
-        -master  MASTER_INFORMATION_FILE : master information file\n\
-        -dir     WORKING_DIRECTORY :  working directory\n\
-        -mem     MAX_MEMORY_LIMIT : Maximum Memory Limit in MB\n\
-        -totaljob   TOTAL_JOB_LIMIT : set number of jobs that can be executed by Prajna in parallel\n\
-        -local   start on local machine\n\
-        -usealldrives use all drives for data (including system drive)\n\
+        -logdir  the dir for the log files\n\
+        -pwd     the passwd used for job request authentication\n\
+        -mem     maximum memory size in MB allowed for the client\n\
+        -port    the port that is used to listen the request\n\
+        -jobports the range of ports for jobs\n\
         "
-
-    static let TryRemoteAccess() = 
-        let curAcct = System.Security.Principal.WindowsIdentity.GetCurrent()
-        Logger.Log( LogLevel.Info, ( sprintf "Current user: %s (IsAuthenticated: %A)" (curAcct.Name) (curAcct.IsAuthenticated) ))
-        //    for claim in curAcct.Claims do 
-        //        Logger.Log(LogLevel.Info, ( sprintf "Type %A Subject:%A Issuer:%A value:%A " claim.Type claim.Subject claim.Issuer claim.Value ))
-        try
-            let fname = """\\OneNet20\c$\Prajna\Log\JinL\test_remotewrite.txt""" 
-            let fStream = new FileStream( fname, FileMode.Create, Security.AccessControl.FileSystemRights.FullControl, 
-                                        FileShare.ReadWrite, (1<<<20), FileOptions.Asynchronous )
-            let enc = System.Text.UTF8Encoding().GetBytes( "To test if remote write can succeed, cow jump over the moon" )
-            fStream.Write( enc, 0, enc.Length )
-            fStream.Flush()
-            fStream.Close()
-            Logger.Log( LogLevel.Info, ( sprintf "Remote writing succeeds" ))
-        with
-        | e -> 
-            Logger.Log( LogLevel.Info, ( sprintf "Remote writing fails with exception %A" e))
 
     // The name of the semaphore that is informing the test host that the client is ready to serve
     static member private ReadySemaphoreName = "Prajna-Client-Local-Test-Ready-cd42c4c6-61d8-45fe-8bf9-5ab3345f4f29"
@@ -104,8 +84,19 @@ type internal ClientLauncher() =
 
     static member Main orgargs = 
         let args = Array.copy orgargs
-        let firstParse = ArgumentParser(args, false)  
-        let logdir = firstParse.ParseString( "-dirlog", (DeploymentSettings.LogFolder) )
+        let firstParse = ArgumentParser(args, false)
+        
+        let logdir = 
+            // Keep "-dirlog" to not break existing scripts
+            let d1 = firstParse.ParseString( "-dirlog", String.Empty )
+            let d2 = firstParse.ParseString( "-logdir", String.Empty )
+            if d1 = String.Empty && d2 = String.Empty then
+                DeploymentSettings.LogFolder
+            else if d2 <> String.Empty then
+                d2
+            else
+                d1
+
         DeploymentSettings.LogFolder <- logdir
         let logdirInfo = FileTools.DirectoryInfoCreateIfNotExists( logdir ) 
         let logFileName = Path.Combine( logdir, VersionToString( (PerfDateTime.UtcNow()) ) + ".log" )
@@ -113,7 +104,7 @@ type internal ClientLauncher() =
         let args2 = Array.concat (seq { yield (Array.copy args); yield [|"-log"; logFileName|] })
         let parse = ArgumentParser(args2)  
 
-        let keyfile = parse.ParseString( "-keyfile", (DeploymentSettings.KeyFile) )
+        let keyfile = parse.ParseString( "-keyfile", "" )
         let keyfilepwd = parse.ParseString( "-keypwd", "" )
         let pwd = parse.ParseString( "-pwd", "" )
         let bAllowRelay = parse.ParseBoolean( "-allowrelay", DeploymentSettings.bDaemonRelayForJobAllowed )
@@ -160,7 +151,15 @@ type internal ClientLauncher() =
 
         let jobip = parse.ParseString("-jobip", "")
         DeploymentSettings.JobIP <- jobip
-        let jobport = parse.ParseString( "-jobport", "" )
+        
+        let jobport = 
+            // Keep "-jobport" to not break existing scripts
+            let j = parse.ParseString( "-jobports", String.Empty )
+            if j <> String.Empty then
+                j
+            else
+                parse.ParseString( "-jobport", String.Empty )
+
         if Utils.IsNotNull jobport && jobport.Length > 0 then 
             let jobport2 = jobport.Split(("-,".ToCharArray()), StringSplitOptions.RemoveEmptyEntries )
             if jobport2.Length >= 2 then 
@@ -173,7 +172,14 @@ type internal ClientLauncher() =
             ()
 
         Logger.Log( LogLevel.Info, ( sprintf "Start PrajnaClient at port %d (%d-%d)...................... Mode %s, %d MB" DeploymentSettings.ClientPort DeploymentSettings.JobPortMin DeploymentSettings.JobPortMax DeploymentSettings.PlatformFlag (DeploymentSettings.MaximumWorkingSet>>>20)))
-        Logger.Log( LogLevel.Info, ( sprintf "Start Parameters %A" orgargs ))
+
+        let argsToLog = Array.copy orgargs
+        for i in 0..argsToLog.Length-1 do
+            if String.Compare(argsToLog.[i], "-pwd", StringComparison.InvariantCultureIgnoreCase) = 0 ||
+               String.Compare(argsToLog.[i], "-keypwd", StringComparison.InvariantCultureIgnoreCase) = 0 then
+                argsToLog.[i + 1] <- "****"
+
+        Logger.Log( LogLevel.Info, ( sprintf "Start Parameters %A" argsToLog ))
 
         if bAllowAD then 
             Logger.Log( LogLevel.Info, ( sprintf "Allow start remote container in AppDomain" ))
@@ -184,7 +190,6 @@ type internal ClientLauncher() =
 
     //    MakeFileAccessible( logfname ) : logfname may not be the name used for log anymore
 
-    //    TryRemoteAccess()
         // Delete All log except the latest 5 log
         let allLogFiles = logdirInfo.GetFiles()
         let sortedLogFiles = allLogFiles |> Array.sortBy( fun fileinfo -> fileinfo.CreationTimeUtc.Ticks )
@@ -199,6 +204,8 @@ type internal ClientLauncher() =
             else
                 ClientMasterConfig.ToParse( parse )          
         let bAllParsed = parse.AllParsed Usage
+        if not bAllParsed then
+            failwith "Incorrect arguments"
         Logger.Log( LogLevel.Info, (sprintf "All command parsed ==== %A" bAllParsed ) )
 
     //    let dataDrive = StringTools.GetDrive( dir )
@@ -225,13 +232,20 @@ type internal ClientLauncher() =
                 null
         let listener = Listener.StartListener()
         let monTimer = ThreadPoolTimer.TimerWait ( fun _ -> sprintf "Task Queue Monitor Timer" ) listener.TaskQueue.MonitorTasks DeploymentSettings.MonitorIntervalTaskQueueInMs DeploymentSettings.MonitorIntervalTaskQueueInMs
+        
         // set authentication parameters for networking
+        Logger.Log( LogLevel.Info, (sprintf "Authentication parameters: pwd=%s keyfile=%s keyfilepwd=%s" 
+                                                (if String.IsNullOrEmpty(pwd) then "empty" else "specified") 
+                                                keyfile 
+                                                (if String.IsNullOrEmpty(keyfilepwd) then "empty" else "specified") ) )
         if not (keyfilepwd.Equals("", StringComparison.Ordinal)) then
             if (not (pwd.Equals("", StringComparison.Ordinal))) then
                 listener.Connects.InitializeAuthentication(pwd, keyfile, keyfilepwd)
             else
                 let keyinfo = NetworkConnections.ObtainKeyInfoFromFiles(keyfile)
                 listener.Connects.InitializeAuthentication(keyinfo, keyfilepwd)
+        elif (not (pwd.Equals("", StringComparison.Ordinal))) then
+            listener.Connects.InitializeAuthentication(pwd)
 
 //        let ListenerThreadStart = new Threading.ParameterizedThreadStart( Listener.StartServer )
 //        let ListenerThread = new Threading.Thread( ListenerThreadStart )
