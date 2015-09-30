@@ -229,7 +229,7 @@ type SafeRefCnt<'T when 'T:null and 'T :> IRefCounter<string>> (infoStr : string
     // use to access the element from outside
     /// Obtain element contained wit
     member x.Elem
-        with get() = 
+        with get() : 'T = 
             if (!bRelease = 1) then
                 failwith (sprintf "Already Released %s %d" infoStr id)
             else
@@ -634,6 +634,13 @@ type internal StreamBaseRef<'T>() =
         let x = new StreamBaseRef<'T>()
         x.SetElement(elem)
         x
+    static member New(elem : StreamBase<'T>) : StreamBaseRef<'T> =
+        let x = new StreamBaseRef<'T>()
+        x.SetElement(elem)
+        (x.Elem :> IRefCounter<string>).DecRef()
+        x
+
+type MemStreamRef = StreamBaseRef<byte>
 
 [<AllowNullLiteral>] 
 type internal StreamReader<'T>(_bls : StreamBase<'T>, _bufPos : int64, _maxLen : int64) =
