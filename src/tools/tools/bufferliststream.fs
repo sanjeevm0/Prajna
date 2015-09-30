@@ -141,22 +141,25 @@ type [<AllowNullLiteral>] internal SharedPool<'K,'T when 'T :> IRefCounter<'K> a
 
 [<AllowNullLiteral>]
 [<AbstractClass>]
-type SafeRefCnt<'T when 'T:null and 'T:(new:unit->'T) and 'T :> IRefCounter<string>> (infoStr : string, bAlloc : bool)=
+type SafeRefCnt<'T when 'T:null and 'T :> IRefCounter<string>> (infoStr : string)=
     [<DefaultValue>] val mutable private info : string
 
     static let g_id = ref -1L
     let mutable id = Interlocked.Increment(g_id) //mutable for GetFromPool
     let bRelease = ref 0
-    let mutable elem : 'T = 
-        if (bAlloc) then
-            new 'T()
-        else
-            null
+    let mutable elem : 'T = null
+
+    new(infoStr : string, e : 'T) as x =
+        new SafeRefCnt<'T>(infoStr)
+        then
+            x.SetElement(e)
+
+    new(infoStr : string, createNew : unit->SafeRefCnt<'T>) =
+        new SafeRefCnt<'T>(infoStr, createNew())
 
     new(infoStr : string, e : SafeRefCnt<'T>) as x =
-        new SafeRefCnt<'T>(infoStr, false)
+        new SafeRefCnt<'T>(infoStr)
         then
-            let r : IRefCounter<string> = x.RC
             x.Element <- e.Elem // check for released element prior to setting
             x.RC.AddRef()
             let e : 'T = x.Element
@@ -164,6 +167,15 @@ type SafeRefCnt<'T when 'T:null and 'T:(new:unit->'T) and 'T :> IRefCounter<stri
 #if DEBUGALLOCS
             x.Element.Allocs.[x.info] <- Environment.StackTrace
             Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Also using %s for id %d - refcount %d" x.Element.Key x.Id x.Element.GetRef)
+#endif
+
+    member x.SetElement(e : 'T) =
+        x.Element <- e
+        x.RC.AddRef()
+        x.info <- infoStr + ":" + x.Id.ToString()
+#if DEBUGALLOCS
+        x.Element.Allocs.[x.info] <- Environment.StackTrace
+        Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Using element %s for id %d - refcount %d" x.Element.Key x.Id x.Element.GetRef)
 #endif
     
     static member internal GetFromPool<'TP when 'TP:null and 'TP:(new:unit->'TP) and 'TP :> IRefCounter<string>>
@@ -180,7 +192,7 @@ type SafeRefCnt<'T when 'T:null and 'T:(new:unit->'T) and 'T :> IRefCounter<stri
             x.info <- infoStr + ":" + x.Id.ToString()
 #if DEBUGALLOCS
             x.Element.Allocs.[x.info] <- Environment.StackTrace
-            Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Using element %s for id %d - refcount %d" x.Element.Key x.Id x.Element.GetRef)
+            Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Using pool element %s for id %d - refcount %d" x.Element.Key x.Id x.Element.GetRef)
 #endif
             (event, x)
         else
@@ -209,16 +221,16 @@ type SafeRefCnt<'T when 'T:null and 'T:(new:unit->'T) and 'T :> IRefCounter<stri
 
     interface IDisposable with
         member x.Dispose() =
-            x.Release(true)
+            x.Release(false)
             GC.SuppressFinalize(x)
 
     member private x.Element with get() = elem and set(v) = elem <- v
-    member private x.RC with get() = (elem :> IRefCounter<string>)
+    member private x.RC with get() : IRefCounter<string> = (elem :> IRefCounter<string>)
 
     // use to access the element from outside
     /// Obtain element contained wit
     member x.Elem
-        with get() = 
+        with get() : 'T = 
             if (!bRelease = 1) then
                 failwith (sprintf "Already Released %s %d" infoStr id)
             else
@@ -321,8 +333,8 @@ type [<AllowNullLiteral>] RBufPart<'T> =
     [<DefaultValue>] val mutable StreamPos : int64
 
     // following is used when getting element from pool
-    new(bAlloc : bool) as x =
-        { inherit SafeRefCnt<RefCntBuf<'T>>("RBufPart", bAlloc) }
+    new() as x =
+        { inherit SafeRefCnt<RefCntBuf<'T>>("RBufPart") }
         then
             x.Init()
 
@@ -341,13 +353,11 @@ type [<AllowNullLiteral>] RBufPart<'T> =
             x.Count <- count
 
     new (buf : 'T[], offset : int, count : int) as x =
-        { inherit SafeRefCnt<RefCntBuf<'T>>("RBufPart", false) }
+        { inherit SafeRefCnt<RefCntBuf<'T>>("RBufPart", new RefCntBuf<'T>(buf)) }
         then
             x.Init()
-            let rcb = new RefCntBuf<'T>(buf)
             x.Offset <- offset
             x.Count <- count
-            x.Elem.RC.SetRef(1L)
 
     member x.Init() =
         ()
@@ -366,7 +376,7 @@ type [<AllowNullLiteral>] RBufPart<'T> =
 
     interface IDisposable with
         member x.Dispose() = 
-            x.Release(true)
+            x.Release(false)
             GC.SuppressFinalize(x)
 
 type [<AllowNullLiteral>] internal SharedMemoryPool<'T,'TBase when 'T :> RefCntBuf<'TBase> and 'T: (new : unit -> 'T)> =
@@ -413,6 +423,7 @@ type [<AllowNullLiteral>] [<AbstractClass>] StreamBase<'T> =
     [<DefaultValue>] val mutable Visible : bool
     [<DefaultValue>] val mutable Id : int
     [<DefaultValue>] val mutable private info : string
+    [<DefaultValue>] val mutable debugInfo : string
 
     new() as x = 
         { inherit MemoryStream() }
@@ -500,6 +511,21 @@ type [<AllowNullLiteral>] [<AbstractClass>] StreamBase<'T> =
     default x.DecRef() =
         ()
 
+    interface IRefCounter<string> with
+#if DEBUGALLOCS
+        override val Allocs : ConcurrentDictionary<string, string> = new ConcurrentDictionary<_,_>() with get // for debugging allocations
+#endif
+        override x.DebugInfo with get() = x.debugInfo and set(v) = x.debugInfo <- v
+        override x.Key with get() = "Stream:" + x.info + x.Id.ToString()
+        override x.Release with get() = (fun _ -> ()) and set(v) = ()
+        override x.SetRef(r : int64) =
+            ()
+        override x.GetRef with get() = 0L
+        override x.AddRef() =
+            x.AddRef()
+        override x.DecRef() =
+            x.DecRef()
+
     abstract member GetNew : unit -> StreamBase<'T>
     abstract member GetNew : int -> StreamBase<'T>
     abstract member GetNew : 'T[]*int*int*bool*bool -> StreamBase<'T>
@@ -535,6 +561,7 @@ type [<AllowNullLiteral>] [<AbstractClass>] StreamBase<'T> =
         x.Writable <- true
         x.Visible <- true
         x.info <- ""
+        x.debugInfo <- ""
 
     member x.ComputeSHA512(offset : int64, len : int64) =
         use sha512 = new Security.Cryptography.SHA512Managed() // has dispose
@@ -599,22 +626,34 @@ type [<AllowNullLiteral>] [<AbstractClass>] StreamBase<'T> =
     member internal  x.GetValidBuffer() =
         Array.sub (x.GetBuffer()) 0 (int x.Length)
 
+[<AllowNullLiteral>]
+type internal StreamBaseRef<'T>() =
+    inherit SafeRefCnt<StreamBase<'T>>("StreamRef")
+    static member Equals(elem : StreamBase<'T>) : StreamBaseRef<'T> =
+        let x = new StreamBaseRef<'T>()
+        x.SetElement(elem)
+        x
+    static member New(elem : StreamBase<'T>) : StreamBaseRef<'T> =
+        let x = new StreamBaseRef<'T>()
+        x.SetElement(elem)
+        (x.Elem :> IRefCounter<string>).DecRef()
+        x
+
+type MemStreamRef = StreamBaseRef<byte>
+
 [<AllowNullLiteral>] 
 type internal StreamReader<'T>(_bls : StreamBase<'T>, _bufPos : int64, _maxLen : int64) =
-    let bls = _bls
-    let bReleased = ref 0
+    let blsRef = StreamBaseRef<'T>.Equals(_bls)
+    let bls = blsRef.Elem
     let mutable elemPos = 0
     let mutable bufPos = _bufPos
     let mutable maxLen = _maxLen
-    do
-        bls.AddRef()
 
     new (bls, bufPos) =
         new StreamReader<'T>(bls, bufPos, Int64.MaxValue)
 
     member x.Release() =
-        if (Interlocked.CompareExchange(bReleased, 1, 0)=0) then
-            bls.DecRef()
+        (blsRef :> IDisposable).Dispose()
     override x.Finalize() =
         x.Release()
     interface IDisposable with
@@ -753,7 +792,7 @@ type StreamBaseByte =
 // essentially a generic list of buffers of type 'T
 // use AddRef/Release to acquire / release resource
 [<AllowNullLiteral>] 
-type internal BufferListStream<'T>(defaultBufSize : int, doNotUseDefault : bool) =
+type BufferListStream<'T>(defaultBufSize : int, doNotUseDefault : bool) =
     inherit StreamBase<'T>()
 
     static let streamsInUse = new ConcurrentDictionary<string, BufferListStream<'T>>()
@@ -761,7 +800,7 @@ type internal BufferListStream<'T>(defaultBufSize : int, doNotUseDefault : bool)
     static let mutable memStack : SharedMemoryPool<RefCntBuf<'T>,'T> = null
     static let memStackInit = ref 0
 
-    let refCount = ref 1 // constructor automatically increments ref count
+    let refCount = ref 1L // constructor automatically increments ref count
     let bReleased = ref 0
 
     let mutable stackTrace = ""
@@ -891,9 +930,12 @@ type internal BufferListStream<'T>(defaultBufSize : int, doNotUseDefault : bool)
                 PoolTimer.AddTimer(BufferListStream<'T>.DumpStreamsInUse, 10000L, 10000L)
 #endif
 
+    static member InitSharedPool() =
+        BufferListStream<'T>.InitMemStack(128, 64000)
+
     member internal x.GetStackElem() =
         let (event, buf) = RBufPart<'T>.GetFromPool(x.GetInfoId()+":RBufPart", BufferListStream<'T>.MemStack,
-                                                    fun () -> new RBufPart<'T>(false) :> SafeRefCnt<RefCntBuf<'T>>)
+                                                    fun () -> new RBufPart<'T>() :> SafeRefCnt<RefCntBuf<'T>>)
         //Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Use Element %d for stream %d" buf.Id x.Id)
         buf.Elem.UserToken <- box(x)
         buf :?> RBufPart<'T>
@@ -937,12 +979,18 @@ type internal BufferListStream<'T>(defaultBufSize : int, doNotUseDefault : bool)
 
     override x.DecRef() =
         Interlocked.Decrement(refCount) |> ignore
-        if (!refCount <= 0) then
-            if (!refCount < 0) then
+        if (!refCount <= 0L) then
+            if (!refCount < 0L) then
                 Logger.LogF(LogLevel.ExtremeVerbose, fun _ -> sprintf "Memory stream is decrefed after refCount is zero")    
             x.Release(false)
 
-   // backup release in destructor
+    interface IRefCounter<string> with
+        override x.Release with get() = (fun _ -> x.Release(false)) and set(v) = ()
+        override x.SetRef(r : int64) =
+            refCount := r
+        override x.GetRef with get() = !refCount
+
+    // backup release in destructor
     override x.Finalize() =
         x.Release(true)
 
@@ -1056,9 +1104,10 @@ type internal BufferListStream<'T>(defaultBufSize : int, doNotUseDefault : bool)
             length <- length + int64 rbuf.Count
             capacity <- capacity + int64 rbuf.Count
             elemLen <- elemLen + 1
+            for i = finalWriteElem to elemLen-1 do
+                if (i <> 0) then
+                    bufList.[i].StreamPos <- bufList.[i-1].StreamPos + int64 bufList.[i-1].Count
             finalWriteElem <- elemLen
-            for i = elemPos+1 to elemLen-1 do
-                bufList.[i].StreamPos <- bufList.[i-1].StreamPos + int64 bufList.[i-1].Count
 
     // move to beginning of buffer i
     member private x.MoveToBufferI(bAllowExtend : bool, i : int) =
@@ -1177,7 +1226,7 @@ type internal BufferListStream<'T>(defaultBufSize : int, doNotUseDefault : bool)
     member private x.WriteRBufNoCopy(rbuf : RBufPart<'T>) =
         x.AddExistingBuffer(rbuf)
         position <- position + int64 rbuf.Count
-        elemPos <- elemPos + 1
+        elemPos <- Math.Max(elemLen, elemPos)
         length <- Math.Max(length, position)
         finalWriteElem <- Math.Max(finalWriteElem, elemPos)
 
@@ -1296,12 +1345,11 @@ type internal BufferListStream<'T>(defaultBufSize : int, doNotUseDefault : bool)
     override x.AppendNoCopy(rbuf : RBufPart<'T>, offset : int64, count : int64) =
         use rbufAdd = new RBufPart<'T>(rbuf, int offset, int count)
         x.WriteRBufNoCopy(rbufAdd)
-        rbufAdd.Release()
 
 // MemoryStream which is essentially a collection of RefCntBuf
 // Not GetBuffer is not supported by this as it is not useful
 [<AllowNullLiteral>]
-type internal MemoryStreamB(defaultBufSize : int, toAvoidConfusion : byte) =
+type MemoryStreamB(defaultBufSize : int, toAvoidConfusion : byte) =
     inherit BufferListStream<byte>(defaultBufSize)
 
     let emptyBlk = [||]

@@ -1624,7 +1624,9 @@ type internal Function () =
                 null
             | _ ->
                 let bytearray = ms.ReadBytesWLen()
-                use msFunc = new MemStream( bytearray, 0, bytearray.Length, false, true  )
+                //use msFunc = new MemStream( bytearray, 0, bytearray.Length, false, true  )
+                use msFuncRef = MemStreamRef.New(new MemStream( bytearray, 0, bytearray.Length, false, true  ))
+                let msFunc = msFuncRef.Elem
                 if DeploymentSettings.LoadCustomAssebly && bUnpackFunc then 
                     try
                         let o = msFunc.Deserialize() 
