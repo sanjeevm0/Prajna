@@ -353,15 +353,18 @@ type internal DSetAction() =
     /// Send Cancel JOb to all peers. This action is executed when cancellation happen (whether by a certain peer or by user )
     member x.SendCancelJobToAllPeers() = 
         if Utils.IsNotNull x.Job then 
-                    using( new MemStream( 1024 ) ) ( fun msCancel -> 
-                        msCancel.WriteGuid( x.Job.JobID )
-                        msCancel.WriteString( x.Job.Name ) 
-                        msCancel.WriteInt64( x.Job.Version.Ticks ) 
-                        for cluster in x.Job.Clusters do 
-                            for peeri = 0 to cluster.NumNodes - 1 do 
-                                let queue = cluster.Queue( peeri )
-                                if Utils.IsNotNull queue && queue.CanSend then 
-                                    queue.ToSend( ControllerCommand( ControllerVerb.Cancel, ControllerNoun.Job), msCancel ) 
+            let registerDSet = seq { yield! x.RemappedDSet
+                                     yield! x.Job.DstDSet }
+            for dset in registerDSet do 
+                using ( new MemStream( 1024 )) ( fun msSend -> 
+                    let currentWriteID = x.Job.JobID
+                    msSend.WriteGuid( currentWriteID )
+                    msSend.WriteString( dset.Name ) 
+                    msSend.WriteInt64( dset.Version.Ticks )
+                    for peeri=0 to dset.Cluster.NumNodes-1 do 
+                        let queuePeer = dset.Cluster.QueueForWrite(peeri)
+                        if Utils.IsNotNull queuePeer && not queuePeer.Shutdown then 
+                            queuePeer.ToSend( ControllerCommand( ControllerVerb.Cancel, ControllerNoun.DSet), msSend )
                     )
     /// This is used as an example if DSetAction is to be derived. 
     member x.CloseAndUnregister() = 
@@ -522,11 +525,13 @@ type internal DSetFoldAction<'U, 'State >()=
             x.GetJobInstance(useDSet).RemappingCommandCallback <- x.RemappingCommandForRead
             // Send out the fold command. 
             x.ReturnResultFromPeer := None
-            x.RemappingDSet() |> ignore        
-            while not (x.Timeout()) && not (x.GetJobInstance(useDSet).AllDSetsRead()) do
-                x.RemappingDSet() |> ignore
-                // Wait for result to come out. 
-                Thread.Sleep( 3 )
+            x.RemappingDSet() |> ignore    
+            use jobAction = x.TryExecuteSingleJobAction()  
+            if Utils.IsNotNull jobAction then 
+                while not (x.Timeout()) && not (x.GetJobInstance(useDSet).AllDSetsRead()) do
+                    x.RemappingDSet() |> ignore
+                    // Wait for result to come out. 
+                    ThreadPoolWaitHandles.safeWaitOne( jobAction.WaitHandle, 5 ) |> ignore 
             if x.Timeout() then 
                 Logger.LogF( LogLevel.Info, ( fun _ -> sprintf "Timeout for DSetFoldAction ............." ))
             x.OrderlyEndAction()

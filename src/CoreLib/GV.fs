@@ -418,6 +418,7 @@ type internal JobLifeCycle(jobID:Guid) =
     member x.CancelJob() = 
         if Interlocked.Increment( nCancellationCalled ) = 1 then 
             CTSSource.Cancel()
+            Logger.LogF( jobID, LogLevel.MildVerbose, fun _ -> sprintf "Mark Job as cancelled ....." )
             onCancellation.Trigger() 
             let cnt = Interlocked.Decrement( x.numJobActionsInProcess )
             if cnt < 0 then 
@@ -678,6 +679,7 @@ type internal SingleJobActionGeneric<'T when 'T :> JobLifeCycle and 'T : null >(
                      if bRet then 
                         if Utils.IsNotNull jobLifeCycle && jobLifeCycle.HasException then 
                             x.LogException()
+                            Logger.LogF( jobID, LogLevel.MildVerbose, fun _ -> "[SingleJobActionGeneric, will throw exception]")
                             raise( jobLifeCycle.Exception )
                         else
                             bRet
@@ -734,12 +736,12 @@ type internal SingleJobActionGeneric<'T when 'T :> JobLifeCycle and 'T : null >(
         x.CancelByException( ex )
     /// Runtime at callback encounter an exception, cancel this job using this exception with location information 
     member x.ReceiveExceptionAtCallback( ex: Exception, loc: string ) = 
-        Logger.LogF( LogLevel.Error, fun _ -> sprintf "[Receive Exception @ Callback] %s: exception of %A" loc ex )
+        Logger.LogF( LogLevel.WildVerbose, fun _ -> sprintf "[Receive Exception @ Callback] %s: exception of %A, will cancel job" loc ex )
         ex.Data.Add( "@Callback", loc )
         x.CancelByException( ex )
     /// Runtime at callback encounter an exception, cancel this job using this exception with location information 
     member x.EncounterExceptionAtCallback( ex: Exception, loc: string ) = 
-        Logger.LogF( LogLevel.Error, fun _ -> sprintf "[Encounter Exception @ Callback] %s: exception of %A" loc ex )
+        Logger.LogF( LogLevel.WildVerbose, fun _ -> sprintf "[Encounter Exception @ Callback] %s: exception of %A" loc ex )
         ex.Data.Add( "First Location:", loc )
         x.CancelByException( ex )
 
@@ -777,6 +779,7 @@ type internal SingleJobActionApp ( jobLifeCycleObj: JobLifeCycle ) =
             let ex = jobActionObj.Exception
             ( jobActionObj :> IDisposable ).Dispose()
             if Utils.IsNotNull ex then 
+                Logger.LogF( LogLevel.MildVerbose, fun _ -> "[SingleJobApp, will throw exception]")
                 raise( ex )
             null 
         else
@@ -833,7 +836,7 @@ type internal SingleJobActionContainer ( jobLifeCycleObj: JobLifeCycleContainer 
         x.CancelByException( ex )
     /// Runtime at container encounter an exception, cancel this job using this exception with location information 
     member x.EncounterExceptionAtContainer( ex: Exception, loc: string ) = 
-        Logger.LogF( x.JobID, LogLevel.Error, fun _ -> sprintf "[Encounter Exception @ Container] %s: exception of %A" loc ex )
+        Logger.LogF( x.JobID, LogLevel.Warning, fun _ -> sprintf "[Encounter Exception @ Container] %s: exception of %A" loc ex )
         ex.Data.Add( "@Container", loc )
         x.CancelByException( ex )
     /// Forward/Send a message
@@ -908,6 +911,17 @@ type internal JobInformation( jobID: Guid, bIsMainProject: bool, dSetName: strin
     /// A certain partition has failed to execute. 
     /// Other partition may still executable.
     member internal x.PartitionFailure( ex: Exception, locinfo, parti ) = 
+        // At this moment, we will bubble up the exception on partition failure. Retry of failed partition will be validated in future, when code 
+        // is more stable. 
+        ex.Data.Add( "@Partition", sprintf "%s(part: %d)" locinfo parti)
+        let jobLifeCycleObj = JobLifeCycleCollectionContainer.TryFind( jobID )
+        if Utils.IsNotNull jobLifeCycleObj then 
+            jobLifeCycleObj.CancelByException( ex )    
+
+    /// Partition Failure
+    /// A certain partition has failed to execute. 
+    /// Other partition may still executable.
+    member internal x.PartitionFailureFuture( ex: Exception, locinfo, parti ) = 
         Logger.LogF( LogLevel.Info, fun _ -> sprintf "[Failed partition] Job %A, DSet: %s, to send exception to host, exception: %A (loc: %s) "
                                                             jobID dSetName ex locinfo)
         ex.Data.Add( "@Container", locinfo)

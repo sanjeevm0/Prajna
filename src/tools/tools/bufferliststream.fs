@@ -156,6 +156,13 @@ type SafeRefCnt<'T when 'T:null and 'T :> IRefCounter<string>> (infoStr : string
     new(infoStr : string, createNew : unit->SafeRefCnt<'T>) =
         new SafeRefCnt<'T>(infoStr, createNew())
 
+    new(infoStr : string, elem : 'T) as x =
+        new SafeRefCnt<'T>(infoStr, false)
+        then
+            x.Element <- elem
+            x.RC.AddRef()
+            x.info <- infoStr + ":" + x.Id.ToString()
+
     new(infoStr : string, e : SafeRefCnt<'T>) as x =
         new SafeRefCnt<'T>(infoStr)
         then

@@ -372,6 +372,7 @@ type internal Listener =
                     | (ControllerVerb.Write, ControllerNoun.DSet ) 
                     | (ControllerVerb.Use, ControllerNoun.DSet ) 
                     | (ControllerVerb.Close, ControllerNoun.DSet ) 
+                    | (ControllerVerb.Cancel, ControllerNoun.DSet ) 
                     | (ControllerVerb.ReplicateClose, ControllerNoun.DSet ) 
                     | (ControllerVerb.Fold, ControllerNoun.DSet ) 
                     | (ControllerVerb.ReadToNetwork, ControllerNoun.DSet ) 
@@ -457,6 +458,8 @@ type internal Listener =
                                             x.ParseSendBackAtDaemonAndDispose( queuePeer, cmd, msReply ) 
                                         | (ControllerVerb.Echo, ControllerNoun.DSet ) ->                                                      
                                             ()
+                                        | (ControllerVerb.Cancel, ControllerNoun.DSet ) ->
+                                            jobAction.CancelJob()
                                         | _ -> 
                                             Logger.LogF( LogLevel.Warning, (fun _ -> sprintf "receive command %A direct to a DSetPeer %s:%s, don't know how to process, discard the message" 
                                                                                        command curDSet.Name curDSet.VersionString))
@@ -493,6 +496,8 @@ type internal Listener =
                                                 ()
                                             | (ControllerVerb.Use, ControllerNoun.DSet ) ->
                                                 ()  
+                                            | (ControllerVerb.Cancel, ControllerNoun.DSet ) ->
+                                                dsetTask.QueueAtClient.ToSend( ControllerCommand( ControllerVerb.Cancel, ControllerNoun.Job ), msForward )
                                             | (ControllerVerb.Start, ControllerNoun.Service ) ->
                                                 dsetTask.QueueAtClient.ToSend( ControllerCommand( ControllerVerb.Start, ControllerNoun.Service ), msForward )
                                                 let taskHolder = dsetTask.TaskHolder
