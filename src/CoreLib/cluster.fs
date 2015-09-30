@@ -733,7 +733,7 @@ and
                                           config.PortsRange)
 
     member val internal MsgToHost=List<(ControllerCommand*MemStream)>() with get
-    member val private PeerIndexFromEndpoint = new ConcurrentDictionary<EndPoint, int>() with get
+    member val internal PeerIndexFromEndpoint : ConcurrentDictionary<EndPoint, int> = new ConcurrentDictionary<_,_>() with get
     member internal x.Queues with get() = queues
                              and set( q ) = queues <- q
     member val internal QueuesInitialized = ref 0 with get
