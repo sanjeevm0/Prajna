@@ -309,7 +309,7 @@ and [<AllowNullLiteral>] GenericConn() as x =
             else
                 let (x, xERecvSA) = e.UserToken :?> GenericConn*RBufPart<byte>
                 xERecvSA.Release()
-                let (event, sa) = RBufPart<byte>.GetFromPool("RecvSA", x.Net.BufStackRecv, fun _ -> new RBufPart<byte>(false) :> SafeRefCnt<RefCntBuf<byte>>)
+                let (event, sa) = RBufPart<byte>.GetFromPool("RecvSA", x.Net.BufStackRecv, fun _ -> new RBufPart<byte>() :> SafeRefCnt<RefCntBuf<byte>>)
                 let xERecvSA = sa :?> RBufPart<byte>
                 let saE = sa.Elem :?> RefCntBufSA
                 saE.SA.UserToken <- (x, xERecvSA)
@@ -335,7 +335,7 @@ and [<AllowNullLiteral>] GenericConn() as x =
                     e.SetBuffer(Array.zeroCreate<byte>(256000), 0, 256000)
                     NetUtils.RecvOrClose(x, GenericConn.SimpleFinishRecv, e)
                 else
-                    let (event, sa) = RBufPart<byte>.GetFromPool("RecvSA", x.Net.BufStackRecv, fun _ -> new RBufPart<byte>(false) :> SafeRefCnt<RefCntBuf<byte>>)
+                    let (event, sa) = RBufPart<byte>.GetFromPool("RecvSA", x.Net.BufStackRecv, fun _ -> new RBufPart<byte>() :> SafeRefCnt<RefCntBuf<byte>>)
                     let xERecvSA = sa :?> RBufPart<byte>
                     let saE = sa.Elem :?> RefCntBufSA
                     saE.SA.UserToken <- (x, xERecvSA)
@@ -425,7 +425,7 @@ and [<AllowNullLiteral>] GenericConn() as x =
     // Recv not through threadpool
     member private x.NextReceiveOne() =
         eRecvNetwork <- null
-        let (event, saRet) = RBufPart<byte>.GetFromPool("RecvSA", x.Net.BufStackRecv, fun _ -> new RBufPart<byte>(false) :> SafeRefCnt<RefCntBuf<byte>>)
+        let (event, saRet) = RBufPart<byte>.GetFromPool("RecvSA", x.Net.BufStackRecv, fun _ -> new RBufPart<byte>() :> SafeRefCnt<RefCntBuf<byte>>)
         if (Utils.IsNull event) then
             eRecvSA <- saRet :?> RBufPart<byte>
             eRecvNetwork <- saRet.Elem :?> RefCntBufSA
@@ -589,7 +589,7 @@ and [<AllowNullLiteral>] GenericConn() as x =
             (false, event)
 
     member private x.GetNextSendProcess() : ManualResetEvent =
-        let (event, eSendSA) = RBufPart<byte>.GetFromPool("SendSA", x.Net.BufStackSend, fun _ -> new RBufPart<byte>(false) :> SafeRefCnt<RefCntBuf<byte>>)
+        let (event, eSendSA) = RBufPart<byte>.GetFromPool("SendSA", x.Net.BufStackSend, fun _ -> new RBufPart<byte>() :> SafeRefCnt<RefCntBuf<byte>>)
         if (Utils.IsNull event) then
             eSendProcess <- eSendSA :?> RBufPart<byte>
             eSendNetwork <- eSendProcess.Elem :?> RefCntBufSA
@@ -627,7 +627,7 @@ and [<AllowNullLiteral>] GenericConn() as x =
         while (not bDone && Utils.IsNull event) do
             if (null = eSendProcess) then
                 if (x.Net.BufStackSendComp.Q.IsEmpty) then
-                    let (eventRet, eSendSA) = RBufPart<byte>.GetFromPool("SendSA", x.Net.BufStackSend, fun _ -> new RBufPart<byte>(false) :> SafeRefCnt<RefCntBuf<byte>>)
+                    let (eventRet, eSendSA) = RBufPart<byte>.GetFromPool("SendSA", x.Net.BufStackSend, fun _ -> new RBufPart<byte>() :> SafeRefCnt<RefCntBuf<byte>>)
                     event <- eventRet
                     if (Utils.IsNull event) then
                         eSendProcess <- eSendSA :?> RBufPart<byte>
