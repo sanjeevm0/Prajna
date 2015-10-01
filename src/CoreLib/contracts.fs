@@ -794,6 +794,7 @@ type internal ContractResolver( name ) =
                 // This happens for Action, in which we do not track incoming reply
                 ContractResolver.OutgoingCollections.TryRemove( reqID ) |> ignore     
             let msRequest = new MemStream( )
+            use msRequestRef = MemStreamRef.Equals(msRequest)
             msRequest.WriteStringV( name )
             msRequest.WriteGuid( reqID ) 
             msRequest.SerializeObjectWithTypeName( inp )
@@ -1004,10 +1005,9 @@ type ContractServersInfo() =
     /// Add a cluster 
     member x.AddCluster( cl: Cluster ) = 
         if Utils.IsNotNull cl then 
-            let ms = new MemStream()
+            use ms = new MemStream()
             cl.Pack( ms )
             let oneCluster = ContractServerType.ServerCluster( cl.Name, cl.Version.Ticks, ms.GetBuffer() )
-            ms.DecRef()
             x.ServerCollection.Enqueue( oneCluster )
             x.NewID()
 //    /// Get all clusters in the serversinfo
@@ -1331,6 +1331,7 @@ type internal ContractStoreAtProgram() =
         x.RegisterContractToServers null  
     member x.LookforContractAtServers ( registerFunc:int64 -> unit) (unregisterFunc:string->int64->unit) (constructReqFunc) (serversInfo:ContractServersInfo) ( name, info: ContractInfo) = 
         let msLookfor = new MemStream( )
+        use msLookforRef = MemStreamRef.Equals(msLookfor)
         msLookfor.WriteStringV( name ) 
         let addFunc name = 
             let oneResolver = 

@@ -1490,9 +1490,6 @@ and
                 | ex ->
                     let msg = (sprintf "Receive cmd %A from peer %d, during processing, incur exception %A " cmd i ex )    
                     Logger.Log( LogLevel.Info, msg )
-                    let msError = new MemStream( 1024 )
-                    msError.WriteString( msg )
-                    ms.DecRef()
             | None -> 
                 ()
 

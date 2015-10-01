@@ -49,8 +49,8 @@ type [<AllowNullLiteral>] IRefCounter<'K> =
         abstract Release : (IRefCounter<'K>->unit) with get, set
         abstract SetRef : int64->unit
         abstract GetRef : int64 with get
-        abstract AddRef : unit->unit
-        abstract DecRef : unit->unit
+        abstract AddRef : unit->int64
+        abstract DecRef : unit->int64
     end
 
 #if DEBUG
@@ -161,7 +161,7 @@ type SafeRefCnt<'T when 'T:null and 'T :> IRefCounter<string>> (infoStr : string
         new SafeRefCnt<'T>(infoStr)
         then
             x.Element <- e.Elem // check for released element prior to setting
-            x.RC.AddRef()
+            x.RC.AddRef() |> ignore
             let e : 'T = x.Element
             x.info <- infoStr + ":" + x.Id.ToString()
 #if DEBUGALLOCS
@@ -171,7 +171,7 @@ type SafeRefCnt<'T when 'T:null and 'T :> IRefCounter<string>> (infoStr : string
 
     member x.SetElement(e : 'T) =
         x.Element <- e
-        x.RC.AddRef()
+        x.RC.AddRef() |> ignore
         x.info <- infoStr + ":" + x.Id.ToString()
 #if DEBUGALLOCS
         x.Element.Allocs.[x.info] <- Environment.StackTrace
@@ -211,7 +211,11 @@ type SafeRefCnt<'T when 'T:null and 'T :> IRefCounter<string>> (infoStr : string
                 x.Element.Allocs.TryRemove(x.info) |> ignore
                 Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Releasing %s with id %d elemId %s finalize %b - refcount %d" infoStr id x.RC.Key bFinalize x.Element.GetRef)
 #endif
-                x.RC.DecRef()
+                let newCount = x.RC.DecRef()
+                if (0L = newCount) then
+                    x.RC.Release(x.RC)
+                else if (newCount < 0L) then
+                    failwith (sprintf "RefCount object %s has Illegal ref count of %d" x.RC.Key x.RC.GetRef)
 
     member x.Release(?bFinalize : bool) =
         x.ReleaseElem(bFinalize)
@@ -263,13 +267,9 @@ type [<AbstractClass>] [<AllowNullLiteral>] RefCountBase() =
             x.RefCount := v
         override x.GetRef with get() = !x.RefCount
         override x.AddRef() =
-            Interlocked.Increment(x.RefCount) |> ignore
+            Interlocked.Increment(x.RefCount)
         override x.DecRef() =
-            let newCount = Interlocked.Decrement(x.RefCount)
-            if (0L = newCount) then
-                x.RC.Release(x :> IRefCounter<string>)
-            else if (newCount < 0L) then
-                failwith (sprintf "RefCount object %s has Illegal ref count of %d" key !x.RefCount)
+            Interlocked.Decrement(x.RefCount)
 
 type IdCounter() =
     static let id = ref -1
@@ -418,6 +418,7 @@ type [<AllowNullLiteral>] [<AbstractClass>] StreamBase<'T> =
     inherit MemoryStream
 
     // sufficient for upto GUID
+    [<DefaultValue>] val mutable RefCount : int64 ref
     [<DefaultValue>] val mutable ValBuf : byte[]
     [<DefaultValue>] val mutable Writable : bool
     [<DefaultValue>] val mutable Visible : bool
@@ -504,27 +505,20 @@ type [<AllowNullLiteral>] [<AbstractClass>] StreamBase<'T> =
     default x.ComputeHash(hasher : Security.Cryptography.HashAlgorithm, offset : int64, len : int64) =
         hasher.ComputeHash(x.GetBuffer(), int offset, int len)
 
-    abstract member AddRef : unit -> unit
-    default x.AddRef() =
-        ()
-    abstract member DecRef : unit -> unit
-    default x.DecRef() =
-        ()
-
     interface IRefCounter<string> with
 #if DEBUGALLOCS
         override val Allocs : ConcurrentDictionary<string, string> = new ConcurrentDictionary<_,_>() with get // for debugging allocations
 #endif
         override x.DebugInfo with get() = x.debugInfo and set(v) = x.debugInfo <- v
         override x.Key with get() = "Stream:" + x.info + x.Id.ToString()
-        override x.Release with get() = (fun _ -> ()) and set(v) = ()
+        override x.Release with get() = (fun _ -> (x :> IDisposable).Dispose()) and set(v) = ()
         override x.SetRef(r : int64) =
-            ()
-        override x.GetRef with get() = 0L
+            x.RefCount := r
+        override x.GetRef with get() = (!x.RefCount)
         override x.AddRef() =
-            x.AddRef()
+            Interlocked.Increment(x.RefCount)
         override x.DecRef() =
-            x.DecRef()
+            Interlocked.Decrement(x.RefCount)
 
     abstract member GetNew : unit -> StreamBase<'T>
     abstract member GetNew : int -> StreamBase<'T>
@@ -556,6 +550,7 @@ type [<AllowNullLiteral>] [<AbstractClass>] StreamBase<'T> =
     abstract member Replicate : int64*int64->StreamBase<'T>
 
     member private x.Init() =
+        x.RefCount <- ref 0L
         x.Id <- StreamBaseCounter.GetNext()
         x.ValBuf <- Array.zeroCreate<byte>(32)
         x.Writable <- true
@@ -611,7 +606,7 @@ type [<AllowNullLiteral>] [<AbstractClass>] StreamBase<'T> =
     member x.WriteMemStream( mem2: StreamBase<'T> ) = 
         let xbuf, xpos, xlen = mem2.GetBufferPosLength()
         x.WriteInt32( xlen )
-        x.Append(xbuf, int64 xpos, int64 xlen)
+        x.AppendNoCopy(xbuf, int64 xpos, int64 xlen)
         x
 
     // Read a MemStream out of the current MemStream
@@ -620,7 +615,7 @@ type [<AllowNullLiteral>] [<AbstractClass>] StreamBase<'T> =
         let xpos = x.Position
         x.Seek(int64 xlen, SeekOrigin.Current) |> ignore
         let ms = x.GetNew()
-        ms.Append(x, xpos, int64 xlen)
+        ms.AppendNoCopy(x, xpos, int64 xlen)
         ms
 
     member internal  x.GetValidBuffer() =
@@ -633,10 +628,9 @@ type internal StreamBaseRef<'T>() =
         let x = new StreamBaseRef<'T>()
         x.SetElement(elem)
         x
-    static member New(elem : StreamBase<'T>) : StreamBaseRef<'T> =
+    static member Equals(elemRef : StreamBaseRef<'T>) : StreamBaseRef<'T> =
         let x = new StreamBaseRef<'T>()
-        x.SetElement(elem)
-        (x.Elem :> IRefCounter<string>).DecRef()
+        x.SetElement(elemRef.Elem)
         x
 
 type MemStreamRef = StreamBaseRef<byte>
@@ -786,9 +780,6 @@ type StreamBaseByte =
     override x.Replicate(pos : int64, cnt : int64) =
         new StreamBaseByte(x.GetBuffer(), int pos, int cnt, false, true) :> StreamBase<byte>
 
-    override x.AddRef() = ()
-    override x.DecRef() = ()
-
 // essentially a generic list of buffers of type 'T
 // use AddRef/Release to acquire / release resource
 [<AllowNullLiteral>] 
@@ -800,7 +791,6 @@ type BufferListStream<'T>(defaultBufSize : int, doNotUseDefault : bool) =
     static let mutable memStack : SharedMemoryPool<RefCntBuf<'T>,'T> = null
     static let memStackInit = ref 0
 
-    let refCount = ref 1L // constructor automatically increments ref count
     let bReleased = ref 0
 
     let mutable stackTrace = ""
@@ -974,21 +964,9 @@ type BufferListStream<'T>(defaultBufSize : int, doNotUseDefault : bool) =
             if not (base.Info.Equals("")) then
                 streamsInUse.TryRemove(base.Info) |> ignore
 
-    override x.AddRef() =
-        Interlocked.Increment(refCount) |> ignore
-
-    override x.DecRef() =
-        Interlocked.Decrement(refCount) |> ignore
-        if (!refCount <= 0L) then
-            if (!refCount < 0L) then
-                Logger.LogF(LogLevel.ExtremeVerbose, fun _ -> sprintf "Memory stream is decrefed after refCount is zero")    
+    interface IDisposable with
+        override x.Dispose() =
             x.Release(false)
-
-    interface IRefCounter<string> with
-        override x.Release with get() = (fun _ -> x.Release(false)) and set(v) = ()
-        override x.SetRef(r : int64) =
-            refCount := r
-        override x.GetRef with get() = !refCount
 
     // backup release in destructor
     override x.Finalize() =
@@ -1081,7 +1059,8 @@ type BufferListStream<'T>(defaultBufSize : int, doNotUseDefault : bool) =
             while (capacity < v) do
                 x.AddNewBuffer()
 
-    override x.Capacity with get() = int x.Capacity64 and set(v) = x.Capacity64 <- int64 v
+    //override x.Capacity with get() = int x.Capacity64 and set(v) = x.Capacity64 <- int64 v
+    override x.Capacity with get() = Int32.MaxValue and set(v) = ()
 
     // add new buffer to pool
     member internal x.AddNewBuffer() =

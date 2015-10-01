@@ -257,8 +257,6 @@ type JobDependencies() =
             ms.WriteBytes( dep.Hash ) |> ignore 
         let (buf, pos, cnt) = ms.GetBufferPosLength()
         x.Hash <- ms.ComputeSHA256(int64 pos, int64 cnt)
-        //x.Hash <- HashByteArrayWithLength( ms.GetBufferPosLength() )
-        ms.DecRef()
         x.Hash
 
     /// Get Hash version string

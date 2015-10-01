@@ -290,7 +290,8 @@ type internal DSetEnumerator<'U >( DSet: DSet ) =
                     | ( ControllerVerb.Acknowledge, ControllerNoun.DSet ) ->
                         ()
                     | ( ControllerVerb.Get, ControllerNoun.ClusterInfo ) ->
-                        using( new MemStream( 10240 ) ) ( fun msSend -> 
+                        using( MemStreamRef.Equals(new MemStream( 10240 )) ) ( fun msSendRef -> 
+                            let msSend = msSendRef.Elem
                             curDSet.Cluster.ClusterInfo.Pack( msSend )
                             let cmd = ControllerCommand( ControllerVerb.Set, ControllerNoun.ClusterInfo ) 
                             // Expediate delivery of Cluster Information to the receiver
@@ -337,7 +338,8 @@ type internal DSetEnumerator<'U >( DSet: DSet ) =
                                     Logger.LogF( LogLevel.Error, ( fun _ -> sprintf "Poorly formatted write, DSet, partition %d, serial %d:%d, with exception %A"
                                                                                    parti serial numElems e ))
                             // Echo is required for flow control, to inform the sender that the information has been read. 
-                            using( new MemStream( 1024 ) ) ( fun msEcho -> 
+                            using( MemStreamRef.Equals(new MemStream( 1024 )) ) ( fun msEchoRef -> 
+                                let msEcho = msEchoRef.Elem
                                 let retCmd = ControllerCommand( ControllerVerb.Echo, ControllerNoun.DSet )
                                 msEcho.WriteGuid( jobID )
                                 msEcho.WriteString( curDSet.Name )
