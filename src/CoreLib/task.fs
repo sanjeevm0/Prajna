@@ -988,7 +988,7 @@ and [<AllowNullLiteral; Serializable>]
             (x.MetadataStream :> IDisposable).Dispose()
         Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "SA Recv Stack size %d %d" Cluster.Connects.BufStackRecv.StackSize Cluster.Connects.BufStackRecv.GetStack.Size)
         Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "In blob factory: %d" BlobFactory.Current.Collection.Count)
-        BufferListStream<byte>.DumpStreamsInUse()
+        MemoryStreamB.DumpStreamsInUse()
 
 /// Read, Job (DSet) 
     member x.DSetReadAsSeparateApp( queueHost:NetworkCommandQueue, endPoint:Net.IPEndPoint, dset: DSet, usePartitions ) = 
@@ -1510,8 +1510,9 @@ and [<AllowNullLiteral; Serializable>]
                                     let param = ms.DeserializeObjectWithTypeName() 
                                     Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "attempt to start service %s ..." serviceName ))
                                     ServiceCollection.Current.BeginStartService( serviceName, service, param, 
-                                                                    fun bInitializeSuccess -> use msInfoRef = MemStreamRef.Equals(new MemStream( 1024 ))
-                                                                                              let msInfo = msInfoRef.Elem
+                                                                    fun bInitializeSuccess -> //use msInfoRef = MemStreamRef.Equals(new MemStream( 1024 ))
+                                                                                              //let msInfo = msInfoRef.Elem
+                                                                                              let msInfo = new MemStream(1024)
                                                                                               msInfo.WriteGuid( jobID )
                                                                                               msInfo.WriteString( dsetName )
                                                                                               msInfo.WriteInt64( dsetVersion ) 
@@ -2703,7 +2704,7 @@ and [<AllowNullLiteral; Serializable>]
                 let st = new MemStream( 4096 ) 
                 x.Pack( st )
                 st :> StreamBase<byte>
-        use jobMetadataStreamRef = MemStreamRef.Equals(jobMetadataStream)
+        //use jobMetadataStreamRef = MemStreamRef.Equals(jobMetadataStream)
         let queue = x.QueueAtClient
         if Utils.IsNotNull queue && queue.CanSend then 
             if Interlocked.CompareExchange( x.JobStarted, 1, 0 ) = 0 then 

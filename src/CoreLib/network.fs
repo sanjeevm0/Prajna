@@ -855,9 +855,9 @@ type [<AllowNullLiteral>] NetworkCommandQueue() as x =
             Logger.LogF( LogLevel.MildVerbose, (fun _ -> sprintf "Close of NetworkCommandQueue %s" x.EPInfo))
             Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "SA Recv Stack size %d %d" x.ONet.BufStackRecv.StackSize x.ONet.BufStackRecv.GetStack.Size)
             Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "SA Send Stack size %d %d" x.ONet.BufStackSend.StackSize x.ONet.BufStackSend.GetStack.Size)
-            Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Memory Stream Stack size %d %d" BufferListStream<byte>.MemStack.StackSize BufferListStream<byte>.MemStack.GetStack.Size)
-            BufferListStream<byte>.DumpStreamsInUse()
-            BufferListStream<byte>.MemStack.DumpInUse(LogLevel.MildVerbose)
+            Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Memory Stream Stack size %d %d" MemoryStreamB.MemStack.StackSize MemoryStreamB.MemStack.GetStack.Size)
+            MemoryStreamB.DumpStreamsInUse()
+            MemoryStreamB.MemStack.DumpInUse(LogLevel.MildVerbose)
             x.ONet.BufStackRecv.DumpInUse(LogLevel.MildVerbose)
             x.ONet.BufStackSend.DumpInUse(LogLevel.MildVerbose)
             xCSend.SelfClose()
@@ -1573,7 +1573,7 @@ and [<AllowNullLiteral>] NetworkConnections() as x =
             )
             x.fnQSend <- Some(fun() -> new FixedLenQ<RBufPart<byte>>(DeploymentSettings.NetworkSASendQSize, DeploymentSettings.NetworkSASendQSize) :> BaseQ<RBufPart<byte>>)
             // initialize shared memory pool for fast memory stream
-            BufferListStream<byte>.InitMemStack(DeploymentSettings.InitBufferListNumBuffers, DeploymentSettings.BufferListBufferSize)
+            MemoryStreamB.InitMemStack(DeploymentSettings.InitBufferListNumBuffers, DeploymentSettings.BufferListBufferSize)
             // start the monitoring
             x.StartMonitor() 
 
@@ -1718,9 +1718,9 @@ UnprocessedCmD:%d bytes Status:%A"
         )
         Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "SA Recv Stack size %d %d" x.BufStackRecv.StackSize x.BufStackRecv.GetStack.Size)
         Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "SA Send Stack size %d %d" x.BufStackSend.StackSize x.BufStackSend.GetStack.Size)
-        Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Memory Stream Stack size %d %d" BufferListStream<byte>.MemStack.StackSize BufferListStream<byte>.MemStack.GetStack.Size)
-        BufferListStream<byte>.DumpStreamsInUse()
-        BufferListStream<byte>.MemStack.DumpInUse(LogLevel.MildVerbose)
+        Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Memory Stream Stack size %d %d" MemoryStreamB.MemStack.StackSize MemoryStreamB.MemStack.GetStack.Size)
+        MemoryStreamB.DumpStreamsInUse()
+        MemoryStreamB.MemStack.DumpInUse(LogLevel.MildVerbose)
         x.BufStackRecv.DumpInUse(LogLevel.MildVerbose)
         x.BufStackSend.DumpInUse(LogLevel.MildVerbose)
 

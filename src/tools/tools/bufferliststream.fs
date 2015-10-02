@@ -637,8 +637,7 @@ type MemStreamRef = StreamBaseRef<byte>
 
 [<AllowNullLiteral>] 
 type internal StreamReader<'T>(_bls : StreamBase<'T>, _bufPos : int64, _maxLen : int64) =
-    let blsRef = StreamBaseRef<'T>.Equals(_bls)
-    let bls = blsRef.Elem
+    let bls = _bls
     let mutable elemPos = 0
     let mutable bufPos = _bufPos
     let mutable maxLen = _maxLen
@@ -647,7 +646,8 @@ type internal StreamReader<'T>(_bls : StreamBase<'T>, _bufPos : int64, _maxLen :
         new StreamReader<'T>(bls, bufPos, Int64.MaxValue)
 
     member x.Release() =
-        (blsRef :> IDisposable).Dispose()
+        //(blsRef :> IDisposable).Dispose()
+        ()
     override x.Finalize() =
         x.Release()
     interface IDisposable with
@@ -852,14 +852,14 @@ type BufferListStream<'T>(defaultBufSize : int, doNotUseDefault : bool) =
         ()
 
     override x.Replicate() =
-        let e = new BufferListStream<'T>()
+        let e = x.GetNew() :?> BufferListStream<'T>
         for b in x.BufList do
             e.WriteRBufNoCopy(b)
         e.Seek(x.Position, SeekOrigin.Begin) |> ignore
         e :> StreamBase<'T>
         
     override x.Replicate(pos : int64, cnt : int64) =
-        let e = new BufferListStream<'T>()
+        let e = x.GetNew() :?> BufferListStream<'T>
         e.AppendNoCopy(x, pos, cnt)
         e :> StreamBase<'T>
 
@@ -963,6 +963,7 @@ type BufferListStream<'T>(defaultBufSize : int, doNotUseDefault : bool) =
                 l.Release()
             if not (base.Info.Equals("")) then
                 streamsInUse.TryRemove(base.Info) |> ignore
+            //bufList.Clear()
 
     interface IDisposable with
         override x.Dispose() =
