@@ -1348,7 +1348,7 @@ let main orgargs =
 
 
             let failedIds = new List<_>()
-            let valms = new MemStream()
+            use valms = new MemStream()
             let valdata = new List<_>()
             valSet |> DSet.localIter (fun (parti,buf,len,output) ->     
                                                                     valdata.Add((parti,buf,len))

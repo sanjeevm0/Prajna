@@ -246,7 +246,7 @@ type internal DSetStartServiceAction<'StartParamType>(cl:Cluster, serviceName:st
                         Logger.Log( LogLevel.Warning, msg )
                         failwith msg
     member x.RemappingCommandToLaunchService( queue, peeri, peeriPartitionArray:int[], curDSet:DSet ) = 
-        let msPayload = new MemStream( 1024 )
+        use msPayload = new MemStream( 1024 )
         msPayload.WriteGuid( x.Job.JobID )
         msPayload.WriteString( curDSet.Name )
         msPayload.WriteInt64( curDSet.Version.Ticks )
@@ -325,7 +325,7 @@ type internal DSetStopServiceAction(cl:Cluster, serviceName:string)=
                         Logger.Log( LogLevel.Warning, msg )
                         failwith msg                            
     member x.RemappingCommandToStopService( queue, peeri, peeriPartitionArray:int[], curDSet:DSet ) = 
-        let msPayload = new MemStream( 1024 )
+        use msPayload = new MemStream( 1024 )
         msPayload.WriteGuid( x.Job.JobID )
         msPayload.WriteString( curDSet.Name )
         msPayload.WriteInt64( curDSet.Version.Ticks )

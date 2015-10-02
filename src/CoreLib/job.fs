@@ -1844,7 +1844,7 @@ and
         let blob = x.Blobs.[blobi]
         let stream = x.EncodeToBlob( blob ) 
         let buf, pos, count = stream.GetBufferPosLength()
-        let msSend = new MemStream() 
+        use msSend = new MemStream() 
         msSend.WriteGuid( x.JobID )
         msSend.WriteString( x.Name ) 
         msSend.WriteInt64( x.Version.Ticks ) 
@@ -2464,8 +2464,7 @@ and
                                     Logger.LogF( x.JobID, DeploymentSettings.TraceLevelBlobSend, ( fun _ -> sprintf "Job: %s:%s Send Availability, Blob to peer %d " x.Name x.VersionString peeri))
                                     // Send out job metadata & availability information. 
                                     // Move Availability stream out, to make sure that sourceDSet is received from every peer. 
-                                    using( MemStreamRef.Equals(new MemStream( 1024 )) ) ( fun availStreamRef -> 
-                                        let availStream = availStreamRef.Elem
+                                    using( new MemStream( 1024 ) ) ( fun availStream -> 
                                         availStream.WriteGuid( x.JobID )
                                         availStream.WriteString( x.Name )
                                         availStream.WriteInt64( x.Version.Ticks )
@@ -2493,7 +2492,7 @@ and
                                                     //    outstandingSendingQueue<x.SendingQueueLimit then 
                                                     if queue.CanSend then 
                                                         // Send blob to peeri to start the job
-                                                        let stream = x.SendBlobPeeri peeri queue blobi 
+                                                        use stream = x.SendBlobPeeri peeri queue blobi 
                                                         outstandingSendingQueue <- outstandingSendingQueue + (int stream.Length)
                                                         /// Assume blob is delivered. 
                                                         peerAvail.AvailVector.[blobi] <- byte BlobStatus.AllAvailable
@@ -2563,8 +2562,7 @@ and
                                     // Start, Job
                                     Logger.LogF( x.JobID, DeploymentSettings.TraceLevelStartJob, ( fun _ -> sprintf "Start, Job send to peer %d" peeri ))
                                     // Call start, job on each client. 
-                                    using ( MemStreamRef.Equals(new MemStream( 1024 )) ) ( fun jobStreamRef -> 
-                                        let jobStream = jobStreamRef.Elem
+                                    using ( new MemStream( 1024 ) ) ( fun jobStream -> 
                                         jobStream.WriteGuid( x.JobID )
                                         jobStream.WriteString( x.Name )
                                         jobStream.WriteInt64( x.Version.Ticks )
@@ -2595,7 +2593,7 @@ and
     member x.Error( queue:NetworkCommandQueue, msg ) = 
         Logger.Log( LogLevel.Error, msg )
         if Utils.IsNotNull queue && queue.CanSend then 
-            let msError = new MemStream( 1024 )
+            use msError = new MemStream( 1024 )
             msError.WriteString( msg )
             queue.ToSend( ControllerCommand( ControllerVerb.Error, ControllerNoun.Message), msError )
             queue.Close()
@@ -2665,8 +2663,7 @@ and
                                 let bSuccess = x.DecodeFromBlob( blobi, peeri )
                                 if bSuccess then 
                                     x.UpdateBlobInfo( blobi ) 
-                                    use msFeedbackRef = MemStreamRef.Equals(new MemStream( 1024 ))
-                                    let msFeedback = msFeedbackRef.Elem
+                                    use msFeedback = new MemStream( 1024 )
                                     msFeedback.WriteGuid( jobID )
                                     msFeedback.WriteString( x.Name ) 
                                     msFeedback.WriteInt64( x.Version.Ticks ) 

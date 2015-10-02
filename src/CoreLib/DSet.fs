@@ -1204,14 +1204,12 @@ and [<Serializable; AllowNullLiteral>]
                     rcvdSerialInitialValue.[peeri] <- queuePeer.RcvdCommandSerial
                     // send cluster info
                     let cmd = ControllerCommand( ControllerVerb.Set, ControllerNoun.ClusterInfo )
-                    using ( MemStreamRef.Equals(new MemStream( 10240 ))) ( fun msSendRef ->
-                        let msSend = msSendRef.Elem 
+                    using ( new MemStream( 10240 )) ( fun msSend ->
                         x.Cluster.ClusterInfo.Pack( msSend )
                         queuePeer.ToSend( cmd, msSend, true )
                     )
                     // send dset to partners. 
-                    using ( MemStreamRef.Equals(new MemStream( 1024 ))) ( fun msSendRef -> 
-                        let msSend = msSendRef.Elem
+                    using ( new MemStream( 1024 )) ( fun msSend -> 
                         msSend.WriteGuid( currentWriteID)
                         x.Pack( msSend, DSetMetadataStorageFlag.HasPassword )
                         let cmd = ControllerCommand( ControllerVerb.Set, ControllerNoun.DSet ) 
@@ -1225,8 +1223,7 @@ and [<Serializable; AllowNullLiteral>]
                     // Do we need to limit speed?
                     if x.NumReplications>1 then 
                         let bToSent = ref false
-                        using( MemStreamRef.Equals(new MemStream( 1024 )) ) ( fun msSpeedRef -> 
-                            let msSpeed = msSpeedRef.Elem
+                        using( new MemStream( 1024 ) ) ( fun msSpeed -> 
                             msSpeed.WriteGuid( currentWriteID )
                             msSpeed.WriteString( x.Name ) 
                             msSpeed.WriteInt64( x.Version.Ticks )
@@ -1244,8 +1241,7 @@ and [<Serializable; AllowNullLiteral>]
     member private x.SendCancelWriteToNetwork() = 
         using ( x.TryExecuteSingleJobAction() ) ( fun jobObj -> 
             if Utils.IsNotNull jobObj then 
-                using ( MemStreamRef.Equals(new MemStream( 1024 ))) ( fun msSendRef -> 
-                    let msSend = msSendRef.Elem
+                using ( new MemStream( 1024 )) ( fun msSend -> 
                     let currentWriteID = jobObj.JobID
                     msSend.WriteGuid( currentWriteID )
                     msSend.WriteString( x.Name ) 
@@ -1344,8 +1340,7 @@ and [<Serializable; AllowNullLiteral>]
     member internal x.EndParition parti peeri = 
         Logger.LogF( LogLevel.MediumVerbose, ( fun _ -> sprintf "Sending Close, Partition of partition %d to peer %d" parti peeri ))
         let cmd = ControllerCommand( ControllerVerb.Close, ControllerNoun.Partition )
-        use msSendRef = MemStreamRef.Equals(new MemStream( 1024 ))
-        let msSend = msSendRef.Elem
+        use msSend = new MemStream( 1024 )
         msSend.WriteGuid( x.WriteIDForCleanUp )
         msSend.WriteString( x.Name ) 
         msSend.WriteInt64( x.Version.Ticks )
@@ -1407,8 +1402,7 @@ and [<Serializable; AllowNullLiteral>]
             if Utils.IsNotNull jobObj then 
                 let currentWriteID = jobObj.JobID               
                 let cmd = ControllerCommand( ControllerVerb.Close, ControllerNoun.DSet ) 
-                using ( MemStreamRef.Equals(new MemStream( 1024 )) ) ( fun msSendRef -> 
-                    let msSend = msSendRef.Elem
+                using ( new MemStream( 1024 ) ) ( fun msSend -> 
                     msSend.WriteGuid( currentWriteID )
                     msSend.WriteString( x.Name ) 
                     msSend.WriteInt64( x.Version.Ticks )
@@ -1721,8 +1715,7 @@ and [<Serializable; AllowNullLiteral>]
             if Utils.IsNotNull jobObj then 
                 let currentWriteID = jobObj.JobID   
                 for pi = 0 to x.Cluster.NumNodes - 1 do 
-                    using ( MemStreamRef.Equals(new MemStream( 1024 )) ) ( fun msSendRef -> 
-                        let msSend = msSendRef.Elem
+                    using ( new MemStream( 1024 ) ) ( fun msSend -> 
                         msSend.WriteGuid( currentWriteID )
                         x.Pack( msSend, DSetMetadataStorageFlag.HasPassword ||| DSetMetadataStorageFlag.StoreMetadata )
                         let cmd = ControllerCommand( ControllerVerb.WriteMetadata, ControllerNoun.DSet ) 
@@ -1739,8 +1732,7 @@ and [<Serializable; AllowNullLiteral>]
             if Utils.IsNotNull jobObj then 
                 let currentWriteID = jobObj.JobID   
                 for pi = 0 to x.Cluster.NumNodes - 1 do 
-                    using ( MemStreamRef.Equals(new MemStream( 1024 )) ) ( fun msSendRef -> 
-                        let msSend = msSendRef.Elem
+                    using ( new MemStream( 1024 ) ) ( fun msSend -> 
                         msSend.WriteGuid( currentWriteID )
                         x.Pack( msSend, DSetMetadataStorageFlag.HasPassword ||| DSetMetadataStorageFlag.StoreMetadata )
                         let cmd = ControllerCommand( ControllerVerb.Update, ControllerNoun.DSet ) 
@@ -1912,8 +1904,7 @@ and [<Serializable; AllowNullLiteral>]
                         let peerj = msRcvd.ReadVInt32()
                         Logger.LogF( LogLevel.WildVerbose, (fun _ -> sprintf "ReplicateClose DSet confirmed from peer %d relayed by peer %d" peerj peeri ))
                     | ( ControllerVerb.Get, ControllerNoun.ClusterInfo ) ->
-                        using( MemStreamRef.Equals(new MemStream( 10240 )) ) ( fun msSendRef -> 
-                            let msSend = msSendRef.Elem
+                        using( new MemStream( 10240 ) ) ( fun msSend -> 
                             x.Cluster.ClusterInfo.Pack( msSend )
                             let cmd = ControllerCommand( ControllerVerb.Set, ControllerNoun.ClusterInfo ) 
                             // Expediate delivery of Cluster Information to the receiver
@@ -3231,8 +3222,7 @@ type internal DJobInstance(curDSet: DSet, getSingleJobAction: unit -> SingleJobA
         let bMetaDataRetrieved = ref false
         let clock_start = curDSet.Clock.ElapsedTicks
         let maxWait = ref (clock_start + curDSet.ClockFrequency * int64 curDSet.TimeoutLimit)
-        using ( MemStreamRef.Equals(new MemStream( 1024 )) ) ( fun msSendRef -> 
-            let msSend = msSendRef.Elem
+        using ( new MemStream( 1024 ) ) ( fun msSend -> 
             msSend.WriteGuid( x.JobID )
             msSend.WriteString( curDSet.Name )
             msSend.WriteInt64( curDSet.Version.Ticks )
@@ -3479,8 +3469,7 @@ type internal DJobInstance(curDSet: DSet, getSingleJobAction: unit -> SingleJobA
     ///            peeriPartitionArray: int[], the command applies to the following partitions. 
     ///            dset : the command applies to the following DSet
     member internal x.RemappingCommandForRead ( queue:NetworkCommandQueue, peeri, peeriPartitionArray:int[], curDSet:DSet ) = 
-        using( MemStreamRef.Equals(new MemStream( 1024 )) ) ( fun msPayloadRef ->
-            let msPayload = msPayloadRef.Elem
+        using( new MemStream( 1024 ) ) ( fun msPayload ->
             // Add Job ID to DSet
             msPayload.WriteGuid( x.JobID )
             msPayload.WriteString( curDSet.Name )
@@ -3518,8 +3507,7 @@ type internal DJobInstance(curDSet: DSet, getSingleJobAction: unit -> SingleJobA
                     if Utils.IsNotNull queue && queue.CanSend then        
                         if x.bFirstReadCommand.[peeri] && not jobAction.IsCancelled then 
                             x.bFirstReadCommand.[peeri] <- false
-                            using ( MemStreamRef.Equals(new MemStream( 1024 )) ) ( fun msSendRef -> 
-                                let msSend = msSendRef.Elem
+                            using ( new MemStream( 1024 ) ) ( fun msSend -> 
                                 msSend.WriteGuid( x.JobID )
                                 msSend.WriteString( curDSet.Name )
                                 msSend.WriteInt64( curDSet.Version.Ticks )
@@ -3532,8 +3520,7 @@ type internal DJobInstance(curDSet: DSet, getSingleJobAction: unit -> SingleJobA
                             x.RemappingCommandCallback( queue, peeri, peeriPartitionArray, curDSet )
                         let node = curDSet.Cluster.Nodes.[peeri]
                         if curDSet.PeerRcvdSpeedLimit < node.NetworkSpeed && not jobAction.IsCancelled then 
-                            using ( MemStreamRef.Equals(new MemStream( 1024 )) ) ( fun msSpeedRef -> 
-                                let msSpeed = msSpeedRef.Elem
+                            using ( new MemStream( 1024 ) ) ( fun msSpeed -> 
                                 msSpeed.WriteGuid( x.JobID )
                                 msSpeed.WriteString( curDSet.Name ) 
                                 msSpeed.WriteInt64( curDSet.Version.Ticks )

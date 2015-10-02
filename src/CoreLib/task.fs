@@ -226,8 +226,7 @@ and [<AllowNullLiteral>]
                     not (Utils.IsNull x.JobLoopbackQueue) && x.JobLoopbackQueue.CanSend then 
                     // Attempt to register. 
                     if Interlocked.CompareExchange( queueStatusRef, int TaskConnectedQueueStatus.ConnectionRegistered, priorQueueStatus ) = priorQueueStatus then 
-                        use msRegisterRef = MemStreamRef.Equals(new MemStream( 1024 ))
-                        let msRegister = msRegisterRef.Elem
+                        use msRegister = new MemStream( 1024 )
                         msRegister.WriteInt64( queueSignature )
                         x.JobLoopbackQueue.ToSend( ControllerCommand( ControllerVerb.Open, ControllerNoun.Connection ), msRegister )
         /// <summary>
@@ -252,8 +251,7 @@ and [<AllowNullLiteral>]
                 if Interlocked.CompareExchange( queueStatusRef, int TaskConnectedQueueStatus.ConnectionDeregistered, 
                                                     int TaskConnectedQueueStatus.ConnectionRegistered ) = int TaskConnectedQueueStatus.ConnectionRegistered then 
                     if not (Utils.IsNull x.JobLoopbackQueue) && x.JobLoopbackQueue.CanSend then 
-                        use msRegisterRef = MemStreamRef.Equals(new MemStream( 1024 ))
-                        let msRegister = msRegisterRef.Elem
+                        use msRegister = new MemStream( 1024 )
                         msRegister.WriteInt64( queueSignature )
                         x.JobLoopbackQueue.ToSend( ControllerCommand( ControllerVerb.Close, ControllerNoun.Connection ), msRegister )
                         x.ConnectedQueue.IsEmpty 
@@ -598,8 +596,7 @@ and [<AllowNullLiteral; Serializable>]
     member x.ErrorAsSeparateApp(msg) = 
         Logger.Log( LogLevel.Error, msg )
         if Utils.IsNotNull x.QueueToClient then 
-            use msSendRef = MemStreamRef.Equals(new MemStream( 1024 ))
-            let msSend = msSendRef.Elem
+            use msSend = new MemStream( 1024 )
             msSend.WriteString( msg )
             let queue = x.QueueToClient
             queue.ToSend( ControllerCommand( ControllerVerb.Error, ControllerNoun.Message ), msSend ) 
@@ -895,8 +892,7 @@ and [<AllowNullLiteral; Serializable>]
     // member val private bWarningOnReportClose = false with get, set
     member x.TaskReportClosePartition( jbInfo:JobInformation, dobj, meta:BlobMetadata, pos ) = 
         let dsetReport = x.FindDObject TraverseUpstream dobj x.IsDstDSet
-        use msInfoRef = MemStreamRef.Equals(new MemStream( 128 ))
-        let msInfo = msInfoRef.Elem
+        use msInfo = new MemStream( 128 )
         if Utils.IsNotNull dsetReport then 
             if meta.Parti>=0 then 
                 msInfo.WriteGuid( jbInfo.JobID )     
@@ -963,8 +959,7 @@ and [<AllowNullLiteral; Serializable>]
                 if not jobAction.IsCancelled then 
                     Logger.LogF( jbInfo.JobID, LogLevel.MediumVerbose, ( fun _ -> sprintf "Reaching end of part %d with %d mistakes" meta.Partition meta.NumElems ))
                 if not jbInfo.HostShutDown then 
-                        using( MemStreamRef.Equals(new MemStream( 1024 )) ) ( fun msWireRef ->
-                            let msWire = msWireRef.Elem 
+                        using( new MemStream( 1024 ) ) ( fun msWire ->
                             msWire.WriteGuid( jbInfo.JobID )
                             msWire.WriteString( dset.Name ) 
                             msWire.WriteInt64( dset.Version.Ticks )
@@ -1001,8 +996,7 @@ and [<AllowNullLiteral; Serializable>]
                 else 
                     if Utils.IsNotNull ms then 
                         Logger.LogF( jbInfo.JobID, LogLevel.WildVerbose, ( fun _ -> sprintf "DSetReadAsSeparateApp, to writeout %s" (MetaFunction.MetaString(meta)) ))
-                        using( MemStreamRef.Equals(new MemStream( int ms.Length + 1024 )) ) ( fun msWireRef -> 
-                            let msWire = msWireRef.Elem
+                        using( new MemStream( int ms.Length + 1024 ) ) ( fun msWire -> 
                             msWire.WriteGuid( jbInfo.JobID )
                             msWire.WriteString( dset.Name )
                             msWire.WriteInt64( dset.Version.Ticks )
@@ -1120,19 +1114,18 @@ and [<AllowNullLiteral; Serializable>]
             let foldStates = jbInfo.FoldState |> Seq.map ( fun pair -> pair.Value )
             let finalState = foldStates |> Seq.fold aggregateFunc.AggregateFunc null           
             // GV to send back to the host. 
-            use msWireRef = MemStreamRef.Equals(new MemStream( 1024 ))
-            let msWire = msWireRef.Elem
+            use msWire = new MemStream( 1024 )
             msWire.WriteGuid( jbInfo.JobID )
             msWire.WriteString( dset.Name ) 
             msWire.WriteInt64( dset.Version.Ticks ) 
             msWire.WriteVInt32( usePartitionsArray.Length )
             for i = 0 to usePartitionsArray.Length - 1 do
                 msWire.WriteVInt32( usePartitionsArray.[i] )
-            let msSend = serializeFunc.SerializeFunc msWire finalState
+            let msSend = serializeFunc.SerializeFunc (msWire :> StreamBase<byte>) finalState
             Logger.LogF( jbInfo.JobID, LogLevel.MildVerbose, ( fun _ -> sprintf "All aggregate fold completed for job %s:%s DSet %s:%s, send WriteGV,DSet to client!" x.Name x.VersionString dset.Name dset.VersionString))
             jbInfo.ToSendHost( ControllerCommand( ControllerVerb.WriteGV, ControllerNoun.DSet ), msSend )
 
-        use msRef = MemStreamRef.Equals(msRep) // figure out how to put this OnJobFinish
+        use ms = msRep // figure out how to put this OnJobFinish
         x.SyncJobExecutionAsSeparateApp ( queueHost, endPoint, dset, usePartitions) "Fold" (fun jbInfo parti () -> dset.SyncIterateProtected jbInfo parti (syncFoldFunci jbInfo parti ) ) beginJob finalJob
 
     member val JobFinished = new List<WaitHandle>()
@@ -1221,8 +1214,7 @@ and [<AllowNullLiteral; Serializable>]
                             Logger.LogF( x.JobID, LogLevel.MildVerbose, ( fun _ -> sprintf "%s Task %s:%s, DSet %s:%s is completed in %f ms........." taskName x.Name x.VersionString dset.Name dset.VersionString ((PerfDateTime.UtcNow()).Subtract( x.JobStartTime ).TotalMilliseconds) ))
                             Logger.LogF( x.JobID, LogLevel.MildVerbose, ( fun _ -> "=======================================================================================================================================" ))
                             x.JobReady.Reset() |> ignore
-                        use msWireRef = MemStreamRef.Equals(new MemStream( 1024 ))
-                        let msWire = msWireRef.Elem
+                        use msWire = new MemStream( 1024 )
                         msWire.WriteGuid( x.JobID )
                         msWire.WriteString( dset.Name )
                         msWire.WriteInt64( dset.Version.Ticks )
@@ -1246,8 +1238,7 @@ and [<AllowNullLiteral; Serializable>]
     /// The error cannot be localized to a certain job, but can be assoicated with a network queue 
     static member ErrorInSeparateApp (queue:NetworkCommandQueue, msg ) = 
         Logger.Log( LogLevel.Error, msg )
-        using (MemStreamRef.Equals(new MemStream(1024)) ) ( fun msErrorRef ->
-            let msError = msErrorRef.Elem 
+        using (new MemStream(1024)) ( fun msError ->
             msError.WriteString( msg )
             queue.ToSend( ControllerCommand( ControllerVerb.Error, ControllerNoun.Message ), msError )
         )
@@ -1255,8 +1246,7 @@ and [<AllowNullLiteral; Serializable>]
     /// Throw exception to application
     static member ExceptionInTask (queue:NetworkCommandQueue, x:Task, msg ) = 
         Logger.Log( LogLevel.Info, ( sprintf "Exception in job %A, name %s:%s with exception %s" (x.JobID) (x.Name) (x.VersionString) msg ) )
-        use msRef = MemStreamRef.Equals(new MemStream())
-        let ms = msRef.Elem
+        use ms = new MemStream()
         ms.WriteGuid( x.JobID )
         ms.WriteString( x.Name )
         ms.WriteInt64( x.Version.Ticks )
@@ -1268,10 +1258,10 @@ and [<AllowNullLiteral; Serializable>]
     /// Note that general exception may or may not be able to propagate back to application as it may miss routing information
     static member ExceptionInGeneral (queue:NetworkCommandQueue, msg ) = 
         Logger.Log( LogLevel.Info, ( sprintf "Exception: %s" msg ) )
-        use msRef = MemStreamRef.Equals(new MemStream())
-        let ms = msRef.Elem
+        use ms = new MemStream()
         ms.WriteString( msg )
         queue.ToSend( ControllerCommand(ControllerVerb.Exception, ControllerNoun.Message ), ms ) 
+
     static member ParseQueueCommandAtContainer (task : Task ref)
                                     (queue : NetworkCommandQueue)
                                     (allConnections : ConcurrentDictionary<_,_>) 
@@ -1434,8 +1424,7 @@ and [<AllowNullLiteral; Serializable>]
                                                                                    ( float (t1-x.JobStartTicks) / float TimeSpan.TicksPerMillisecond )
                                                                                    ))
                             let bSuccess = x.LoadAll()
-                            using( MemStreamRef.Equals(new MemStream( 1024 )) ) ( fun msSendRef -> 
-                                let msSend = msSendRef.Elem
+                            using( new MemStream( 1024 ) ) ( fun msSend -> 
                                 msSend.WriteGuid( jobID )
                                 msSend.WriteString( x.Name )
                                 msSend.WriteInt64( x.Version.Ticks ) 
@@ -1510,9 +1499,7 @@ and [<AllowNullLiteral; Serializable>]
                                     let param = ms.DeserializeObjectWithTypeName() 
                                     Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "attempt to start service %s ..." serviceName ))
                                     ServiceCollection.Current.BeginStartService( serviceName, service, param, 
-                                                                    fun bInitializeSuccess -> //use msInfoRef = MemStreamRef.Equals(new MemStream( 1024 ))
-                                                                                              //let msInfo = msInfoRef.Elem
-                                                                                              let msInfo = new MemStream(1024)
+                                                                    fun bInitializeSuccess -> use msInfo = new MemStream(1024)
                                                                                               msInfo.WriteGuid( jobID )
                                                                                               msInfo.WriteString( dsetName )
                                                                                               msInfo.WriteInt64( dsetVersion ) 
@@ -1526,8 +1513,7 @@ and [<AllowNullLiteral; Serializable>]
                                     let serviceName = ms.ReadString() 
                                     Logger.LogF( jobID, LogLevel.MildVerbose, ( fun _ -> sprintf "attempt to stop service %s ..." serviceName ))
                                     let bSuccessToStop = ServiceCollection.Current.StopService( serviceName )
-                                    use msInfoRef =  MemStreamRef.Equals(new MemStream( 1024 ))
-                                    let msInfo = msInfoRef.Elem
+                                    use msInfo =  new MemStream( 1024 )
                                     msInfo.WriteGuid( jobID )
                                     msInfo.WriteString( dsetName )
                                     msInfo.WriteInt64( dsetVersion ) 
@@ -1662,8 +1648,7 @@ and [<AllowNullLiteral; Serializable>]
                                     let serviceName = ms.ReadString() 
                                     Logger.LogF( jobID, LogLevel.MildVerbose, ( fun _ -> sprintf "attempt to stop service %s ..." serviceName ))
                                     let bSuccessToStop = ServiceCollection.Current.StopService( serviceName )
-                                    use msInfoRef =  MemStreamRef.Equals(new MemStream( 1024 ))
-                                    let msInfo = msInfoRef.Elem
+                                    use msInfo = new MemStream( 1024 )
                                     msInfo.WriteString( dsetName )
                                     msInfo.WriteInt64( dsetVersion ) 
                                     msInfo.WriteBoolean( bSuccessToStop )
@@ -1790,8 +1775,7 @@ and [<AllowNullLiteral; Serializable>]
             listener.OnAccepted( Action<_>(listener.OnIncomingQueue), fun _ -> "Accepted queue"  )
         
         if (Utils.IsNull listener) && jobport > 0 then 
-            use msSendRef = MemStreamRef.Equals(new MemStream( 1024 ))
-            let msSend = msSendRef.Elem
+            use msSend = new MemStream( 1024 )
             msSend.WriteString( sigName )
             msSend.WriteInt64( sigVersion ) 
             queue.ToSend( ControllerCommand( ControllerVerb.Stop, ControllerNoun.Program ), msSend ) 
@@ -1832,8 +1816,7 @@ and [<AllowNullLiteral; Serializable>]
                     // The decoding logic isn't as well protected as the main link, this is because the module communicates with PrajnaClient, 
                     // We expect most of the errors to be weeded out by the PrajnaClient.
                     // Moreover, if there is error, the job simply dies, which is considered OK. 
-                    use msSendRef = MemStreamRef.Equals(new MemStream( 1024 ))
-                    let msSend = msSendRef.Elem
+                    use msSend = new MemStream( 1024 )
                     msSend.WriteString( sigName )
                     msSend.WriteInt64( sigVersion )
                     queue.ToSend( ControllerCommand( ControllerVerb.Link, ControllerNoun.Program ), msSend ) 
@@ -1870,8 +1853,7 @@ and [<AllowNullLiteral; Serializable>]
                 Task.WaitForCompletition(jobs, clientProcessId, clientModuleName, clientStartTimeTicks)
 
             // Stop the Program and sever connection. 
-            use msSendRef = MemStreamRef.Equals(new MemStream( 1024 ))
-            let msSend = msSendRef.Elem
+            use msSend = new MemStream( 1024 )
             msSend.WriteString( sigName )
             msSend.WriteInt64( sigVersion ) 
             queue.ToSend( ControllerCommand( ControllerVerb.Stop, ControllerNoun.Program ), msSend ) 
@@ -1901,23 +1883,20 @@ and [<AllowNullLiteral; Serializable>]
     /// Error: error in parsing 
     static member Error ( msg ) = 
         Logger.Log( LogLevel.Error, msg )
-        use msgErrorRef = MemStreamRef.Equals(new MemStream( 1024 ))
-        let msgError = msgErrorRef.Elem
+        use msgError = new MemStream( 1024 )
         msgError.WriteString( msg )
         ( ControllerCommand( ControllerVerb.Error, ControllerNoun.Message ), msgError )
     /// Error: error in parsing 
     static member FError ( fmsg ) = 
         Logger.Log( LogLevel.Error, (fmsg()))
-        use msgErrorRef = MemStreamRef.Equals(new MemStream( 1024 ))
-        let msgError = msgErrorRef.Elem
+        use msgError = new MemStream( 1024 )
         msgError.WriteString( fmsg() )
         ( ControllerCommand( ControllerVerb.Error, ControllerNoun.Message ), msgError )
     member x.Error ( msg ) = 
         Logger.Log( LogLevel.Error, msg )
         let hostQueue = x.PrimaryHostQueue
         if Utils.IsNotNull hostQueue && hostQueue.CanSend then 
-            use msgErrorRef = MemStreamRef.Equals(new MemStream( 1024 ))
-            let msgError = msgErrorRef.Elem
+            use msgError = new MemStream( 1024 )
             msgError.WriteString( msg )
             hostQueue.ToSend( ControllerCommand( ControllerVerb.Error, ControllerNoun.Message ), msgError )
 
@@ -1939,8 +1918,7 @@ and [<AllowNullLiteral; Serializable>]
                                 ( fun (meta, ms:MemStream ) ->
                                     if Utils.IsNotNull ms then 
                                         Logger.LogF( LogLevel.MediumVerbose, ( fun _ -> sprintf "Sending %s over the wire for read" (MetaFunction.MetaString(meta)) ))
-                                        use msWireRef = MemStreamRef.Equals(new MemStream( int ms.Length + 1024 ))
-                                        let msWire = msWireRef.Elem
+                                        use msWire = new MemStream( int ms.Length + 1024 )
                                         msWire.WriteString( curDSet.Name )
                                         msWire.WriteInt64( curDSet.Version.Ticks )
                                         msWire.WriteVInt32( meta.Partition)
@@ -1970,8 +1948,7 @@ and [<AllowNullLiteral; Serializable>]
                                         // Do nothing, we will wait for all jobs to complete in Async.RunSynchronously
                                         Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "Reaching end of part %d with %d mistakes" meta.Partition meta.NumElems ))
                                         if Utils.IsNotNull hostQueue && not hostQueue.Shutdown then 
-                                            use msWireRef = MemStreamRef.Equals(new MemStream( 1024 ))
-                                            let msWire = msWireRef.Elem
+                                            use msWire = new MemStream( 1024 )
                                             msWire.WriteString( curDSet.Name ) 
                                             msWire.WriteInt64( curDSet.Version.Ticks )
                                             msWire.WriteVInt32( meta.Partition )
@@ -1988,8 +1965,7 @@ and [<AllowNullLiteral; Serializable>]
                 | e ->
                     Logger.LogF( LogLevel.Warning, ( fun _ -> sprintf "Executing JobTaskKind.ReadOne during Async.RunSynchronously encounter exception %A (this may due to cancellation of task)" e ))
                 curDSet.CloseAllStreams( true )
-                use msWireRef = MemStreamRef.Equals(new MemStream( 1024 ))
-                let msWire = msWireRef.Elem
+                use msWire = new MemStream( 1024 )
                 msWire.WriteString( curDSet.Name )
                 msWire.WriteInt64( curDSet.Version.Ticks )
                 if Utils.IsNotNull hostQueue && not hostQueue.Shutdown then 
@@ -2197,8 +2173,7 @@ and [<AllowNullLiteral; Serializable>]
                 Logger.LogF( LogLevel.Info, ( fun _ -> sprintf "Fail to decode Blob %d from peer %s" blobi (LocalDNS.GetShowInfo(LocalDNS.Int64ToIPEndPoint(epSignature)) ) ))
             let queue = Cluster.Connects.LookforConnectBySignature( epSignature )
             if Utils.IsNotNull queue && queue.CanSend then 
-                use msFeedbackRef = MemStreamRef.Equals(new MemStream( 1024 ))
-                let msFeedback = msFeedbackRef.Elem
+                use msFeedback = new MemStream( 1024 )
                 msFeedback.WriteGuid( x.JobID ) 
                 msFeedback.WriteString( x.Name ) 
                 msFeedback.WriteInt64( x.Version.Ticks )
@@ -2513,8 +2488,7 @@ and [<AllowNullLiteral; Serializable>]
             let membershipList = x.IncomingQueuesClusterMembership.[peeri]
             if membershipList.Count<=0 then 
                 // For host, each peer replies on Peer availability 
-                use msInfoRef = MemStreamRef.Equals(new MemStream(1024))
-                let msInfo = msInfoRef.Elem
+                use msInfo = new MemStream(1024)
                 msInfo.WriteGuid( x.JobID )
                 msInfo.WriteString( x.Name ) 
                 msInfo.WriteInt64( x.Version.Ticks )
@@ -2584,8 +2558,7 @@ and [<AllowNullLiteral; Serializable>]
                             // Otherwise, just connect the task to task holder, no extra execution needed. 
                             taskQueue.ConnectTaskByTaskHolder( taskHolder, x, queue )
 
-                use msFeedbackRef = MemStreamRef.Equals(new MemStream( 1024 ))
-                let msFeedback = msFeedbackRef.Elem
+                use msFeedback = new MemStream( 1024 )
                 msFeedback.WriteGuid( jobAction.JobID )
                 msFeedback.WriteString( x.Name )
                 msFeedback.WriteInt64( x.Version.Ticks )
@@ -2594,8 +2567,7 @@ and [<AllowNullLiteral; Serializable>]
                 true
             else
                 Logger.LogF( LogLevel.WildVerbose, ( fun _ -> sprintf "Start, Job, try reuse an old new job %s:%s" x.Name x.VersionString))
-                use msFeedbackRef = MemStreamRef.Equals(new MemStream( 1024 ))
-                let msFeedback = msFeedbackRef.Elem
+                use msFeedback = new MemStream( 1024 )
                 msFeedback.WriteGuid( jobAction.JobID )
                 msFeedback.WriteString( x.Name )
                 msFeedback.WriteInt64( x.Version.Ticks )
@@ -2607,8 +2579,7 @@ and [<AllowNullLiteral; Serializable>]
             // It will link the the job back to PrajnaClient
             let bSuccess = ms.ReadBoolean()
             // Job started at the AppDomain/Exe
-            use msFeedbackRef = MemStreamRef.Equals(new MemStream( 1024 ))
-            let msFeedback = msFeedbackRef.Elem
+            use msFeedback = new MemStream( 1024 )
             msFeedback.WriteGuid( x.JobID )
             msFeedback.WriteString( x.Name )
             msFeedback.WriteInt64( x.Version.Ticks )
@@ -2667,8 +2638,7 @@ and [<AllowNullLiteral; Serializable>]
             | JobTaskKind.AppDomainMask ->
                 let queue = x.QueueAtClientMonitor
                 if ( Utils.IsNotNull queue && queue.CanSend )  then 
-                    use msSendRef = MemStreamRef.Equals(new MemStream( 1024 ))
-                    let msSend = msSendRef.Elem
+                    use msSend = new MemStream( 1024 )
                     msSend.WriteString( x.Name )
                     msSend.WriteInt64( x.Version.Ticks )
                     queue.ToSend( ControllerCommand( ControllerVerb.Close, ControllerNoun.Job ), msSend )
@@ -2697,14 +2667,13 @@ and [<AllowNullLiteral; Serializable>]
     member x.ToStartJob() = 
         Logger.LogF( x.JobID, LogLevel.MildVerbose, ( fun _ -> sprintf "Send (Set, Job), metadata, (Start, Job) to AppDomain/Exe of task %s:%s" x.Name x.VersionString) )
         /// Send job metadata to the loopback interface. 
-        let jobMetadataStream = 
+        use jobMetadataStream = 
             if Utils.IsNotNull x.MetadataStream then 
-                x.MetadataStream
+                x.MetadataStream.Replicate()
             else 
                 let st = new MemStream( 4096 ) 
                 x.Pack( st )
                 st :> StreamBase<byte>
-        //use jobMetadataStreamRef = MemStreamRef.Equals(jobMetadataStream)
         let queue = x.QueueAtClient
         if Utils.IsNotNull queue && queue.CanSend then 
             if Interlocked.CompareExchange( x.JobStarted, 1, 0 ) = 0 then 
@@ -2722,8 +2691,7 @@ and [<AllowNullLiteral; Serializable>]
                     | _ ->
                         // SrcDSet, Cluster, Assembly should already be at the client, and doesn't need to be sent
                         ()
-                use msRef = MemStreamRef.Equals(new MemStream( 1024 ))
-                let ms = msRef.Elem
+                use ms = new MemStream( 1024 )
                 ms.WriteGuid( x.JobID )
                 ms.WriteString( x.Name )
                 ms.WriteInt64( x.Version.Ticks )
@@ -3013,8 +2981,7 @@ and internal TaskQueue() =
                                         let foundTask = x.AddTask( task, queue )
                                         if not (Object.ReferenceEquals( foundTask, task )) then 
                                             Logger.LogF( jobID, LogLevel.Warning, ( fun _ -> sprintf "Set, Job %s:%s, but we have found another job with launchMode %A" task.Name task.VersionString foundTask.LaunchMode ))
-                                        use msSendRef = MemStreamRef.Equals(new MemStream( 1024 ))
-                                        let msSend = msSendRef.Elem
+                                        use msSend = new MemStream( 1024 )
                                         msSend.WriteGuid( jobID )
                                         msSend.WriteString( foundTask.Name ) 
                                         msSend.WriteInt64( foundTask.Version.Ticks )
@@ -3022,8 +2989,7 @@ and internal TaskQueue() =
                                         queue.ToSend( ControllerCommand( ControllerVerb.InfoNode, ControllerNoun.Job ), msSend )   
                                         true
                                     else
-                                        use msSendRef = MemStreamRef.Equals(new MemStream( 1024 ))
-                                        let msSend = msSendRef.Elem
+                                        use msSend = new MemStream( 1024 )
                                         msSend.WriteGuid( jobID )
                                         msSend.WriteString( task.Name ) 
                                         msSend.WriteInt64( task.Version.Ticks )
@@ -3032,8 +2998,7 @@ and internal TaskQueue() =
                                         queue.ToSend( ControllerCommand( ControllerVerb.NonExist, ControllerNoun.Job ), msSend )                              
                                         true
                                 else
-                                    use msSendRef = MemStreamRef.Equals(new MemStream( 1024 ))
-                                    let msSend = msSendRef.Elem
+                                    use msSend = new MemStream( 1024 )
                                     msSend.WriteGuid( jobID )
                                     msSend.WriteString( task.Name ) 
                                     msSend.WriteInt64( task.Version.Ticks )
@@ -3051,8 +3016,7 @@ and internal TaskQueue() =
 
                                 if Utils.IsNull taskHolder || Utils.IsNull taskHolder.CurNodeInfo then 
                                     /// Running job, can't find the associated container. 
-                                    use msSendRef = MemStreamRef.Equals(new MemStream( 1024 ))
-                                    let msSend = msSendRef.Elem
+                                    use msSend = new MemStream( 1024 )
                                     msSend.WriteGuid( jobID )
                                     msSend.WriteString( task.Name ) 
                                     msSend.WriteInt64( task.Version.Ticks )
@@ -3062,8 +3026,7 @@ and internal TaskQueue() =
                                     let nodeInfo = taskHolder.CurNodeInfo
                                     let foundTask = x.AddTask( task, queue )
                                     foundTask.TaskHolder <- taskHolder
-                                    use msSendRef = MemStreamRef.Equals(new MemStream( 1024 ))
-                                    let msSend = msSendRef.Elem
+                                    use msSend = new MemStream( 1024 )
                                     msSend.WriteGuid( jobID )
                                     msSend.WriteString( task.Name ) 
                                     msSend.WriteInt64( task.Version.Ticks )
@@ -3122,8 +3085,7 @@ and internal TaskQueue() =
                                 true 
                         // Job command 
                         | None -> 
-                            use msSendRef = MemStreamRef.Equals(new MemStream( 1024 ))
-                            let msSend = msSendRef.Elem
+                            use msSend = new MemStream( 1024 )
                             msSend.WriteGuid( jobID )
                             msSend.WriteString( name ) 
                             msSend.WriteInt64( verNumber )
@@ -3172,8 +3134,7 @@ and internal TaskQueue() =
                                 true 
                         // Job command 
                         | None -> 
-                            use msSendRef = MemStreamRef.Equals(new MemStream( 1024 ))
-                            let msSend = msSendRef.Elem
+                            use msSend = new MemStream( 1024 )
                             msSend.WriteGuid( jobID )
                             msSend.WriteString( name ) 
                             msSend.WriteInt64( verNumber )
@@ -3518,8 +3479,7 @@ and internal TaskQueue() =
                                                                   sprintf "Attemp to Remove job %s:%s from lookup queue" 
                                                                            name (VersionToString(ver)) ))
         else
-            use errMSRef = MemStreamRef.Equals(new MemStream( 1024 ))
-            let errMS = errMSRef.Elem
+            use errMS = new MemStream( 1024 )
             errMS.WriteString( sigName )
             errMS.WriteInt64( sigVer )
             errMS.WriteString( sprintf "Program %s crashes" sigName ) 

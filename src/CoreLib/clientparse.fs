@@ -259,11 +259,11 @@ type internal Listener =
         ControllerCommand( ControllerVerb.Unknown, ControllerNoun.Unknown ), null    
     static member ErrorAtDaemon( queue:NetworkCommandQueuePeer, msg ) = 
         Logger.Log( LogLevel.Error, msg )
-        let msgError = new MemStream( 1024 )
+        use msgError = new MemStream( 1024 )
         msgError.WriteString( msg )
         queue.ToSend( ControllerCommand( ControllerVerb.Error, ControllerNoun.Message ), msgError )
     static member ExceptionOfDSetAtDaemon ( queue: NetworkCommandQueuePeer, jobID: Guid, name, ver, ex ) = 
-        let msException = new MemStream(1024)
+        use msException = new MemStream(1024)
         msException.WriteGuid( jobID )
         msException.WriteString( name )
         msException.WriteInt64( ver )
@@ -306,7 +306,7 @@ type internal Listener =
                         let len = int ( ms.Length - ms.Position )
                         let sendBuf = Array.zeroCreate<byte> len
                         ms.Read( sendBuf, 0, len ) |> ignore
-                        let msSend = new MemStream( len )
+                        use msSend = new MemStream( len )
                         msSend.Write( sendBuf, 0, len )
                         let retCmd = ControllerCommand( ControllerVerb.EchoReturn, ControllerNoun.Message )
                         queue.MonitorRcvd()
@@ -327,13 +327,13 @@ type internal Listener =
                             | None ->
                                 let msg = "Set CurrentClusterInfo can't be unpacked, object is not based on ClusterInfoBase"
                                 Logger.Log( LogLevel.Error, msg )
-                                let msSend = new MemStream(1024)
+                                use msSend = new MemStream(1024)
                                 msSend.WriteString( msg )
                                 queue.ToSend( ControllerCommand( ControllerVerb.Error, ControllerNoun.ClusterInfo ), msSend )
                         else
                             let msg = "Set CurrentClusterInfo is received on a socket that is not returned from accept()"
                             Logger.Log( LogLevel.Error, msg )
-                            let msSend = new MemStream(1024)
+                            use msSend = new MemStream(1024)
                             msSend.WriteString( msg )
                             queue.ToSend( ControllerCommand( ControllerVerb.Error, ControllerNoun.ClusterInfo ), msSend )
                     // Command : Set DSet
@@ -347,8 +347,7 @@ type internal Listener =
                         else
                             let msg = "Set DSet should not be called from outgoing connection"
                             Logger.Log( LogLevel.Error, msg )
-                            use msSendRef = MemStreamRef.Equals(new MemStream(1024))
-                            let msSend = msSendRef.Elem
+                            use msSend = new MemStream(1024)
                             msSend.WriteString( msg )
                             x.ParseSendBackAtDaemon( queuePeer, ControllerCommand( ControllerVerb.Error, ControllerNoun.Message ), msSend ) 
                     | (ControllerVerb.Get, ControllerNoun.DSet ) ->
@@ -414,7 +413,7 @@ type internal Listener =
                                                 x.ParseSendBackAtDaemonAndDispose( queuePeer, cmd, msInfo )
                                             else
                                                 // Nothing to read
-                                                let msWire = new MemStream( 1024 )
+                                                use msWire = new MemStream( 1024 )
                                                 msWire.WriteString( name ) 
                                                 msWire.WriteInt64( verNumber )
                                                 queuePeer.ToSend( ControllerCommand( ControllerVerb.Close, ControllerNoun.DSet ), msWire )
@@ -422,7 +421,7 @@ type internal Listener =
                                             let rcvdSpeed = ms.ReadInt64()
                                             curDSet.PeerRcvdSpeed <- rcvdSpeed
                                             let msg = sprintf "Peer %d: Set recieving speed of every peer to %d" curDSet.CurPeerIndex rcvdSpeed
-                                            let msInfo = new MemStream(1024)
+                                            use msInfo = new MemStream(1024)
                                             msInfo.WriteString( msg ) 
                                             Logger.Log( LogLevel.WildVerbose, msg )
                                             queuePeer.ToSend( ControllerCommand( ControllerVerb.Info, ControllerNoun.Message ), msInfo )
@@ -468,8 +467,7 @@ type internal Listener =
                                         // Is DSet in one of the job that is being executed?
                                         let dsetTask = x.TaskQueue.FindDSet( name, verNumber )
                                         if not (Utils.IsNull dsetTask) then 
-                                            let msTask = new MemStream( 1024 )
-                                            use msTaskRef = MemStreamRef.Equals(msTask)
+                                            use msTask = new MemStream( 1024 )
                                             msTask.WriteGuid( jobID )
                                             msTask.WriteString( dsetTask.Name ) 
                                             msTask.WriteInt64( dsetTask.Version.Ticks ) 
@@ -477,7 +475,7 @@ type internal Listener =
                                             msTask.WriteVInt32( int FunctionParamType.DSet )
                                             ms.Seek( int64 bufPos, SeekOrigin.Begin ) |> ignore
                                             ms.InsertBefore( msTask ) |> ignore
-                                            let msForward = msTask // when msTaskRef goes out of scope, refcount of msForward will go down, so if ToSend does not hold ref, object will dispose
+                                            let msForward = msTask
                                             match (command.Verb, command.Noun ) with
                                             | (ControllerVerb.Read, ControllerNoun.DSet ) ->                                                                                                      
                                                 dsetTask.QueueAtClient.ToSend( ControllerCommand( ControllerVerb.Read, ControllerNoun.Job ), msForward )
@@ -527,8 +525,7 @@ type internal Listener =
                                                 if not (Utils.IsNull taskHolder) then 
                                                     let queueAtClient = taskHolder.JobLoopbackQueue 
                                                     if not (Utils.IsNull queueAtClient) && queueAtClient.CanSend then 
-                                                        let msTask = new MemStream( 1024 )
-                                                        use msTaskRef = MemStreamRef.Equals(msTask)
+                                                        use msTask = new MemStream( 1024 )
                                                         msTask.WriteGuid( jobID )
                                                         msTask.WriteString( "" ) 
                                                         msTask.WriteInt64( 0L ) 
@@ -544,7 +541,7 @@ type internal Listener =
                                                 else
                                                     Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "attempt to stop service %s, while can't find running service in task holders %s ..." serviceName (x.TaskQueue.MonitorExecutionTable()) ))
                                                     let bSuccessToStop = true
-                                                    let msInfo =  new MemStream( 1024 )
+                                                    use msInfo =  new MemStream( 1024 )
                                                     msInfo.WriteGuid( jobID )
                                                     msInfo.WriteString( name )
                                                     msInfo.WriteInt64( verNumber ) 

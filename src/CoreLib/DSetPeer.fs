@@ -514,7 +514,7 @@ and [<AllowNullLiteral>]
                     // streamPartWrite.Flush()
                     if bReplicateWrite then 
                         if Utils.IsNotNull x.HostQueue && x.HostQueue.CanSend then 
-                            let msInfo = new MemStream( 1024 )
+                            use msInfo = new MemStream( 1024 )
                             msInfo.WriteString( x.Name )
                             msInfo.WriteInt64( x.Version.Ticks )
                             msInfo.WriteVInt32( parti ) 
@@ -744,8 +744,7 @@ and [<AllowNullLiteral>]
             let extremeTrack() = 
                 let msg = sprintf "Peer %d: try connect to ... %A" x.CurPeerIndex peerList
                 if Utils.IsNotNull x.HostQueue && x.HostQueue.CanSend then 
-                    using ( MemStreamRef.Equals(new MemStream(1024)) ) ( fun msInfoRef -> 
-                        let msInfo = msInfoRef.Elem
+                    using ( new MemStream(1024) ) ( fun msInfo -> 
                         msInfo.WriteString( msg )
                         x.HostQueue.ToSend( ControllerCommand( ControllerVerb.Verbose, ControllerNoun.Message), msInfo )
                     )
@@ -813,7 +812,7 @@ and [<AllowNullLiteral>]
                                 let extremeTrack() =
                                     let msg = sprintf "Connected from peer %d --> %s" x.CurPeerIndex ( SeqToString( ";", connectedPeerList ) )
                                     if Utils.IsNotNull x.HostQueue && x.HostQueue.CanSend then 
-                                        let msInfo = new MemStream( 1024 )
+                                        use msInfo = new MemStream( 1024 )
                                         msInfo.WriteString( msg )
                                         x.HostQueue.ToSend( ControllerCommand( ControllerVerb.Verbose, ControllerNoun.Message ), msInfo )
                                     msg
@@ -825,7 +824,7 @@ and [<AllowNullLiteral>]
                             let msg = sprintf "Replicate partition %d, serial %d:%d to peer %d" parti serial numElems peeri
                             Logger.Log( LogLevel.WildVerbose, msg )
                             if Utils.IsNotNull x.HostQueue && x.HostQueue.CanSend then 
-                                let msInfo = new MemStream(1024)
+                                use msInfo = new MemStream(1024)
                                 msInfo.WriteString( msg )
                                 x.HostQueue.ToSend( ControllerCommand( ControllerVerb.Info, ControllerNoun.Message ), msInfo )
                             // Make sure we don't replicate again
@@ -926,10 +925,9 @@ and [<AllowNullLiteral>]
                         for peeri in peerList do
                             bActivePeers.[peeri] <- true
                 let mutable bTestAllCloseDSetSent = true
-                let mutable msSend : MemStream = new MemStream( 1024 )
+                use msSend = new MemStream( 1024 )
                 msSend.WriteString( x.Name ) 
                 msSend.WriteInt64( x.Version.Ticks )
-                use msSendRef = MemStreamRef.Equals(msSend) // msSend does not dispose as long as ref survives
                 for i=0 to x.Cluster.NumNodes-1 do 
                     // Send a Close DSet command only for active peer. 
                     let q = x.Cluster.Queue( i )
@@ -966,8 +964,7 @@ and [<AllowNullLiteral>]
                 callbackRegister.Remove( x ) |> ignore
                 callbackRegister <- null 
 
-                let msInfo = new MemStream( 1024 )
-                use msInfoRef = MemStreamRef.Equals(msInfo)
+                use msInfo = new MemStream( 1024 )
                 msInfo.WriteGuid( x.WriteIDForCleanUp )
                 msInfo.WriteString( x.Name ) 
                 msInfo.WriteInt64( x.Version.Ticks )
@@ -1012,7 +1009,7 @@ and [<AllowNullLiteral>]
                                         yield (sprintf "    Peer %d: (In replicate:%A, ReplicateClose sent: %A, rcvd %A)" i bPeerInReplicate.[i] bCloseDSetSent.[i] bConfirmCloseRcvd.[i] )                                
                             }
                             |> String.concat( System.Environment.NewLine )
-                        let msSend = new MemStream( 1024 )
+                        use msSend = new MemStream( 1024 )
                         msSend.WriteString( msgInfo ) 
                         x.HostQueue.ToSend( ControllerCommand( ControllerVerb.Warning, ControllerNoun.Message ) , msSend )
                         Logger.Log( LogLevel.Info, msgInfo )
@@ -1047,15 +1044,14 @@ and [<AllowNullLiteral>]
 //                    bPeerInReplicate.[peeri] <- false
                 bConfirmCloseRcvd.[peeri] <- true
                 if Utils.IsNotNull x.HostQueue && x.HostQueue.CanSend then 
-                    let msSend = new MemStream( 1024 )
+                    use msSend = new MemStream( 1024 )
                     msSend.WriteString( x.Name )
                     msSend.WriteInt64( x.Version.Ticks )
                     msSend.WriteVInt32( peeri )
                     x.HostQueue.ToSend( ControllerCommand( ControllerVerb.ReplicateClose, ControllerNoun.DSet), msSend )
                 // Informed peer that Close, DSet received. 
             | ( ControllerVerb.Get, ControllerNoun.ClusterInfo ) ->
-                using( MemStreamRef.Equals(new MemStream( 10240 )) ) ( fun msSendRef -> 
-                    let msSend = msSendRef.Elem
+                using( new MemStream( 10240 ) ) ( fun msSend -> 
                     x.Cluster.ClusterInfo.Pack( msSend )
                     let cmd = ControllerCommand( ControllerVerb.Set, ControllerNoun.ClusterInfo ) 
                     // Expediate delivery of Cluster Information to the receiver
@@ -1075,7 +1071,7 @@ and [<AllowNullLiteral>]
                 let numElems = msRcvd.ReadVInt32()
                 let peerIdx = msRcvd.ReadVInt32()
                 if Utils.IsNotNull x.HostQueue && x.HostQueue.CanSend then 
-                    let msSend = new MemStream( 1024 )
+                    use msSend = new MemStream( 1024 )
                     msSend.WriteString( x.Name )
                     msSend.WriteInt64( x.Version.Ticks )
                     msSend.WriteVInt32( parti )
@@ -1348,7 +1344,7 @@ and [<AllowNullLiteral>]
                         let msg = sprintf "Error in AsyncReadChunk, with exception %A, stack %A" e (StackTrace (0, true))
                         let bSendHost = Utils.IsNotNull x.HostQueue && x.HostQueue.CanSend 
                         if bSendHost then 
-                            let msError = new MemStream( 1024 )
+                            use msError = new MemStream( 1024 )
                             msError.WriteString( msg ) 
                             x.HostQueue.ToSend( ControllerCommand( ControllerVerb.Error, ControllerNoun.Message ), msError )
                         Logger.Log( LogLevel.Error, ((sprintf "Send Host: %A" bSendHost) + msg))
@@ -1446,7 +1442,7 @@ and [<AllowNullLiteral>]
                     let msg = sprintf "Error in SyncReadChunk, with exception %A, stack %A " e (StackTrace (0, true))
                     Logger.Log( LogLevel.Error, msg )
                     if Utils.IsNotNull x.HostQueue && x.HostQueue.CanSend then 
-                        let msError = new MemStream( 1024 )
+                        use msError = new MemStream( 1024 )
                         msError.WriteString( msg ) 
                         x.HostQueue.ToSend( ControllerCommand( ControllerVerb.Error, ControllerNoun.Message ), msError )
                 null, true

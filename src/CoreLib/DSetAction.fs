@@ -264,8 +264,7 @@ type internal DSetAction() =
         using ( x.TryExecuteSingleJobAction() ) ( fun jobAction -> 
             if Utils.IsNotNull jobAction then 
                 let jobID = jobAction.JobID
-                using( MemStreamRef.Equals(new MemStream( 1024 )) ) ( fun msPayloadRef -> 
-                    let msPayload = msPayloadRef.Elem
+                using( new MemStream( 1024 ) ) ( fun msPayload -> 
                     // Add Job ID to DSet
                     msPayload.WriteGuid( jobID )
                     msPayload.WriteString( curDSet.Name )
@@ -357,8 +356,7 @@ type internal DSetAction() =
             let registerDSet = seq { yield! x.RemappedDSet
                                      yield! x.Job.DstDSet }
             for dset in registerDSet do 
-                using ( MemStreamRef.Equals(new MemStream( 1024 )) ) ( fun msSendRef -> 
-                    let msSend = msSendRef.Elem
+                using ( new MemStream( 1024 ) ) ( fun msSend -> 
                     let currentWriteID = x.Job.JobID
                     msSend.WriteGuid( currentWriteID )
                     msSend.WriteString( dset.Name ) 
@@ -372,8 +370,7 @@ type internal DSetAction() =
     member x.CloseAndUnregister() = 
         if Utils.IsNotNull x.Job then 
             // Always execute 
-            using( MemStreamRef.Equals(new MemStream( 1024 )) ) ( fun msCloseMsgRef -> 
-                let msCloseMsg = msCloseMsgRef.Elem
+            using( new MemStream( 1024 ) ) ( fun msCloseMsg -> 
                 msCloseMsg.WriteGuid( x.Job.JobID )
                 msCloseMsg.WriteString( x.Job.Name ) 
                 msCloseMsg.WriteInt64( x.Job.Version.Ticks ) 
@@ -426,8 +423,7 @@ type internal DSetAction() =
                             | ( ControllerVerb.Acknowledge, ControllerNoun.DSet ) ->
                                 ()
                             | ( ControllerVerb.Get, ControllerNoun.ClusterInfo ) ->
-                                using( MemStreamRef.Equals(new MemStream( 10240 )) ) ( fun msSendRef -> 
-                                    let msSend = msSendRef.Elem
+                                using( new MemStream( 10240 ) ) ( fun msSend -> 
                                     cl.ClusterInfo.Pack( msSend )
                                     let cmd = ControllerCommand( ControllerVerb.Set, ControllerNoun.ClusterInfo ) 
                                     // Expediate delivery of Cluster Information to the receiver
@@ -564,8 +560,7 @@ type internal DSetFoldAction<'U, 'State >()=
     member x.RemappingCommandForRead( queue, peeri, peeriPartitionArray:int[], curDSet:DSet ) = 
         using ( x.TryExecuteSingleJobAction()) ( fun jobAction -> 
             if Utils.IsNotNull jobAction then 
-                using( MemStreamRef.Equals(new MemStream( 1024 )) ) ( fun msPayloadRef -> 
-                    let msPayload = msPayloadRef.Elem
+                using( new MemStream( 1024 ) ) ( fun msPayload -> 
                     // Add Job ID to DSet
                     msPayload.WriteGuid( x.Job.JobID )
                     msPayload.WriteString( curDSet.Name )

@@ -86,30 +86,26 @@ type [<AllowNullLiteral>] NetworkCommand() =
         then
             x.cmd <- cmd
             if (Utils.IsNotNull ms) then
-                x.msRef <- MemStreamRef.Equals(ms)
-                x.ms <- x.msRef.Elem
+                x.ms <- ms.Replicate()
                 // if position = length, assume stream just written, seek back for read purposes
                 if (ms.Position = ms.Length) then
                     x.startPos <- 0L
                 else if (ms.Position <> 0L) then
                     failwith "Use constructor with start position"
             else
-                x.msRef <- MemStreamRef.Equals(new MemStream(0))
-                x.ms <- x.msRef.Elem
+                x.ms <- new MemStream(0)
 
     new (cmd : ControllerCommand, ms : StreamBase<byte>, startPos : int64) as x =
         new NetworkCommand()
         then
             x.cmd <- cmd
-            x.msRef <- MemStreamRef.Equals(ms)
-            x.ms <- x.msRef.Elem
+            x.ms <- ms.Replicate()
             x.startPos <- startPos
 
     member val startPos = 0L with get, set
     /// The controller command
     member val cmd = Unchecked.defaultof<ControllerCommand> with get, set
     /// The memory stream
-    member val private msRef : MemStreamRef = null with get, set
     member val ms : StreamBase<byte> = null with get, set
     /// Get the length of the command on the wire
     member val internal buildHeader : bool = true with get, set
@@ -128,7 +124,7 @@ type [<AllowNullLiteral>] NetworkCommand() =
     /// release the underlying memstream
     member x.Release() =
         if (Interlocked.CompareExchange(bReleased, 1, 0)=0) then
-            (x.msRef :> IDisposable).Dispose()
+            x.ms.Dispose()
 
     interface IDisposable with
         override x.Dispose() =
@@ -174,7 +170,6 @@ type [<AllowNullLiteral>] NetworkCommandQueue() as x =
     let xgBuf = GenericBuf(xgc, 2048) // generic buffer reader/writer allows max buffersize of 2048
     let headerRecv = Array.zeroCreate<byte>(8)
     let headerSend = Array.zeroCreate<byte>(8)
-    let mutable bodyRef : MemStreamRef = null
     let mutable body : StreamBase<byte> = null
     let mutable rcvdSpeed = DeploymentSettings.DefaultRcvdSpeed
     let mutable sendSpeed = Config.CurrentNetworkSpeed 
@@ -679,8 +674,7 @@ type [<AllowNullLiteral>] NetworkCommandQueue() as x =
                 bLocalVerified <- true // not really, but can continue, other side will terminate if fails
             | VerificationCmd.AESKeyUsingPwd ->
                 Logger.LogF( LogLevel.Info, (fun _ -> "Receive Pwd Encrypted information"))
-                use msRef = MemStreamRef.Equals(new MemStream())
-                let ms = msRef.Elem
+                use ms = new MemStream()
                 try 
                     let decryptBuf = Crypt.DecryptWithParams(recvBuf, x.ONet.Password)
                     x.SetRecvAES(decryptBuf)
@@ -941,7 +935,7 @@ type [<AllowNullLiteral>] NetworkCommandQueue() as x =
         if (command.Verb = ControllerVerb.Decrypt) then
             // decrypt the body
             use decryptMs = Crypt.DecryptStream(x.AESRecv, body)
-            (bodyRef :> IDisposable).Dispose()
+            body.Dispose()
             decryptMs.ReadInt32() |> ignore
             let verb = enum<ControllerVerb>(int (decryptMs.ReadByte()))
             let noun = enum<ControllerNoun>(int (decryptMs.ReadByte()))
@@ -954,8 +948,8 @@ type [<AllowNullLiteral>] NetworkCommandQueue() as x =
                 body.Seek(0L, SeekOrigin.Begin) |> ignore
                 body.Info <- sprintf "Info:%A:" command
             curRecvCmd <- new NetworkCommand(command, body)
-            if (Utils.IsNotNull bodyRef) then
-                (bodyRef :> IDisposable).Dispose()
+            if (Utils.IsNotNull body) then
+                body.Dispose()
             //x.TraceCurRecvCommand(fun _ -> sprintf "Built bodyLen:%d eRem: %d" body.Length xgc.ERecvRem)
         curStateRecv <- ReceivingMode.EnqueuingCommand
         
@@ -989,15 +983,13 @@ type [<AllowNullLiteral>] NetworkCommandQueue() as x =
                 // allow zero length array creation so memstream is not null
                 let bodyLen = totalLen - 4
                 if (bodyLen <> 0) then
-                    bodyRef <- MemStreamRef.Equals(new MemoryStreamB())
-                    body <- bodyRef.Elem
+                    body <- new MemoryStreamB()
                     curStateRecv <- ReceivingMode.ReceivingBody
                     xgc.CurBufRecv <- null
                     xgc.CurBufRecvMs <- body
                     xgc.CurBufRecvRem <- bodyLen
                     null
                 else
-                    bodyRef <- null
                     body <- null
                     x.BuildCommand()
                     x.EnqueueCmd()
@@ -1265,8 +1257,7 @@ type [<AllowNullLiteral>] NetworkCommandQueue() as x =
     /// <param name="bExpediateSend">Optional argument - unused for now</param>
     member x.ToForward( endPoint:IPEndPoint, command:ControllerCommand, sendStream:StreamBase<byte>, ?bExpediateSend ) = 
         let bExpediate = defaultArg bExpediateSend false
-        use forwardHeaderRef = MemStreamRef.Equals(sendStream.GetNew())
-        let forwardHeader = forwardHeaderRef.Elem
+        use forwardHeader = sendStream.GetNew()
         forwardHeader.WriteVInt32( 1 )
         forwardHeader.WriteIPEndPoint( endPoint )
         forwardHeader.WriteByte( byte command.Verb )
@@ -1281,8 +1272,7 @@ type [<AllowNullLiteral>] NetworkCommandQueue() as x =
     /// <param name="bExpediateSend">Optional argument - unused for now</param>
     member x.ToForward( endPoints:IPEndPoint[], command:ControllerCommand, sendStream:StreamBase<byte>, ?bExpediateSend ) = 
         let bExpediate = defaultArg bExpediateSend false
-        use forwardHeaderRef = MemStreamRef.Equals(sendStream.GetNew())
-        let forwardHeader = forwardHeaderRef.Elem
+        use forwardHeader = sendStream.GetNew()
         forwardHeader.WriteVInt32( endPoints.Length )
         for i = 0 to endPoints.Length - 1 do
             forwardHeader.WriteIPEndPoint( endPoints.[i] )
@@ -1381,8 +1371,7 @@ and [<AllowNullLiteral>] NetworkConnections() as x =
             x.MyGuid <- Guid.NewGuid()
             x.MyAuthRSA <- Crypt.RSAFromPrivateKey(privateKey, x.KeyFilePassword)
             x.CreateDirectory(mykeyfile)
-            use msRef = MemStreamRef.Equals(new MemStream())
-            let ms = msRef.Elem
+            use ms = new MemStream()
             ms.WriteBytes(x.MyGuid.ToByteArray())
             ms.WriteBytesWLen(privateKey)
             let (exchangePrivateKey, exchangePublicKey) = Crypt.RSAGetNewKeys(x.KeyFilePassword, KeyNumber.Exchange)
@@ -1391,9 +1380,8 @@ and [<AllowNullLiteral>] NetworkConnections() as x =
             File.WriteAllBytes(mykeyfile, ms.GetValidBuffer())
             Logger.LogF (LogLevel.MildVerbose, fun _ -> sprintf "InitializeAuthentication: write to key file: %s" mykeyfile)
         else
-            use msRef = MemStreamRef.Equals(new MemStream(File.ReadAllBytes(mykeyfile)))
-            let ms = msRef.Elem
-            x.MyGuid <- new Guid(ms.ReadBytes(sizeof<Guid>))
+            use ms = new MemStream(File.ReadAllBytes(mykeyfile))
+            x.MyGuid <- Guid(ms.ReadBytes(sizeof<Guid>))
             x.MyAuthRSA <- Crypt.RSAFromPrivateKey(ms.ReadBytesWLen(), x.KeyFilePassword)
             x.MyExchangeRSA <- Crypt.RSAFromPrivateKey(ms.ReadBytesWLen(), x.KeyFilePassword)
             Logger.LogF (LogLevel.MildVerbose, fun _ -> sprintf "InitializeAuthentication: read from key file: %s" mykeyfile)

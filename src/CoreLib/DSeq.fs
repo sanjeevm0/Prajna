@@ -556,7 +556,7 @@ and [<AllowNullLiteral>]
 //                ev.WaitOne() |> ignore
                 if bRet && (DateTime.UtcNow - queuePeer.LastSendTicks).TotalMilliseconds > 5000. then 
 //                if bRet then 
-                    let msEcho = new MemStream( 128 )
+                    use msEcho = new MemStream( 128 )
                     msEcho.WriteGuid( jobID )
                     msEcho.WriteString( x.Name )
                     msEcho.WriteInt64( x.Version.Ticks )
@@ -567,7 +567,7 @@ and [<AllowNullLiteral>]
                 Logger.LogF( jobID, LogLevel.WildVerbose, ( fun _ -> sprintf "Rcvd %A command %A from peer %d" (meta.ToString()) cmd peeri ))
                 let bRet = x.SyncReceiveFromPeer meta null peeri
                 if bRet then 
-                    let msEcho = new MemStream( 128 )
+                    use msEcho = new MemStream( 128 )
                     msEcho.WriteGuid( jobID )
                     msEcho.WriteString( x.Name )
                     msEcho.WriteInt64( x.Version.Ticks )
@@ -691,7 +691,7 @@ and [<AllowNullLiteral>]
         if lockValue=1 then 
             let peerQueue = x.CurClusterInfo.QueueForWriteBetweenContainer(peeri)
             if Utils.IsNotNull peerQueue && (not peerQueue.Shutdown) then 
-                let msClose = new MemStream( 128 )
+                use msClose = new MemStream( 128 )
                 msClose.WriteGuid( jbInfo.JobID )
                 msClose.WriteString( x.Name ) 
                 msClose.WriteInt64( x.Version.Ticks )
@@ -827,14 +827,14 @@ and [<AllowNullLiteral>]
                         let msg = sprintf "DStream.CloseFromPeer %s:%s has WaitForAllPeerClose flag, it should have a AllPeerCloseRcvdEvent to be flagged on" x.Name x.VersionString
                         Logger.Log( LogLevel.Error, msg )
                         let jbInfo = x.DefaultJobInfo
-                        let msError = new MemStream( 1024 )
+                        use msError = new MemStream( 1024 )
                         msError.WriteString( msg )
                         jbInfo.ToSendHost( ControllerCommand( ControllerVerb.Error, ControllerNoun.Message ), msError )
                 
             x.CheckAllPeerClosed()
             if Utils.IsNotNull queuePeer then 
                 // queuePeer<>null, this is called from same peer 
-                let msConfirmClose = new MemStream( 128 )
+                use msConfirmClose = new MemStream( 128 )
                 msConfirmClose.WriteGuid( jobID )
                 msConfirmClose.WriteString( x.Name ) 
                 msConfirmClose.WriteInt64( x.Version.Ticks ) 
@@ -928,6 +928,7 @@ and [<AllowNullLiteral>]
                         x.MonitorSendPeerStatus peeri peerQueue bCansend
                         if ( bCansend || (peerQueue.CanSend && bForceSend) ) then 
                             peerQueue.ToSend( cmd, ms )
+                            ms.Dispose()
                             Logger.LogF( jbInfo.JobID, LogLevel.MildVerbose, ( fun _ -> let len = if Utils.IsNull ms then 0L else ms.Length
                                                                                         sprintf "DStream.SyncSendPeer, Send %A command %A to peer %d with %dB" (meta.ToString()) cmd peeri len ))
                             bSend := true
@@ -941,7 +942,7 @@ and [<AllowNullLiteral>]
                             let blockedTime = ( (PerfADateTime.UtcNow()).Subtract(!peerQueue.flowcontrol_lastack) ).TotalMilliseconds
                             if blockedTime >= 1000. && peerQueue.CanSend &&  peerQueue.RcvdCommandSerial <> !peerQueue.flowcontrol_lastRcvdCommandSerial then
                                 Logger.LogF( jbInfo.JobID, LogLevel.Warning, ( fun _ -> sprintf "Send cmd to peer %s has been blocked for %f ms, send an unknown cmd to prevent deadlock, lastRcvdCommandSerial: %d, peerQueue.RcvdCommandSerial: %d" (LocalDNS.GetShowInfo(peerQueue.RemoteEndPoint)) blockedTime !peerQueue.flowcontrol_lastRcvdCommandSerial peerQueue.RcvdCommandSerial))
-                                let msSend = new MemoryStreamB()
+                                use msSend = new MemoryStreamB()
                                 msSend.Info <- "Nothing"
                                 peerQueue.ToSend( new ControllerCommand(ControllerVerb.Unknown,ControllerNoun.Unknown), msSend )
                                 //bForceSend <- true
@@ -1028,8 +1029,7 @@ and [<AllowNullLiteral>]
             let mapping = childStream.GetMapping()
             let peers = mapping.[parti]
             Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "DStream %s:%s, Multicast to peers %A with blob %A" x.Name x.VersionString peers meta ))
-            let ms = o :?> StreamBase<byte>
-            use msRef = MemStreamRef.Equals(ms)
+            use ms = o :?> StreamBase<byte>
             for peeri in peers do 
                 // Write to local. 
                 if peeri = childStream.CurPeerIndex then 

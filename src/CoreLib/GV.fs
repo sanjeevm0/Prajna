@@ -344,8 +344,7 @@ and /// Information of Within Job cluster information.
                                             x.LinkedCluster.Name x.LinkedCluster.VersionString ndInfo.NodeType peeri )
                     x.LinkedCluster.PeerIndexFromEndpoint.[queue.RemoteEndPoint] <- peeri
                     queue.GetOrAddRecvProc ("ClusterParseHost", Cluster.ParseHostCommand queue peeri) |> ignore
-                    queue.OnConnect.Add( fun _ -> use msRef = MemStreamRef.Equals(new MemStream(1024))
-                                                  let ms = msRef.Elem
+                    queue.OnConnect.Add( fun _ -> use ms = new MemStream(1024)
                                                   ms.WriteString( x.LinkedCluster.Name )
                                                   ms.WriteInt64( x.LinkedCluster.Version.Ticks )
                                                   ms.WriteVInt32( x.CurPeerIndex )
@@ -595,8 +594,7 @@ type internal JobLifeCycleContainer(jobID:Guid, jobName, jobVer, startQueueSig: 
     member val ExceptionCallback = thisInstance.SendExceptionBackGeneral with get, set
     /// Send an exception
     member x.SendExceptionBackGeneral( ex ) = 
-        using ( MemStreamRef.Equals(new MemStream(1024)) ) ( fun msExRef -> 
-            let msEx = msExRef.Elem
+        using ( new MemStream(1024) ) ( fun msEx -> 
             let queue = Cluster.Connects.LookforConnectBySignature( startQueueSig )
             if Utils.IsNotNull queue && queue.CanSend then 
                 msEx.WriteGuid( jobID )
@@ -903,8 +901,7 @@ type internal JobInformation( jobID: Guid, bIsMainProject: bool, dSetName: strin
     member private x.OnException( ex ) = 
         Logger.LogF( LogLevel.Warning, fun _ -> sprintf "Job %A, DSet: %s, to send exception to host, exception: %A "
                                                             jobID dSetName ex )
-        using( MemStreamRef.Equals(new MemStream( 1024 )) ) ( fun msRef -> 
-            let ms = msRef.Elem
+        using( new MemStream( 1024 ) ) ( fun ms -> 
             ms.WriteGuid( jobID )
             ms.WriteString( dSetName ) 
             ms.WriteInt64( dSetVersion )
@@ -929,8 +926,7 @@ type internal JobInformation( jobID: Guid, bIsMainProject: bool, dSetName: strin
         Logger.LogF( LogLevel.Info, fun _ -> sprintf "[Failed partition] Job %A, DSet: %s, to send exception to host, exception: %A (loc: %s) "
                                                             jobID dSetName ex locinfo)
         ex.Data.Add( "@Container", locinfo)
-        using( MemStreamRef.Equals(new MemStream( 1024 )) ) ( fun msRef -> 
-            let ms = msRef.Elem
+        using( new MemStream( 1024 ) ) ( fun ms -> 
             ms.WriteGuid( jobID )
             ms.WriteString( dSetName ) 
             ms.WriteInt64( dSetVersion )
