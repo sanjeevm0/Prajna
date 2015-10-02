@@ -1679,8 +1679,9 @@ and
 //            blob.Buffer <- null
     /// Release the memory of all blobs
     member x.UnallocateAllBlobs( ) = 
-        for blobi=0 to x.Blobs.Length - 1 do
-            x.UnallocateBlob( blobi ) 
+        if (Utils.IsNotNull x.Blobs) then
+            for blobi=0 to x.Blobs.Length - 1 do
+                x.UnallocateBlob( blobi ) 
     /// When a blob is written, the blob name & version can change (especially for DSet). We thus need to update the associated blob information. 
     member x.UpdateBlobInfo( blobi ) = 
         let blob = x.Blobs.[blobi]

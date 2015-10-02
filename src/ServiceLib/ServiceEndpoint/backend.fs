@@ -576,7 +576,7 @@ type BackEndInstance< 'StartParamType
                 | ControllerVerb.Read, ControllerNoun.Buffer -> 
                     let guids = BufferCache.UnPackGuid( ms ) 
                     let items = BufferCache.Current.FindCacheableBufferByGuid( guids ) 
-                    use( msSend )=( )new( )MemStream( )
+                    use msSend = new MemStream( )
                     health.WriteHeader( msSend ) 
                     BufferCache.PackCacheableBuffers( items, msSend )
                     health.WriteEndMark( msSend ) 
@@ -597,7 +597,7 @@ type BackEndInstance< 'StartParamType
                     x.ProcessRequest( queue, health, reqID, serviceID, requestObject )
                 | ControllerVerb.Echo, ControllerNoun.QueryReply ->
                     let t1 = (PerfDateTime.UtcNowTicks())
-                    use( msSend )=( )new( )MemStream( 128 )
+                    use msSend = new MemStream( 128 )
                     health.WriteHeader( msSend ) 
                     health.WriteEndMark( msSend ) 
                     queue.ToSend( ControllerCommand(ControllerVerb.EchoReturn, ControllerNoun.QueryReply ), msSend )

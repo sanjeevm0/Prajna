@@ -886,7 +886,7 @@ type BufferListStream<'T>(bufSize : int, doNotUseDefault : bool) =
 //        let e = x.GetNew() :?> BufferListStream<'T>
 //        for b in x.BufList do
 //            e.WriteRBufNoCopy(b)
-//        e.Seek(x.Position, SeekOrigin.Begin) |> ignore
+        e.Seek(x.Position, SeekOrigin.Begin) |> ignore
         e :> StreamBase<'T>
         
     override x.Replicate(pos : int64, cnt : int64) =
@@ -1118,6 +1118,10 @@ type BufferListStream<'T>(bufSize : int, doNotUseDefault : bool) =
                 if (i <> 0) then
                     x.BufList.[i].StreamPos <- x.BufList.[i-1].StreamPos + int64 x.BufList.[i-1].Count
             finalWriteElem <- elemLen
+            bufRem <- 0
+            bufRemWrite <- 0
+            bufPos <- rbufPartNew.Offset + rbufPartNew.Count
+            bufBeginPos <- rbufPartNew.Offset
 
     // move to beginning of buffer i
     member private x.MoveToBufferI(bAllowExtend : bool, i : int) =
