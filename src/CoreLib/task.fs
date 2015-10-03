@@ -1526,6 +1526,7 @@ and [<AllowNullLiteral; Serializable>]
                                         jobAction.ThrowExceptionAtContainer( msg )
                                     else
                                         let dsetOption, errMsg, msSend = DSetPeer.Unpack( ms, true, queue, jobID )
+                                        (msSend :> IDisposable).Dispose()
                                         match errMsg with 
                                         | ClientBlockingOn.Cluster ->
                                             // Cluster Information can't be parsed, Wait for cluster information. 
