@@ -1125,8 +1125,8 @@ and [<AllowNullLiteral; Serializable>]
             Logger.LogF( jbInfo.JobID, LogLevel.MildVerbose, ( fun _ -> sprintf "All aggregate fold completed for job %s:%s DSet %s:%s, send WriteGV,DSet to client!" x.Name x.VersionString dset.Name dset.VersionString))
             jbInfo.ToSendHost( ControllerCommand( ControllerVerb.WriteGV, ControllerNoun.DSet ), msSend )
 
-        use ms = msRep // figure out how to put this OnJobFinish
         x.SyncJobExecutionAsSeparateApp ( queueHost, endPoint, dset, usePartitions) "Fold" (fun jbInfo parti () -> dset.SyncIterateProtected jbInfo parti (syncFoldFunci jbInfo parti ) ) beginJob finalJob
+        (msRep :> IDisposable).Dispose()
 
     member val JobFinished = new List<WaitHandle>()
 
@@ -2895,9 +2895,19 @@ and internal TaskQueue() =
         else
             // Never executed. 
             taskAdd
+
     member x.RemoveTaskByJobID( jobID ) = 
         lookupTable.TryRemove( jobID ) |> ignore
+
     member x.RemoveTask( ta:Task ) = 
+        if (Utils.IsNotNull ta && Utils.IsNotNull ta.MetadataStream) then
+            (ta.MetadataStream :> IDisposable).Dispose()
+            ta.MetadataStream <- null
+            for b in ta.Blobs do
+                if (Utils.IsNotNull b.Stream) then
+                    (b.Stream :> IDisposable).Dispose()
+                    b.Stream <- null
+                BlobFactory.remove(b.Hash)
         x.RemoveTaskByJobID( ta.JobID )
             
     member x.LinkQueueAndTask( ta:Task, queue: NetworkCommandQueue ) = 

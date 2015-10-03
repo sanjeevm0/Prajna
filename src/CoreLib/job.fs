@@ -2745,6 +2745,14 @@ and
     member x.Ready() = 
         if not bReady then 
             bReady <- x.ReadyMetaData()
+            if (Utils.IsNotNull x.MetadataStream) then
+                x.MetadataStream.Dispose()
+            if (Utils.IsNotNull jobMetadataStream) then
+                jobMetadataStream.Dispose()
+            for b in x.Blobs do
+                if (Utils.IsNotNull b.Stream) then
+                    (b.Stream :> IDisposable).Dispose()
+                    b.Stream <- null            
             Logger.LogF( x.JobID, 
                          LogLevel.MildVerbose, ( fun _ -> let t1 = (PerfADateTime.UtcNowTicks())
                                                           sprintf "Job %s, ready in %.2f ms"

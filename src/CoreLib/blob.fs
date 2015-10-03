@@ -166,13 +166,7 @@ type internal BlobFactory() =
             if Utils.IsNotNull oldMS then 
                 // Dispose Streambase
                 (oldMS :> IDisposable).Dispose()
-                
-//        let mutable tuple = Unchecked.defaultof<(_*_*_*_)>
-//        let ret = x.Collection.TryRemove( id, &tuple )
-//        if (ret) then
-//            let refMS, refTicks, epQueue, epDic = tuple
-//            if (Utils.IsNotNull (!refMS)) then
-//                (!refMS).DecRef()
+
     /// Refresh timer entry of an object
     member x.Refresh( id ) = 
         let bExist, tuple = x.Collection.TryGetValue( id ) 
@@ -214,7 +208,6 @@ type internal BlobFactory() =
         BlobFactory.Current.Refresh( id, elapseSeconds )
     static member toArray() = 
         BlobFactory.Current.ToArray()
-
 
 and [<AllowNullLiteral>]
     internal Blob() = 

@@ -883,12 +883,12 @@ type BufferListStream<'T>(bufSize : int, doNotUseDefault : bool) =
         bSimpleBuffer <- src.SimpleBuffer
 
     override x.Replicate() =
-        let e = x.GetNewNoDefault()
-        e.BufListRef <- new SafeRefCnt<RefCntList<RBufPart<'T>,RefCntBuf<'T>>>("BufferList", x.BufListRef)
-        e.ReplicateInfoFrom(x)
-//        let e = x.GetNew() :?> BufferListStream<'T>
-//        for b in x.BufList do
-//            e.WriteRBufNoCopy(b)
+//        let e = x.GetNewNoDefault()
+//        e.BufListRef <- new SafeRefCnt<RefCntList<RBufPart<'T>,RefCntBuf<'T>>>("BufferList", x.BufListRef)
+//        e.ReplicateInfoFrom(x)
+        let e = x.GetNew() :?> BufferListStream<'T>
+        for b in x.BufList do
+            e.WriteRBufNoCopy(b)
         e.Seek(x.Position, SeekOrigin.Begin) |> ignore
         e :> StreamBase<'T>
         
