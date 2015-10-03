@@ -930,8 +930,9 @@ type BufferListStream<'T>(bufSize : int, doNotUseDefault : bool) =
                 sb.AppendLine(sprintf "Num streams in use: %d" streamsInUse.Count) |> ignore
                 for s in streamsInUse do
                     let (key, value) = (s.Key, s.Value)
-                    let v : List<RBufPart<'T>> = s.Value.BufListNoCheck
-                    sb.AppendLine(sprintf "%d : %s : NumBuffers:%d" s.Key s.Value.Info s.Value.BufListNoCheck.Count) |> ignore
+                    if (Utils.IsNotNull s.Value.BufListRef) then
+                        let v : List<RBufPart<'T>> = s.Value.BufListNoCheck
+                        sb.AppendLine(sprintf "%d : %s : NumBuffers:%d" s.Key s.Value.Info s.Value.BufListNoCheck.Count) |> ignore
                     sb.AppendLine(sprintf "Alloc From: %s" s.Value.StackTrace) |> ignore
                 sb.ToString()
             )
@@ -992,12 +993,13 @@ type BufferListStream<'T>(bufSize : int, doNotUseDefault : bool) =
                 Logger.LogF(LogLevel.WildVerbose, fun _ -> sprintf "List release for %s with id %d %A finalize: %b remain: %d" x.Info x.Id (Array.init x.BufList.Count (fun index -> x.BufList.[index].ElemNoCheck.Id)) bFromFinalize streamsInUse.Count)
             else
                 Logger.LogF(LogLevel.WildVerbose, fun _ -> sprintf "List release for %s with id %d %A finalize: %b remain: %d" x.Info x.Id (Array.init x.BufList.Count (fun index -> x.BufList.[index].Elem.Id)) bFromFinalize streamsInUse.Count)
-            bufListRef.Release() // only truly releases when refcount goes to zero
             //if not (base.Info.Equals("")) then
             //    streamsInUse.TryRemove(base.Info) |> ignore
             let b = ref Unchecked.defaultof<BufferListStream<'T>>
-            if not (streamsInUse.TryRemove(x.Id, b)) then
-                failwith "Illegal"
+            streamsInUse.TryRemove(x.Id, b) |> ignore
+//            if not (streamsInUse.TryRemove(x.Id, b)) then
+//                failwith "Illegal"
+            bufListRef.Release() // only truly releases when refcount goes to zero
 
     override x.Dispose(bDisposing : bool) =
         x.Release(not bDisposing)

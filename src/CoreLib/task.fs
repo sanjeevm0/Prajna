@@ -1027,7 +1027,10 @@ and [<AllowNullLiteral; Serializable>]
         let syncJobs jbInfo parti ()=  
             dset.SyncEncode jbInfo parti ( readFunc jbInfo) 
 
-        x.SyncJobExecutionAsSeparateApp ( queueHost, endPoint, dset, usePartitions) "Read" syncJobs ( fun _ -> () ) (fun _ ->())
+        let finalJob(jb) =
+            x.OnJobFinish()
+
+        x.SyncJobExecutionAsSeparateApp ( queueHost, endPoint, dset, usePartitions) "Read" syncJobs ( fun _ -> () ) finalJob
             
 /// ReadToNetwork, Job (DSet) 
     member x.DSetReadToNetworkAsSeparateAppSync( queueHost:NetworkCommandQueue, endPoint:Net.IPEndPoint, dset: DSet, usePartitions ) = 
@@ -1095,6 +1098,8 @@ and [<AllowNullLiteral; Serializable>]
                         (!dStreamToSendSyncClose).SyncSendCloseDStreamToAll(jbInfo)
                         Logger.LogF( jbInfo.JobID, LogLevel.MildVerbose, ( fun _ -> sprintf "All ReadToNetwork tasks completed for job %s:%s DSet %s:%s, send SyncClose, DStream to all peers !" x.Name x.VersionString dset.Name dset.VersionString))
             )
+            x.OnJobFinish()
+
         x.SyncJobExecutionAsSeparateApp ( queueHost, endPoint, dset, usePartitions) "ReadToNetwork" readToNetworkFunci
             beginJob finalJob           
       
@@ -1124,6 +1129,7 @@ and [<AllowNullLiteral; Serializable>]
             let msSend = serializeFunc.SerializeFunc (msWire :> StreamBase<byte>) finalState
             Logger.LogF( jbInfo.JobID, LogLevel.MildVerbose, ( fun _ -> sprintf "All aggregate fold completed for job %s:%s DSet %s:%s, send WriteGV,DSet to client!" x.Name x.VersionString dset.Name dset.VersionString))
             jbInfo.ToSendHost( ControllerCommand( ControllerVerb.WriteGV, ControllerNoun.DSet ), msSend )
+            x.OnJobFinish()
 
         x.SyncJobExecutionAsSeparateApp ( queueHost, endPoint, dset, usePartitions) "Fold" (fun jbInfo parti () -> dset.SyncIterateProtected jbInfo parti (syncFoldFunci jbInfo parti ) ) beginJob finalJob
         (msRep :> IDisposable).Dispose()
@@ -2900,14 +2906,16 @@ and internal TaskQueue() =
         lookupTable.TryRemove( jobID ) |> ignore
 
     member x.RemoveTask( ta:Task ) = 
-        if (Utils.IsNotNull ta && Utils.IsNotNull ta.MetadataStream) then
-            (ta.MetadataStream :> IDisposable).Dispose()
-            ta.MetadataStream <- null
+        if (Utils.IsNotNull ta) then
+            if (Utils.IsNotNull ta.MetadataStream) then
+                (ta.MetadataStream :> IDisposable).Dispose()
+                ta.MetadataStream <- null
             for b in ta.Blobs do
                 if (Utils.IsNotNull b.Stream) then
                     (b.Stream :> IDisposable).Dispose()
                     b.Stream <- null
-                BlobFactory.remove(b.Hash)
+                if (Utils.IsNotNull b.Hash) then
+                    BlobFactory.remove(b.Hash)
         x.RemoveTaskByJobID( ta.JobID )
             
     member x.LinkQueueAndTask( ta:Task, queue: NetworkCommandQueue ) = 
