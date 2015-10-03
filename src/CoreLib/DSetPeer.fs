@@ -1130,6 +1130,7 @@ and [<AllowNullLiteral>]
                     let useVersionName, _, provider = lst.[idx]
                     let useVersion = StringTools.VersionFromString( useVersionName )
                     let dsetOpt, blockingOn, sendStream = DSetPeer.RetrieveDSetMetadata( jobID, name, useVersion.Ticks, provider )
+                    (sendStream :> IDisposable).Dispose()
                     match dsetOpt with 
                     | Some ( s ) ->
                         let sendDSet = Option.get dsetOpt
@@ -1320,7 +1321,8 @@ and [<AllowNullLiteral>]
                                                         let serial = ms.ReadInt64()
                                                         let numElems = ms.ReadVInt32()
                                                         let meta = BlobMetadata( parti, serial, numElems, buflen )
-                                                        pushChunkFunc( meta, ms )  
+                                                        pushChunkFunc( meta, ms )
+                                                        (ms :> IDisposable).Dispose()  
                                                     else
                                                         Logger.LogF( LogLevel.Info, ( fun _ -> sprintf "Throw away %dB as stored SHA512 hash doesn't match" readlen ) )
                                                         nSomeError := !nSomeError + 1
@@ -1418,7 +1420,8 @@ and [<AllowNullLiteral>]
                                                     let serial = ms.ReadInt64()
                                                     let numElems = ms.ReadVInt32()
                                                     let meta = BlobMetadata( parti, serial, numElems, buflen )
-                                                    pushChunkFunc( meta, ms )  
+                                                    pushChunkFunc( meta, ms ) 
+                                                    (ms :> IDisposable).Dispose() 
                                                 else
                                                     Logger.LogF( LogLevel.Info, ( fun _ -> sprintf "Throw away %dB as stored SHA512 hash doesn't match" readlen ) )
                                                     nSomeError := !nSomeError + 1

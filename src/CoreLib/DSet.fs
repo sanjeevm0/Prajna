@@ -2202,6 +2202,7 @@ and [<Serializable; AllowNullLiteral>]
                 let newMeta, msSend = currentFunc.Encode( meta, elemArray )
                 if Utils.IsNotNull msSend then 
                     pushChunkFunc( newMeta, msSend ) 
+                    (msSend :> IDisposable).Dispose()
             else
                 // End of stream mask
                 pushChunkFunc( meta, null )

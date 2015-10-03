@@ -55,7 +55,7 @@ type [<AllowNullLiteral>] IRefCounter<'K> =
 
 #if DEBUG
 type internal BufferListDebugging =
-    static member DebugLeak = false
+    static member DebugLeak = true
 #endif
 
 // A shared pool of RefCounters
@@ -424,6 +424,9 @@ type [<AllowNullLiteral>] [<AbstractClass>] StreamBase<'T> =
     [<DefaultValue>] val mutable Id : int
     [<DefaultValue>] val mutable private info : string
     [<DefaultValue>] val mutable debugInfo : string
+#if DEBUGALLOCS
+    [<DefaultValue>] val mutable allocs : ConcurrentDictionary<string, string>
+#endif
 
     new() as x = 
         { inherit MemoryStream() }
@@ -506,7 +509,7 @@ type [<AllowNullLiteral>] [<AbstractClass>] StreamBase<'T> =
 
     interface IRefCounter<string> with
 #if DEBUGALLOCS
-        override val Allocs : ConcurrentDictionary<string, string> = new ConcurrentDictionary<_,_>() with get // for debugging allocations
+        override x.Allocs with get() = x.allocs // for debugging allocations
 #endif
         override x.DebugInfo with get() = x.debugInfo and set(v) = x.debugInfo <- v
         override x.Key with get() = "Stream:" + x.info + x.Id.ToString()
@@ -929,8 +932,8 @@ type BufferListStream<'T>(bufSize : int, doNotUseDefault : bool) =
                 sb.AppendLine(sprintf "Num streams in use: %d" streamsInUse.Count) |> ignore
                 for s in streamsInUse do
                     let (key, value) = (s.Key, s.Value)
-                    let v : List<RBufPart<'T>> = s.Value.BufList
-                    sb.AppendLine(sprintf "%s : %s : NumBuffers:%d" s.Key s.Value.Info s.Value.BufList.Count) |> ignore
+                    let v : List<RBufPart<'T>> = s.Value.BufListNoCheck
+                    sb.AppendLine(sprintf "%s : %s : NumBuffers:%d" s.Key s.Value.Info s.Value.BufListNoCheck.Count) |> ignore
                 sb.ToString()
             )
 #endif
@@ -994,13 +997,17 @@ type BufferListStream<'T>(bufSize : int, doNotUseDefault : bool) =
             if not (base.Info.Equals("")) then
                 streamsInUse.TryRemove(base.Info) |> ignore
 
+    override x.Dispose(bDisposing : bool) =
+        x.Release(not bDisposing)
+        base.Dispose(bDisposing)
+
     interface IDisposable with
         override x.Dispose() =
-            x.Release(false)
+            x.Dispose(true)
             GC.SuppressFinalize(x)
 
     override x.Finalize() =
-        x.Release(true)
+        x.Dispose(false)
 
     member x.GetNewWriteBuffer with set(v) = getNewWriteBuffer <- v
 
@@ -1010,7 +1017,8 @@ type BufferListStream<'T>(bufSize : int, doNotUseDefault : bool) =
 
     member x.NumBuf with get() = elemLen
 
-    member private x.BufList with get() = bufListRef.Elem.List
+    member private x.BufListNoCheck with get() = bufListRef.ElemNoCheck.List
+    member private x.BufList with get() : List<RBufPart<'T>> = bufListRef.Elem.List
     member private x.BufListRef with get() : SafeRefCnt<RefCntList<RBufPart<'T>,RefCntBuf<'T>>> = bufListRef and set(v) = bufListRef <- v
 
     override x.GetTotalBuffer() =

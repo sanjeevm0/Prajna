@@ -278,6 +278,8 @@ type internal Listener =
         if queuePeer.CanSend then 
             if returnCmd.Verb<>ControllerVerb.Unknown then 
                 queuePeer.ToSend( returnCmd, ms )
+        if Utils.IsNotNull ms then
+            ms.Dispose()
     /// Parse Command At Daemon
     member x.ParseCommandAtDaemon (queuePeer : NetworkCommandQueuePeer) 
                                 (command : ControllerCommand)

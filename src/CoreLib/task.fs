@@ -1310,9 +1310,9 @@ and [<AllowNullLiteral; Serializable>]
                                     let y = allTasks.GetOrAdd( jobID, x )
                                     if Object.ReferenceEquals( x, y ) then 
                                         // Task entry inserted. Insert a removal entry 
+                                        jobAction.LifeCycleObject.OnDisposeFS( x.OnJobFinish )
                                         jobAction.LifeCycleObject.OnDisposeFS( fun _ -> allTasks.TryRemove(jobID) |> ignore )
                                         jobAction.LifeCycleObject.OnDisposeFS( fun _ -> BlobFactory.unregisterAndRemove(jobID) |> ignore )
-                                        jobAction.LifeCycleObject.OnDisposeFS( x.OnJobFinish )
                                         x.ClientAvailability( queue.RemoteEndPointSignature, Some x.ReceiveBlobNoFeedback, None ) 
                                         Logger.LogF( jobID, 
                                                      LogLevel.MildVerbose, ( fun _ ->  let t1 = (PerfADateTime.UtcNowTicks())
@@ -1446,16 +1446,16 @@ and [<AllowNullLiteral; Serializable>]
                         let msg = sprintf "Error@AppDomain: Start, Job (ID:%A) %s:%s can't find the relevant job in allTasks " jobID name (VersionToString(DateTime(verNumber)))
                         jobAction.ThrowExceptionAtContainer( msg )
             )
-        | ( ControllerVerb.Cancel, ControllerNoun.Job ) -> 
-            let jobID = ms.ReadGuid()
-            use jobAction = SingleJobActionContainer.TryFind( jobID )
-            if Utils.IsNull jobAction then 
-                    Logger.LogF( jobID, 
-                                 LogLevel.WildVerbose, fun _ -> sprintf "[may be OK, job cancelled?] Rcvd Cancel, Job from endpoint %s of %dB payload, but failed to find corresponding job"
-                                                                           (LocalDNS.GetShowInfo(queue.RemoteEndPoint))
-                                                                           ms.Length )
-            else
-                jobAction.CancelJob()
+//        | ( ControllerVerb.Cancel, ControllerNoun.Job ) -> 
+//            let jobID = ms.ReadGuid()
+//            use jobAction = SingleJobActionContainer.TryFind( jobID )
+//            if Utils.IsNull jobAction then 
+//                    Logger.LogF( jobID, 
+//                                 LogLevel.WildVerbose, fun _ -> sprintf "[may be OK, job cancelled?] Rcvd Cancel, Job from endpoint %s of %dB payload, but failed to find corresponding job"
+//                                                                           (LocalDNS.GetShowInfo(queue.RemoteEndPoint))
+//                                                                           ms.Length )
+//            else
+//                jobAction.CancelJob()
 
         | ( ControllerVerb.Echo2, ControllerNoun.Job ) ->
             Logger.LogF( LogLevel.ExtremeVerbose, ( fun _ -> sprintf "Echo2, Job from client"))
@@ -1657,6 +1657,7 @@ and [<AllowNullLiteral; Serializable>]
                             let msg = sprintf "Error@AppDomain: Can't find job %s:%s in %A, %A " name (VersionToString(DateTime(verNumber))) (command.Verb) (command.Noun) 
                             jobAction.ThrowExceptionAtContainer( msg )
             )
+        | ( ControllerVerb.Cancel, ControllerNoun.Job )
         | ( ControllerVerb.Close, ControllerNoun.Job ) ->
             let jobID = ms.ReadGuid()
             using ( SingleJobActionContainer.TryFind( jobID )) ( fun jobAction -> 
@@ -2639,6 +2640,7 @@ and [<AllowNullLiteral; Serializable>]
                 let queue = x.QueueAtClientMonitor
                 if ( Utils.IsNotNull queue && queue.CanSend )  then 
                     use msSend = new MemStream( 1024 )
+                    msSend.WriteGuid( x.JobID )
                     msSend.WriteString( x.Name )
                     msSend.WriteInt64( x.Version.Ticks )
                     queue.ToSend( ControllerCommand( ControllerVerb.Close, ControllerNoun.Job ), msSend )
@@ -3024,6 +3026,7 @@ and internal TaskQueue() =
                                     true
                                 else
                                     let nodeInfo = taskHolder.CurNodeInfo
+                                    task.TypeOf <- taskHolder.TypeOf
                                     let foundTask = x.AddTask( task, queue )
                                     foundTask.TaskHolder <- taskHolder
                                     use msSend = new MemStream( 1024 )

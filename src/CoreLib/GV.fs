@@ -477,16 +477,16 @@ type internal JobLifeCycle(jobID:Guid) =
             CTSSource.Dispose()
     /// EndJob has been called, the flag is mainly serve for debugging purpose. 
     /// If the jobLifeCycle object hasn't been disposed after EndJob has been called for a while, something is wrong 
-    member val EndJobMark = false with get, set
+    member val EndJobMark = ref 0 with get, set
     /// End/Cancel a particular job
     /// This function can be called multiple times concurrently, only one instance of the call will be executed. 
     /// Also, during execution, it will wait for any SingleJobActionGeneric that relies on the current job to complete before executing this action. 
     member x.EndJob() = 
         // This process is responsible for the disposing routine
-        x.EndJobMark <- true 
-        let cnt = Interlocked.Decrement( x.numJobActionsInProcess )
-        if cnt < 0 then 
-            x.DisposeJob()
+        if Interlocked.Increment( x.EndJobMark ) = 1 then 
+            let cnt = Interlocked.Decrement( x.numJobActionsInProcess )
+            if cnt < 0 then 
+                x.DisposeJob()
     override x.Finalize() =
         /// Close All Active Connection, to be called when the program gets shutdown.
         x.EndJob()
@@ -666,7 +666,7 @@ type internal SingleJobActionGeneric<'T when 'T :> JobLifeCycle and 'T : null >(
     /// Whether we have successfully hold a JobLifeCycle object and garantee that can use the object before it is being cancelled 
     let cnt = if Utils.IsNull jobLifeCycle then Int32.MinValue else Interlocked.Increment( jobLifeCycle.numJobActionsInProcess )
     let isCancellationRequested() = 
-        cnt<=0 || jobLifeCycle.EndJobMark || jobLifeCycle.IsCancellationRequested
+        cnt<=0 || !jobLifeCycle.EndJobMark>0 || jobLifeCycle.IsCancellationRequested
     let jobID = if not (isCancellationRequested()) then jobLifeCycle.JobID else Guid.Empty
     let nDisposed = ref 0 
     member x.JobID with get() = jobID
