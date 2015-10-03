@@ -779,7 +779,7 @@ and [<AllowNullLiteral>]
                 meta.Pack( metaStream ) 
                 ms.InsertBefore( metaStream ) |> ignore
                 let msSend = metaStream
-                (ms :> IDisposable).Dispose() // done with this now, metaStream contains  information
+                //(ms :> IDisposable).Dispose() // done with this now, metaStream contains  information
                 ControllerCommand( ControllerVerb.SyncWrite, ControllerNoun.DStream), msSend 
             | _ -> 
                 Logger.Fail( sprintf "DStream.SyncPackageToSend, object pushed is of unknonw type %A, %A" (streamObject.GetType()) streamObject )
