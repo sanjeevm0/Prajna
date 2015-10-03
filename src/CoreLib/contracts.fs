@@ -1312,7 +1312,7 @@ type internal ContractStoreAtProgram() =
     /// </summary> 
     member x.RegisterContractToServers (serversInfo) ( name, info, bReload, parseFunc: int64*StreamBase<byte> -> unit ) = 
         let mutable bRegisterSuccessful = false
-        let msInfo = ContractInfo.PackWithName( name, info, bReload )
+        use msInfo = ContractInfo.PackWithName( name, info, bReload )
         x.Collections.Item( name ) <- parseFunc
         let allqueues = ContractServerQueues.GetNetworkQueues( serversInfo ) 
         let store = x.RegisteredContract.GetOrAdd( name, fun _ -> ContractRequest() )

@@ -141,6 +141,7 @@ type internal BlobFactory() =
                 if bExist then 
                     triggerFunc( ms, epSignature )
             // JinL: 9/8/2015, discuss with Sanjeev, try to control queue from growing. 
+            (ms :> IDisposable).Dispose()
             x.Collection.TryRemove( id ) |> ignore 
             true
         else

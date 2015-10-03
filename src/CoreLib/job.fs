@@ -1397,8 +1397,6 @@ and
         jobID, name, verNumber
     /// Deserialize Job description to Blob, 
     member x.UnpackToBlob( ms:StreamBase<byte> ) = 
-        if (Utils.IsNotNull x.MetadataStream) then
-            x.MetadataStream.Dispose()
         x.MetadataStream <- ms.Replicate()
         x.MetadataStream.Info <- sprintf "ReplicatedStream:%s" ms.Info
         let blobList = List<_>()

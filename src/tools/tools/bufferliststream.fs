@@ -271,7 +271,7 @@ type [<AbstractClass>] [<AllowNullLiteral>] RefCountBase() =
             Interlocked.Decrement(x.RefCount)
 
 type IdCounter() =
-    static let id = ref -1
+    static let id = ref -1L
     static member GetNext() =
         Interlocked.Increment(id)
 
@@ -421,7 +421,7 @@ type [<AllowNullLiteral>] [<AbstractClass>] StreamBase<'T> =
     [<DefaultValue>] val mutable ValBuf : byte[]
     [<DefaultValue>] val mutable Writable : bool
     [<DefaultValue>] val mutable Visible : bool
-    [<DefaultValue>] val mutable Id : int
+    [<DefaultValue>] val mutable Id : int64
     [<DefaultValue>] val mutable private info : string
     [<DefaultValue>] val mutable debugInfo : string
 #if DEBUGALLOCS
@@ -797,7 +797,7 @@ type RefCntList<'T,'TBase when 'T :> SafeRefCnt<'TBase> and 'TBase:null and 'TBa
 type BufferListStream<'T>(bufSize : int, doNotUseDefault : bool) =
     inherit StreamBase<'T>()
 
-    static let streamsInUse = new ConcurrentDictionary<string, BufferListStream<'T>>()
+    static let streamsInUse = new ConcurrentDictionary<int64, BufferListStream<'T>>()
 
     static let bufferSizeDefault = 64000
     static let mutable memStack : SharedMemoryPool<RefCntBuf<'T>,'T> = null
@@ -866,6 +866,11 @@ type BufferListStream<'T>(bufSize : int, doNotUseDefault : bool) =
         e
 
     member internal x.SetDefaults(bAlloc : bool) =
+#if DEBUG
+        if (BufferListDebugging.DebugLeak) then
+            streamsInUse.[x.Id] <- x
+            stackTrace <- Environment.StackTrace
+#endif
         if (bAlloc) then
             let newList = new RefCntList<RBufPart<'T>,RefCntBuf<'T>>()
             bufListRef <- new SafeRefCnt<RefCntList<RBufPart<'T>,RefCntBuf<'T>>>("BufferList", newList)
@@ -883,12 +888,15 @@ type BufferListStream<'T>(bufSize : int, doNotUseDefault : bool) =
         bSimpleBuffer <- src.SimpleBuffer
 
     override x.Replicate() =
-//        let e = x.GetNewNoDefault()
-//        e.BufListRef <- new SafeRefCnt<RefCntList<RBufPart<'T>,RefCntBuf<'T>>>("BufferList", x.BufListRef)
-//        e.ReplicateInfoFrom(x)
+#if DEBUGALLOCS
         let e = x.GetNew() :?> BufferListStream<'T>
         for b in x.BufList do
             e.WriteRBufNoCopy(b)
+#else
+        let e = x.GetNewNoDefault()
+        e.BufListRef <- new SafeRefCnt<RefCntList<RBufPart<'T>,RefCntBuf<'T>>>("BufferList", x.BufListRef)
+        e.ReplicateInfoFrom(x)
+#endif
         e.Seek(x.Position, SeekOrigin.Begin) |> ignore
         e :> StreamBase<'T>
         
@@ -910,19 +918,9 @@ type BufferListStream<'T>(bufSize : int, doNotUseDefault : bool) =
         with get() =
             base.Info
         and set(v) =
-#if DEBUG
-            if (BufferListDebugging.DebugLeak) then
-                if not (base.Info.Equals("")) then
-                    streamsInUse.TryRemove(base.Info) |> ignore
-#endif
             base.Info <- v
-#if DEBUG
-            if (BufferListDebugging.DebugLeak) then
-                let mutable infoStr = base.Info + ":" + x.Id.ToString()
-                // for extra debugging info, can include stack trace of memstream info
-                //infoStr <- infoStr + Environment.StackTrace
-                streamsInUse.[base.Info] <- x
-#endif
+
+    member private x.StackTrace with get() = stackTrace
 
     static member DumpStreamsInUse() =
 #if DEBUG
@@ -933,7 +931,8 @@ type BufferListStream<'T>(bufSize : int, doNotUseDefault : bool) =
                 for s in streamsInUse do
                     let (key, value) = (s.Key, s.Value)
                     let v : List<RBufPart<'T>> = s.Value.BufListNoCheck
-                    sb.AppendLine(sprintf "%s : %s : NumBuffers:%d" s.Key s.Value.Info s.Value.BufListNoCheck.Count) |> ignore
+                    sb.AppendLine(sprintf "%d : %s : NumBuffers:%d" s.Key s.Value.Info s.Value.BufListNoCheck.Count) |> ignore
+                    sb.AppendLine(sprintf "Alloc From: %s" s.Value.StackTrace) |> ignore
                 sb.ToString()
             )
 #endif
@@ -994,8 +993,11 @@ type BufferListStream<'T>(bufSize : int, doNotUseDefault : bool) =
             else
                 Logger.LogF(LogLevel.WildVerbose, fun _ -> sprintf "List release for %s with id %d %A finalize: %b remain: %d" x.Info x.Id (Array.init x.BufList.Count (fun index -> x.BufList.[index].Elem.Id)) bFromFinalize streamsInUse.Count)
             bufListRef.Release() // only truly releases when refcount goes to zero
-            if not (base.Info.Equals("")) then
-                streamsInUse.TryRemove(base.Info) |> ignore
+            //if not (base.Info.Equals("")) then
+            //    streamsInUse.TryRemove(base.Info) |> ignore
+            let b = ref Unchecked.defaultof<BufferListStream<'T>>
+            if not (streamsInUse.TryRemove(x.Id, b)) then
+                failwith "Illegal"
 
     override x.Dispose(bDisposing : bool) =
         x.Release(not bDisposing)
