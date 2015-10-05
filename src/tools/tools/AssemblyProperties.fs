@@ -60,6 +60,8 @@ module internal AssemblyProperties =
 
     [<assembly: InternalsVisibleTo("Prajna.BasicService" )>]
     
+    [<assembly: InternalsVisibleTo("Prajna.Tools.Tests" )>]
+    
     // Temporary! PrajnaCopy is currently using internal stuff
     [<assembly: InternalsVisibleTo("PrajnaCopy" )>]
     // Temporary! SortBenchmark is currently using internal stuff

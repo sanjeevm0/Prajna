@@ -77,8 +77,12 @@ type FrontEndServer =
 /// </summary>
 [<AbstractClass; AllowNullLiteral>]
 type ServiceInstanceBasic() = 
-    /// A Guid that uniquely identifies this service. All service of the same Guid will be considered equivalent. 
+    /// A Guid that uniquely identifies the domain of the service
     member val ServiceID = Guid.Empty with get, set
+    /// Input Schema that determines the coding of the input of data
+    member val InputSchemaID = Guid.Empty with get, set
+    /// Output Schema that determines the coding of the output of data
+    member val OutputSchemaID = Guid.Empty with get, set
     /// <summary>
     /// Maximum number of items that can be serviced by this instance, if 1, the class is being locked when it service one existing item. 
     /// If this is a large value, e.g., Int32.MaxValue, then there is no limit on number of service that can be executed on the service instance. 
@@ -506,7 +510,7 @@ type BackEndInstance< 'StartParamType
                 for cmd, ms in x.InitialMessage do 
                     // Wrap initial message with health information & end marker
                     let t1 = (PerfADateTime.UtcNowTicks())
-                    let msSend = new MemStream( int ms.Length + 128 ) 
+                    use msSend = new MemStream( int ms.Length + 128 ) 
                     health.WriteHeader( msSend ) 
                     let buf, pos, length = ms.GetBufferPosLength()
                     msSend.Append(buf, int64 pos, int64 length)
@@ -576,7 +580,7 @@ type BackEndInstance< 'StartParamType
                 | ControllerVerb.Read, ControllerNoun.Buffer -> 
                     let guids = BufferCache.UnPackGuid( ms ) 
                     let items = BufferCache.Current.FindCacheableBufferByGuid( guids ) 
-                    let msSend = new MemStream( )
+                    use msSend = new MemStream( )
                     health.WriteHeader( msSend ) 
                     BufferCache.PackCacheableBuffers( items, msSend )
                     health.WriteEndMark( msSend ) 
@@ -597,7 +601,7 @@ type BackEndInstance< 'StartParamType
                     x.ProcessRequest( queue, health, reqID, serviceID, requestObject )
                 | ControllerVerb.Echo, ControllerNoun.QueryReply ->
                     let t1 = (PerfDateTime.UtcNowTicks())
-                    let msSend = new MemStream( 128 )
+                    use msSend = new MemStream( 128 )
                     health.WriteHeader( msSend ) 
                     health.WriteEndMark( msSend ) 
                     queue.ToSend( ControllerCommand(ControllerVerb.EchoReturn, ControllerNoun.QueryReply ), msSend )
@@ -641,7 +645,7 @@ type BackEndInstance< 'StartParamType
             x.PrimaryQueue.Enqueue( serviceID ) 
             x.EvPrimaryQueue.Set() |> ignore 
         else
-            let msError = new MemStream( 1024 ) 
+            use msError = new MemStream( 1024 ) 
             health.WriteHeader( msError ) 
             msError.WriteBytes( serviceID.ToByteArray() )
             health.WriteEndMark( msError ) 
@@ -795,7 +799,7 @@ type BackEndInstance< 'StartParamType
         if bHealth && not (Utils.IsNull queue) then 
             let ticksCur = (PerfADateTime.UtcNowTicks())
             let elapse = int( ( ticksCur - ticks )/TimeSpan.TicksPerMillisecond ) 
-            let msTimeOut = new MemStream( 1024 ) 
+            use msTimeOut = new MemStream( 1024 ) 
             health.WriteHeader( msTimeOut ) 
             msTimeOut.WriteBytes( reqID.ToByteArray() )
             msTimeOut.WriteInt32( elapse ) // Timeout after (ms) 
@@ -815,7 +819,7 @@ type BackEndInstance< 'StartParamType
             let qPerf = SingleQueryPerformance( InQueue = timeInQueueMS, InProcessing = timeInProcessingMS, 
                                                 NumSlotsAvailable = numSlotsAvailable, 
                                                 NumItemsInQueue = numItems )
-            let msReply = new MemStream( ) 
+            use msReply = new MemStream( ) 
             health.WriteHeader( msReply )         
             msReply.WriteBytes( reqID.ToByteArray() ) 
             SingleQueryPerformance.Pack( qPerf, msReply )
@@ -831,7 +835,7 @@ type BackEndInstance< 'StartParamType
         let queue = Cluster.Connects.LookforConnectBySignature( remoteSignature ) 
         let bHealth, health = x.FrontEndHealth.TryGetValue( remoteSignature )
         if bHealth && not (Utils.IsNull queue) then 
-            let msReply = new MemStream( ) 
+            use msReply = new MemStream( ) 
             health.WriteHeader( msReply )         
             msReply.WriteBytes( reqID.ToByteArray() ) 
             msReply.WriteString( msg ) 

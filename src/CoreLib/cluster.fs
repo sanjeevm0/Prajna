@@ -733,7 +733,7 @@ and
                                           config.PortsRange)
 
     member val internal MsgToHost=List<(ControllerCommand*MemStream)>() with get
-    member val private PeerIndexFromEndpoint = new ConcurrentDictionary<EndPoint, int>() with get
+    member val internal PeerIndexFromEndpoint : ConcurrentDictionary<EndPoint, int> = new ConcurrentDictionary<_,_>() with get
     member internal x.Queues with get() = queues
                              and set( q ) = queues <- q
     member val internal QueuesInitialized = ref 0 with get
@@ -1490,9 +1490,6 @@ and
                 | ex ->
                     let msg = (sprintf "Receive cmd %A from peer %d, during processing, incur exception %A " cmd i ex )    
                     Logger.Log( LogLevel.Info, msg )
-                    let msError = new MemStream( 1024 )
-                    msError.WriteString( msg )
-                    ms.DecRef()
             | None -> 
                 ()
 
