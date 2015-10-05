@@ -55,7 +55,9 @@ type internal JobDependency() =
     /// we use the last 8B of Hash as signature
     member x.ComputeHash( buf: byte[] ) = 
         if (Utils.IsNull x.Hash) then
-            x.Hash <- HashLengthPlusByteArray( buf )
+            x.Hash <- 
+                use hasher = new System.Security.Cryptography.SHA256Managed()
+                HashLengthPlusByteArray( hasher, buf )
         x.Hash
 
     /// Compute hash based on current file 

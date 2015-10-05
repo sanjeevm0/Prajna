@@ -565,8 +565,12 @@ type [<AllowNullLiteral>] [<AbstractClass>] StreamBase<'T> =
         x.ComputeHash(sha512, offset, len)
 
     member x.ComputeSHA256(offset : int64, len : int64) =
-        use sha256managed = new Security.Cryptography.SHA256Managed()
-        x.ComputeHash(sha256managed, offset, len)
+        use sha256 = new Security.Cryptography.SHA256Managed() 
+        x.ComputeHash(sha256, offset, len)
+
+    member x.ComputeChecksum(offset : int64, len : int64) =
+        use hasher = Hash.CreateChecksum()
+        x.ComputeHash(hasher, offset, len)
 
     member internal x.WriteUInt128( data: UInt128 ) = 
         x.WriteUInt64( data.Low )
@@ -798,6 +802,7 @@ type BufferListStream<'T>(bufSize : int, doNotUseDefault : bool) =
     inherit StreamBase<'T>()
 
     static let streamsInUse = new ConcurrentDictionary<int64, BufferListStream<'T>>()
+    static let streamsInUseCnt = ref 0L
 
     static let bufferSizeDefault = 64000
     static let mutable memStack : SharedMemoryPool<RefCntBuf<'T>,'T> = null
@@ -871,6 +876,7 @@ type BufferListStream<'T>(bufSize : int, doNotUseDefault : bool) =
             streamsInUse.[x.Id] <- x
             stackTrace <- Environment.StackTrace
 #endif
+        Interlocked.Increment(streamsInUseCnt) |> ignore
         if (bAlloc) then
             let newList = new RefCntList<RBufPart<'T>,RefCntBuf<'T>>()
             bufListRef <- new SafeRefCnt<RefCntList<RBufPart<'T>,RefCntBuf<'T>>>("BufferList", newList)
@@ -936,8 +942,9 @@ type BufferListStream<'T>(bufSize : int, doNotUseDefault : bool) =
                     sb.AppendLine(sprintf "Alloc From: %s" s.Value.StackTrace) |> ignore
                 sb.ToString()
             )
+        else
 #endif
-        ()
+            Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Num streams in use: %d" !streamsInUseCnt)
 
     // static memory pool
     static member InitFunc (e : RefCntBuf<'T>) =
@@ -997,6 +1004,7 @@ type BufferListStream<'T>(bufSize : int, doNotUseDefault : bool) =
             //    streamsInUse.TryRemove(base.Info) |> ignore
             let b = ref Unchecked.defaultof<BufferListStream<'T>>
             streamsInUse.TryRemove(x.Id, b) |> ignore
+            Interlocked.Decrement(streamsInUseCnt) |> ignore
 //            if not (streamsInUse.TryRemove(x.Id, b)) then
 //                failwith "Illegal"
             bufListRef.Release() // only truly releases when refcount goes to zero
