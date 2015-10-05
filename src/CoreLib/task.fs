@@ -1127,7 +1127,8 @@ and [<AllowNullLiteral; Serializable>]
             x.OnJobFinish()
 
         x.SyncJobExecutionAsSeparateApp ( queueHost, endPoint, dset, usePartitions) "Fold" (fun jbInfo parti () -> dset.SyncIterateProtected jbInfo parti (syncFoldFunci jbInfo parti ) ) beginJob finalJob
-        (msRep :> IDisposable).Dispose()
+        if (Utils.IsNotNull msRep) then
+            (msRep :> IDisposable).Dispose()
 
     member val JobFinished = new List<WaitHandle>()
 
