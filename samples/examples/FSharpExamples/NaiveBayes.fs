@@ -254,8 +254,8 @@ type NaiveBayes() =
         let sw = new Stopwatch()
  
 //        let stream = new MemoryStream()
-        let stream = new MemStream()
-        let serializer = new BinarySerializer() :> System.Runtime.Serialization.IFormatter
+        use stream = new MemStream()
+        let serializer = GenericSerialization.GetFormatter GenericSerialization.PrajnaFormatterGuid
         sw.Restart()
 //        stream.SerializeFrom seqCounts
         serializer.Serialize(stream, seqCounts)
@@ -273,7 +273,7 @@ type NaiveBayes() =
         printfn "----------------------------------"
 
         printfn "Using standard .NET BinaryFormatter:"
-        let newStream = new MemStream()
+        use newStream = new MemStream()
         sw.Restart()
         newStream.SerializeFrom(seqCounts)
         let timeSer2 = sw.Stop(); sw.Elapsed

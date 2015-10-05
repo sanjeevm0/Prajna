@@ -33,6 +33,7 @@
     <Compile Include="AssemblyProperties.fs" />
     <Compile Include="AssemblyInfo.fs" />
     <Compile Include="utils.fs" />
+    <Compile Include="hash.fs" />
     <Compile Include="interops.fs" />
     <Compile Include="Math.fs" />
     <Compile Include="extension.fs" />
@@ -51,7 +52,6 @@
     <Compile Include="serialize.fs" />
     <Compile Include="customserialize.fs" />
     <Compile Include="ArgumentParser.fs" />
-    <Compile Include="ReflectionTools.fs" />
     <Compile Include="HttpBuilder.fs" />
     <Compile Include="dns.fs" />
     <Compile Include="basenetwork.fs" />
