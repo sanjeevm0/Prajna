@@ -142,9 +142,9 @@ and [<AbstractClass>] ThreadPoolBase() =
             let nt = x.CreateNew(x)
             nt.Id <- ntId
             nt.Init()
-            nt.Start()
             threads.[ntId] <- nt
             stopList.Add(nt.StopHandle)
+            nt.Start()
         inCreation <- false
 
 // =====================================================================================
@@ -295,6 +295,7 @@ type TPThread(tp : ThreadPool, minTaskCnt : int) =
     override x.Init() =
         base.Init()
         x.ControlHandle <- x.Handle :> EventWaitHandle
+        tp.WaitList.[minTaskCnt] <- (x.ControlHandle, x)
 
     override val ToStop = (fun () -> !tp.TaskTotal <= minTaskCnt) with get, set
 
@@ -340,7 +341,6 @@ and ThreadPool() as x =
     let createNew  = (fun (tpb : ThreadPoolBase) ->
         let waitListId = x.WaitList.Count
         let t = TPThread(tpb :?> ThreadPool, waitListId)
-        x.WaitList.[waitListId] <- (t.ControlHandle, t)
         t :> ThreadBase
     )
 
@@ -372,24 +372,23 @@ and ThreadPool() as x =
         minTasksOverWindow <- Math.Min(!x.TaskTotal, minTasksOverWindow)
         maxTasksOverWindow <- Math.Max(!x.TaskTotal, maxTasksOverWindow)
         taskIntervalCount <- taskIntervalCount + 1
-        if (taskIntervalCount > checkTaskInterval ||
-            x.Threads.Count < x.MinThreads ||
-            x.Threads.Count > x.MaxThreads) then
-            let mutable newThreads = x.Threads.Count
+        let mutable newThreads = x.Threads.Count
+        if (taskIntervalCount > checkTaskInterval) then
             if (minTasksOverWindow > x.Threads.Count*2) then
                 newThreads <- minTasksOverWindow*3/2
             else if (maxTasksOverWindow < x.Threads.Count/2) then
                 newThreads <- maxTasksOverWindow*2/3
-            newThreads <- Math.Max(newThreads, x.MinThreads)
-            newThreads <- Math.Min(newThreads, x.MaxThreads)
-            while (x.Threads.Count < newThreads) do
-                x.CreateNewThread()
-            while (x.Threads.Count > newThreads) do
-                // remove last one
-                let (wh, t) = x.WaitList.[x.Threads.Count-1]
-                t.Stop()
-                x.Threads.TryRemove(t.Id) |> ignore
             taskIntervalCount <- 0
+        newThreads <- Math.Max(newThreads, !x.TaskTotal)
+        newThreads <- Math.Max(newThreads, x.MinThreads)
+        newThreads <- Math.Min(newThreads, x.MaxThreads)
+        while (x.Threads.Count < newThreads) do
+            x.CreateNewThread()
+        while (x.Threads.Count > newThreads) do
+            // remove last one
+            let (wh, t) = x.WaitList.[x.Threads.Count-1]
+            t.Stop()
+            x.Threads.TryRemove(t.Id) |> ignore
 
     member x.AddWorkItem (cont : unit->WaitHandle*bool, bRepeat : bool, info : string) =
         let newTaskCount = Interlocked.Increment(x.TaskTotal)
