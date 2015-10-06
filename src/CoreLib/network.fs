@@ -1545,7 +1545,7 @@ and [<AllowNullLiteral>] NetworkConnections() as x =
             let numInitBufs = Math.Min(DeploymentSettings.InitNetworkSocketAsyncEventArgBuffers, int maxNumStackBufs)
             let bufSize = bufSize // make it unmutable so it can be captured by closure
             let maxNumStackBufs = maxNumStackBufs
-            Logger.LogF(LogLevel.Info, fun _ -> sprintf "Initialize network stack with initial buffers: %d max buffers: %d buffer size: %d" numInitBufs maxNumStackBufs bufSize)
+            Logger.LogF(LogLevel.Info, fun _ -> sprintf "Initialize network stack with initial buffers: %d max buffers: %d buffer size: %d network threads: %d" numInitBufs maxNumStackBufs bufSize DeploymentSettings.NumNetworkThreads)
             x.InitStack(numInitBufs, bufSize, int maxNumStackBufs)
             // for internal queues of SocketAsyncEventArgs in genericnetwork.fs
             // since flow control takes into account NetworkCommand->SocketAsyncEventArgs and reverse conversion

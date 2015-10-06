@@ -59,7 +59,7 @@
     <WarningLevel>3</WarningLevel>
     <DocumentationFile>bin\Debugx64\PrajnaClient.XML</DocumentationFile>
     <Prefer32Bit>false</Prefer32Bit>
-    <StartArguments>-mem 192000 -verbose 4 -dirlog c:\Prajna\Log\sanjeevm -port 1082 -jobport 1200-1250</StartArguments>
+    <StartArguments>-con -verbose 4</StartArguments>
     <PlatformTarget>x64</PlatformTarget>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x64' ">

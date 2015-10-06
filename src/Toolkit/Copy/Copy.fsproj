@@ -30,8 +30,7 @@
     <WarningLevel>3</WarningLevel>
     <DocumentationFile>bin\Debugx64\PrajnaCopy.XML</DocumentationFile>
     <Prefer32Bit>false</Prefer32Bit>
-    <StartArguments>
-    </StartArguments>
+    <StartArguments>-cluster c:\onenet\cluster\b.inf -echo 1 -con -verbose 4</StartArguments>
     <PlatformTarget>x64</PlatformTarget>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x64' ">

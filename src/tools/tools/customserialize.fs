@@ -438,7 +438,7 @@ type StreamBaseExtension =
                     let fmt = GenericSerialization.GetDefaultFormatter()
                     StreamBaseExtension.FormatterSerializeFromTypeName( x, obj, fullname, fmt )
 
-    //static member ArrToReadTo = Array.zeroCreate<byte>(50000)
+    static member ArrToReadTo = Array.zeroCreate<byte>(50000)
 
     /// <summary> 
     /// Deserialize a particular object from bytestream, allow use of customizable serializer if installed. 
