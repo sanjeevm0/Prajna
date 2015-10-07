@@ -219,9 +219,9 @@ type DeploymentSettings() =
     /// ReSerialization For Cache
     static member val internal DefaultCacheSerializationLimit = 1 with get, set
     /// ReSerialization For Cache
-    static member val internal DefaultIOMaxQueue = 5000 with get, set
+    static member val internal DefaultIOMaxQueue = 200 with get, set
     /// ReSerialization For Cache
-    static member val internal DefaultIOQueueReadUnblocking = 1 with get, set
+    static member val internal DefaultIOQueueReadUnblocking = 2 with get, set
     //static member val internal DefaultIOQueueWriteUnblocking = 100 with get, set
     /// Track seen partitions
     static member val internal TrackSeenKeyValue = false with get, set
@@ -256,7 +256,7 @@ type DeploymentSettings() =
     static member val internal MaxDownStreamAsyncTasks = 8 with get, set
     /// JinL to SanjeevM: can you please provide explanation for the following three parameters? 
     /// Maximum combined buffer devoted to sending queue (in bytes) 
-    static member val MaxSendingQueueLimit = 1024 * 1024 * 1024 with get, set
+    static member val MaxSendingQueueLimit = 1024 * 1024 * 100 with get, set
     /// Maximum network stack memory (total across all connections), 0 means unbounded (in bytes)
     static member val MaxNetworkStackMemory = 1024 * 1024 * 1024 * 4 with get, set
     /// Maximum network stack memory (total across all connections) as percentage of total (as percent)
@@ -268,13 +268,13 @@ type DeploymentSettings() =
     //static member val InitNetworkSocketAsyncEventArgBuffers = 128 with get, set
     static member val InitNetworkSocketAsyncEventArgBuffers = 8*1024 // for sort benchmark
     /// The size of network command queue for sending
-    static member val NetworkCmdSendQSize = 1000 with get, set
+    static member val NetworkCmdSendQSize = 500 with get, set
     /// The size of network command queue for receiving
-    static member val NetworkCmdRecvQSize = 1000 with get, set
+    static member val NetworkCmdRecvQSize = 500 with get, set
     /// The size of network socket async event args queue for sending
-    static member val NetworkSASendQSize = 1000 with get, set
+    static member val NetworkSASendQSize = 500 with get, set
     /// The size of network socket async event args queue for receiving
-    static member val NetworkSARecvQSize = 1000 with get, set
+    static member val NetworkSARecvQSize = 500 with get, set
     /// The initial # of buffers for shared memory pool used by BufferListStream
     //static member val InitBufferListNumBuffers = 128 with get, set
     static member val InitBufferListNumBuffers = 8*1024 with get, set // for sort benchmark
