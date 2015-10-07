@@ -302,22 +302,26 @@ type TPThread(tp : ThreadPool, minTaskCnt : int) =
     override x.ProcessOne() =
         let (ret, r) = tp.TaskQ.TryDequeue()
         if (ret) then
-            let (task, bRemove, info) = r
+            let (task, bRemove, finishCb, info) = r
             Logger.LogF(ThreadBase.LogLevel, fun _ -> "RunTask: " + info)
             inRun <- true
             let (event, finish) = task()
             inRun <- false
-            Interlocked.Decrement(tp.TaskTotal) |> ignore
             if (not bRemove && not finish && Utils.IsNull event) then
                 // immediately requeue
                 Logger.LogF(ThreadBase.LogLevel, fun _ -> "FinishRequeue: " + info)
-                tp.AddWorkItem(task, not bRemove, info)
+                tp.TaskQ.Enqueue(r)
             else
                 // remove
+                Interlocked.Decrement(tp.TaskTotal) |> ignore
                 if (not bRemove && not finish) then
                     Logger.LogF(ThreadBase.LogLevel, fun _ -> "NotFinishWait: " + info)
-                    Wait.Current.WaitForHandle(event, (fun _ -> tp.AddWorkItem(task, not bRemove, info)), false, "Requeue" + info)
+                    Wait.Current.WaitForHandle(event, (fun _ -> tp.AddWorkItem(task, not bRemove, finishCb, info)), false, "Requeue" + info)
                 else
+                    // execute the finish callback
+                    match finishCb with
+                        | None -> ()
+                        | Some(cb) -> cb()
                     Logger.LogF(ThreadBase.LogLevel, fun _ -> "RemoveTask: " + info)
         // wait if needed
         if (!tp.TaskTotal <= minTaskCnt) then
@@ -359,7 +363,7 @@ and ThreadPool() as x =
         x.MaxThreads <- Math.Max(maxCount, x.MinThreads)
         x.ST.ExecOnce(x.AdjustThreadCount)
 
-    member val TaskQ : ConcurrentQueue<(unit->WaitHandle*bool)*bool*(string)> = new ConcurrentQueue<_>() with get
+    member val TaskQ : ConcurrentQueue<(unit->WaitHandle*bool)*bool*Option<unit->unit>*string> = new ConcurrentQueue<_>() with get
     member val WaitList : ConcurrentDictionary<int, EventWaitHandle*TPThread> = new ConcurrentDictionary<_,_>() with get
     member val private MinThreads = 4 with get, set
     member val private MaxThreads = Environment.ProcessorCount * 4 with get, set
@@ -390,28 +394,28 @@ and ThreadPool() as x =
             t.Stop()
             x.Threads.TryRemove(t.Id) |> ignore
 
-    member x.AddWorkItem (cont : unit->WaitHandle*bool, bRepeat : bool, info : string) =
+    member x.AddWorkItem (cont : unit->WaitHandle*bool, bRepeat : bool, finishCb : Option<unit->unit>, info : string) =
         let newTaskCount = Interlocked.Increment(x.TaskTotal)
         Logger.LogF(ThreadBase.LogLevel, fun _ -> "AddTask: " + info)
-        x.TaskQ.Enqueue((cont, not bRepeat, info))
+        x.TaskQ.Enqueue((cont, not bRepeat, finishCb, info))
         let (ret, t) = x.WaitList.TryGetValue(newTaskCount-1)
         if (ret) then
             let (wh, t) = t
             t.ControlHandle.Set() |> ignore
         x.ST.ExecOnce(x.AdjustThreadCount)
 
-    member x.AddWorkItem (cont : unit->ManualResetEvent*bool, info : string) =
+    member x.AddWorkItem (cont : unit->ManualResetEvent*bool, finishCb : Option<unit->unit>, info : string) =
         let wrappedFunc() : WaitHandle*bool =
             let (event, b) = cont()
             (event :> WaitHandle, b)
-        x.AddWorkItem(wrappedFunc, true, info)
+        x.AddWorkItem(wrappedFunc, true, finishCb, info)
 
     member x.WaitAndContinueOnThreadPool(h : WaitHandle, cont : unit->unit, info : string) =
         let func() : WaitHandle*bool =
             cont()
             (null, true)
         let funcAddWork() =
-            ThreadPool.Current.AddWorkItem(func, false, "AddWorkItem" + info)
+            ThreadPool.Current.AddWorkItem(func, false, None, "AddWorkItem" + info)
         Wait.Current.WaitForHandle(h, funcAddWork, false, info)
 
 // ==================================================================
