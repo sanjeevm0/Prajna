@@ -701,8 +701,6 @@ type RemoteFunc( filePartNum:int, records:int64, _dim:int , partNumS1:int, partN
             Seq.empty
 
 
-
-
     // repartition, use per-allocated memory. For testing and comparing to MemoryStreamB only, cannot be used in remote server
     member x.RepartitionSharedMemory (stage:RepartitionStage) (buffer:byte[], size:int) = 
         if size > 0 then
@@ -768,38 +766,6 @@ type RemoteFunc( filePartNum:int, records:int64, _dim:int , partNumS1:int, partN
 
         else 
             Seq.empty
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-//
-//    member val writeFileLock = Array.create stageTwoPartionBoundary.Length (ref 0)
-//    member val minparti = Int32.MaxValue with get, set
-//    member val writeCacheBlockSize = 10000000
-//    member val writeCache = new ConcurrentDictionary<int,byte[]>()
-//    member val writeCachePos = new ConcurrentDictionary<int,int>()
-//
-//
-//
-//
-//    member val memStreamBuf =  new ConcurrentQueue<MemoryStreamB>()
-//    
-//    member val memStreamBufEmptyHandel:Object = null with get,set
-//    member val memStreamBufFullHandel:Object = null with get,set
-
-
-
 
     member val sortThread = null with get,set
     member x.SortDumpFile() =
