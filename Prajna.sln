@@ -164,6 +164,8 @@ Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "StartTwoClustersInSequence"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Interop", "..\..\sanjeevm\prjana\Interop\Interop.vcxproj", "{27111BC6-6738-416E-A107-EC426A10F478}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "qsort", "samples\SortBenchmark\qsort\qsort.vcxproj", "{E95D819A-B8E3-4F94-B7EE-300E31AB0181}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -684,6 +686,20 @@ Global
 		{27111BC6-6738-416E-A107-EC426A10F478}.Release|Win32.Build.0 = Release|Win32
 		{27111BC6-6738-416E-A107-EC426A10F478}.Release|x64.ActiveCfg = Release|x64
 		{27111BC6-6738-416E-A107-EC426A10F478}.Release|x64.Build.0 = Release|x64
+		{E95D819A-B8E3-4F94-B7EE-300E31AB0181}.Debug|Any CPU.ActiveCfg = Debug|Win32
+		{E95D819A-B8E3-4F94-B7EE-300E31AB0181}.Debug|Mixed Platforms.ActiveCfg = Debug|Win32
+		{E95D819A-B8E3-4F94-B7EE-300E31AB0181}.Debug|Mixed Platforms.Build.0 = Debug|Win32
+		{E95D819A-B8E3-4F94-B7EE-300E31AB0181}.Debug|Win32.ActiveCfg = Debug|Win32
+		{E95D819A-B8E3-4F94-B7EE-300E31AB0181}.Debug|Win32.Build.0 = Debug|Win32
+		{E95D819A-B8E3-4F94-B7EE-300E31AB0181}.Debug|x64.ActiveCfg = Debug|x64
+		{E95D819A-B8E3-4F94-B7EE-300E31AB0181}.Debug|x64.Build.0 = Debug|x64
+		{E95D819A-B8E3-4F94-B7EE-300E31AB0181}.Release|Any CPU.ActiveCfg = Release|Win32
+		{E95D819A-B8E3-4F94-B7EE-300E31AB0181}.Release|Mixed Platforms.ActiveCfg = Release|Win32
+		{E95D819A-B8E3-4F94-B7EE-300E31AB0181}.Release|Mixed Platforms.Build.0 = Release|Win32
+		{E95D819A-B8E3-4F94-B7EE-300E31AB0181}.Release|Win32.ActiveCfg = Release|Win32
+		{E95D819A-B8E3-4F94-B7EE-300E31AB0181}.Release|Win32.Build.0 = Release|Win32
+		{E95D819A-B8E3-4F94-B7EE-300E31AB0181}.Release|x64.ActiveCfg = Release|x64
+		{E95D819A-B8E3-4F94-B7EE-300E31AB0181}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -743,5 +759,6 @@ Global
 		{5550EE0E-8F6B-4C7E-B7DC-8619223BDDCE} = {0DEB058D-DE57-41E6-AE56-18AC2E49E056}
 		{F4809183-DD22-4814-BD35-A7A3026639F0} = {0DEB058D-DE57-41E6-AE56-18AC2E49E056}
 		{27111BC6-6738-416E-A107-EC426A10F478} = {0DEB058D-DE57-41E6-AE56-18AC2E49E056}
+		{E95D819A-B8E3-4F94-B7EE-300E31AB0181} = {0DEB058D-DE57-41E6-AE56-18AC2E49E056}
 	EndGlobalSection
 EndGlobal
