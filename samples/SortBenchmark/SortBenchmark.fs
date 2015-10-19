@@ -535,7 +535,7 @@ type RemoteFunc( filePartNum:int, records:int64, _dim:int , partNumS1:int, partN
                     else 
                         partNumS2
 
-                let partstream = Array.init<MemoryStreamB> nump (fun i -> null)
+                let partstream = Array.init<StreamBase<byte>> nump (fun i -> null)
                 let t1 = DateTime.UtcNow
                 let bHasBuf = ref true
                 use sr = new StreamReader<byte>(buffer,0L)
@@ -550,8 +550,8 @@ type RemoteFunc( filePartNum:int, records:int64, _dim:int , partNumS1:int, partN
 
                             if Utils.IsNull partstream.[parti] then
                                 let ms = new MemoryStreamB()
-                                ms.WriteByte((byte)parti)
-                                partstream.[parti] <- ms
+                                ms.WriteUInt32(uint32 parti)
+                                partstream.[parti] <- ms :> StreamBase<byte>
                             partstream.[parti].Write(buf, !idx, x.dim)
                             idx := !idx + x.dim
                     else
@@ -1499,13 +1499,18 @@ let main orgargs =
                     |> DSet.collect Operators.id
                     |> DSet.iter rmtPart.ReturnSharedBuf
 
-            let cntLenFn (cnt : int64) (ms : MemoryStreamB) =
-                let ret = cnt + (ms.Length-(int64 sizeof<int>))/(int64 rmtPart.dim)
+            let cntLenFn (cnt : int64) (ms : StreamBase<byte>) =
+                let ret = cnt + (ms.Length-(int64 sizeof<uint32>))/(int64 rmtPart.dim)
                 (ms :> IDisposable).Dispose()
                 ret
 
             let aggrFn (cnt1 : int64) (cnt2 : int64) =
                 cnt1 + cnt2
+
+            let repartitionFn (ms : StreamBase<byte>) =
+                ms.Seek(0L, SeekOrigin.Begin) |> ignore
+                let index = ms.ReadUInt32()
+                int index
 
             //test memstream
             // currently 62.5GB per node, only create streams to send and validate count
@@ -1518,15 +1523,22 @@ let main orgargs =
                 let dset1 = startDSet |> DSet.sourceI dataFileNum (rmtPart.ReadFilesToMemStreamF)
                 dset1.NumParallelExecution <- 16 
                 dset1.SerializationLimit <- 1
-                let dset3 = dset1 |> DSet.map (rmtPart.RepartitionMemStreamS RepartitionStage.StageOne)
+                let dset3 = dset1 |> DSet.map (rmtPart.RepartitionMemStreamS RepartitionStage.StageTwo) // should have num*num2 partitions (e.g. 1000 for 5 nodes)
                 dset3.NumParallelExecution <- 16 
                 dset3.SerializationLimit <- 1
                 
                 let dset4 = dset3 |> DSet.collect Operators.id
                 dset4.NumParallelExecution <- 16 
 
-                let cnt = dset4 |> DSet.fold cntLenFn aggrFn 0L
-                Logger.LogF(LogLevel.Info, fun _ -> sprintf "Creating remapp stream takes: %f seconds num: %d" watch.Elapsed.TotalSeconds cnt)
+                //let cnt = dset4 |> DSet.fold cntLenFn aggrFn 0L
+                //Logger.LogF(LogLevel.Info, fun _ -> sprintf "Creating remapp stream takes: %f seconds num: %d rate per node: %f Gbps" watch.Elapsed.TotalSeconds cnt ((double cnt)*(double rmtPart.dim)*8.0/1.0e9/(double cluster.NumNodes)/watch.Elapsed.TotalSeconds))
+                
+                let param = new DParam()
+                param.NumReplications <- num*num2
+                let dset5 = dset4 |> DSet.repartitionP param repartitionFn
+
+                let cnt = dset5 |> DSet.fold cntLenFn aggrFn 0L
+                Logger.LogF(LogLevel.Info, fun _ -> sprintf "Creating remapp + repartition stream takes: %f seconds num: %d rate per node: %f Gbps" watch.Elapsed.TotalSeconds cnt ((double cnt)*(double rmtPart.dim)*8.0/1.0e9/(double cluster.NumNodes)/watch.Elapsed.TotalSeconds))
 
                 //dset4 |> DSet.iter rmtPart.RepartitionAndWriteToFile
 
