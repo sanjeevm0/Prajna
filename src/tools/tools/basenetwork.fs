@@ -830,6 +830,8 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
     member private x.CompBase with get() = compBase
 
     member x.ReleaseAllItems() =
+        isTerminated <- true
+        // wait
         if (Interlocked.CompareExchange(bRelease, 1, 0)=0) then
             let itemDQ : 'T ref = ref Unchecked.defaultof<'T>
             if (Utils.IsNotNull !item) then

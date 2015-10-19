@@ -31,7 +31,7 @@
     <DocumentationFile>bin\Debugx64\SortBenchmark.XML</DocumentationFile>
     <Prefer32Bit>true</Prefer32Bit>
     <PlatformTarget>x64</PlatformTarget>
-    <StartArguments>-nfile 16 -nump 50 -nump2 120 -cluster C:\OneNet\Cluster\Cluster_hz_31to35.inf -verbose 4 -log c:\OneNet\SortBenchmark.log -con -dir d:\gensort -sort 1 -records 25000000000</StartArguments>
+    <StartArguments>-con -verbose 4 -log c:\prajna\sortbenchmark.log</StartArguments>
     <StartWorkingDirectory>
     </StartWorkingDirectory>
   </PropertyGroup>
