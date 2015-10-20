@@ -1182,7 +1182,40 @@ type RemoteFunc( filePartNum:int, records:int64, _dim:int , partNumS1:int, partN
         else 
             Logger.LogF( LogLevel.Error, ( fun _ -> sprintf "Cannot find file %s for sorting" filename))
             (parti, -1.)
-        
+
+    member val Partition = ConcurrentDictionary<uint32, int64 ref*byte[]>() with get
+    member val PartitionIndex = ConcurrentDictionary<int, uint32>() with get
+    member val NumParts = ref 0 with get
+    static member val MaxPartitionLen = 375000000 with get
+
+    member x.CacheInRAMAndDispose(ms : StreamBase<byte>) =
+        ms.Seek(0L, SeekOrigin.Begin) |> ignore
+        let parti = ms.ReadUInt32()
+        let len = ms.Length - (int64 sizeof<uint32>)
+        let addFn (parti : uint32) =
+            let index = Interlocked.Increment(x.NumParts) - 1
+            let ret = (ref 0L, Array.zeroCreate<byte>(RemoteFunc.MaxPartitionLen))
+            x.PartitionIndex.[index] <- parti
+            ret
+        let (cnt, part) = x.Partition.GetOrAdd(parti, addFn)
+        let start = Interlocked.Add(cnt, len) - len
+        if (start + len > int64 RemoteFunc.MaxPartitionLen) then
+            // throw away, not enough space in cache
+            Logger.LogF(LogLevel.Error, fun _ -> "Error: Max Length exceeded")
+        else
+            let amtRead = ms.Read(part, int start, int len)
+            if (amtRead <> int len) then
+                failwith (sprintf "Not enough data want: %d actual: %d" len amtRead)
+        (ms :> IDisposable).Dispose()
+
+    // essentially only one element per partition
+    member x.GetCacheMem(parti : int) : seq<byte[]> =
+        seq {
+            if (x.PartitionIndex.ContainsKey(parti)) then
+                yield (snd x.Partition.[x.PartitionIndex.[parti]])
+            else
+                yield null
+        }
         
 [<Serializable>]
 type SamplingFunc( filePartNum:int, records:int64, dim:int, sampleRate:int, keyLen:int ) = 
@@ -1512,6 +1545,15 @@ let main orgargs =
                 let index = ms.ReadUInt32()
                 int index
 
+            let doSort (a : byte[]) : byte[] =
+                a
+
+            let cntLenByteArrFn (cnt : int64) (arr : byte[]) =
+                if (Utils.IsNotNull arr) then
+                    cnt + int64(arr.Length/rmtPart.dim)
+                else
+                    cnt
+
             //test memstream
             // currently 62.5GB per node, only create streams to send and validate count
             let MemStream_Fake_conf() =
@@ -1531,14 +1573,29 @@ let main orgargs =
                 dset4.NumParallelExecution <- 16 
 
                 //let cnt = dset4 |> DSet.fold cntLenFn aggrFn 0L
-                //Logger.LogF(LogLevel.Info, fun _ -> sprintf "Creating remapp stream takes: %f seconds num: %d rate per node: %f Gbps" watch.Elapsed.TotalSeconds cnt ((double cnt)*(double rmtPart.dim)*8.0/1.0e9/(double cluster.NumNodes)/watch.Elapsed.TotalSeconds))
+                //Logger.LogF(LogLevel.Info, fun _ -> sprintf "Creating remap stream takes: %f seconds num: %d rate per node: %f Gbps" watch.Elapsed.TotalSeconds cnt ((double cnt)*(double rmtPart.dim)*8.0/1.0e9/(double cluster.NumNodes)/watch.Elapsed.TotalSeconds))
                 
                 let param = new DParam()
                 param.NumReplications <- num*num2
                 let dset5 = dset4 |> DSet.repartitionP param repartitionFn
 
-                let cnt = dset5 |> DSet.fold cntLenFn aggrFn 0L
-                Logger.LogF(LogLevel.Info, fun _ -> sprintf "Creating remapp + repartition stream takes: %f seconds num: %d rate per node: %f Gbps" watch.Elapsed.TotalSeconds cnt ((double cnt)*(double rmtPart.dim)*8.0/1.0e9/(double cluster.NumNodes)/watch.Elapsed.TotalSeconds))
+                // simple fold: count # of elems - gives approx 3.8Gbps
+                //let cnt = dset5 |> DSet.fold cntLenFn aggrFn 0L
+                //Logger.LogF(LogLevel.Info, fun _ -> sprintf "Creating remap + repartition stream takes: %f seconds num: %d rate per node: %f Gbps" watch.Elapsed.TotalSeconds cnt ((double cnt)*(double rmtPart.dim)*8.0/1.0e9/(double cluster.NumNodes)/watch.Elapsed.TotalSeconds))
+
+                // cache in RAM: - gives approx 3Gbps (mostly limited by allocation)
+                dset5 |> DSet.iter rmtPart.CacheInRAMAndDispose
+                let cnt = 2500000000L
+                Logger.LogF(LogLevel.Info, fun _ -> sprintf "Creating remap + repartition + cacheInRam stream takes: %f seconds num: %d rate per node: %f Gbps" watch.Elapsed.TotalSeconds cnt ((double cnt)*(double rmtPart.dim)*8.0/1.0e9/(double cluster.NumNodes)/watch.Elapsed.TotalSeconds))
+
+                // now sort
+                let startRepart = DSet<_>(Name = "SortVec", SerializationLimit = 1)
+                startRepart.NumParallelExecution <- 16
+
+                let dset6 = startRepart |> DSet.sourceI num2 rmtPart.GetCacheMem
+                let dset7 = dset6 |> DSet.map doSort
+                let cnt = dset7 |> DSet.fold cntLenByteArrFn aggrFn 0L
+                Logger.LogF(LogLevel.Info, fun _ -> sprintf "Creating remap + repartition stream + caceh + sort takes: %f seconds num: %d rate per node: %f Gbps" watch.Elapsed.TotalSeconds cnt ((double cnt)*(double rmtPart.dim)*8.0/1.0e9/(double cluster.NumNodes)/watch.Elapsed.TotalSeconds))
 
                 //dset4 |> DSet.iter rmtPart.RepartitionAndWriteToFile
 
