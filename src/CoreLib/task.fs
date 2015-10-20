@@ -356,11 +356,11 @@ and [<AllowNullLiteral>]
                                 Thread.Sleep(DeploymentSettings.SleepAfterContainerLaunchMs)
                             if (Utils.IsNull proc) then
                                 Logger.LogF( LogLevel.Error, (fun _ -> sprintf "Unable to start process"))
-                            x.MonStdError <- StreamMonitor( ) 
+                            x.MonStdError <- new StreamMonitor( ) 
                             let errLog = Path.Combine( DeploymentSettings.LogFolder, x.SignatureName + "_stderr_" + VersionToString( DateTime(executeTicks)) + ".log" )
                             x.MonStdError.AddMonitorFile( errLog  )
                             proc.ErrorDataReceived.Add( x.MonStdError.DataReceived )
-                            x.MonStdOutput <- StreamMonitor(  ) 
+                            x.MonStdOutput <- new StreamMonitor(  ) 
                             let stdLog = Path.Combine( DeploymentSettings.LogFolder, x.SignatureName + "_stdout_" + VersionToString( DateTime(executeTicks)) + ".log" )
                             x.MonStdOutput.AddMonitorFile( stdLog )
                             proc.OutputDataReceived.Add( x.MonStdOutput.DataReceived ) 
@@ -393,7 +393,10 @@ and [<AllowNullLiteral>]
                                 //    casting a functor that extends FSharpFunc (in one DLL) to FSharFunc (in the other DLL) fail. So in Linux, we need to link assemblies, so Mono
                                 //    does not look for FSharp.Core from GAC but from job directory.
                                 ta.LinkAllAssemblies( x.JobDirectory ) 
-                            let param = ContainerAppDomainInfo( Name = x.SignatureName, Version = x.SignatureVersion, Ticks = executeTicks, JobPort = nodeInfo.ListeningPort, JobDir = x.JobDirectory, JobEnvVars = x.JobEnvVars  )
+                            let param = 
+                                ContainerAppDomainInfo( Name = x.SignatureName, Version = x.SignatureVersion, Ticks = executeTicks, JobPort = nodeInfo.ListeningPort,
+                                    JobDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), 
+                                    JobEnvVars = x.JobEnvVars  )
                             x.AppDomainInfo <- param
                             x.Thread <- ThreadTracking.StartThreadForFunction ( fun _ -> sprintf "Launch remote container as AppDomain, port %d" nodeInfo.ListeningPort) ( fun _ -> ContainerAppDomainInfo.StartProgram param )
                             x.State <- TaskState.InExecution
@@ -412,6 +415,15 @@ and [<AllowNullLiteral>]
                 x.EvTaskLaunched.Set() |> ignore
             else
                 x.EvTaskLaunched.WaitOne() |> ignore
+
+        interface IDisposable with
+             member x.Dispose() = 
+                x.EvLoopbackEstablished.Dispose()
+                x.EvTaskLaunched.Dispose()
+                if Utils.IsNotNull x.JobLoopbackQueue then
+                    (x.JobLoopbackQueue :> IDisposable).Dispose()
+                GC.SuppressFinalize(x)
+
 /// Prajna Task 
 /// A Prajna task is an action to be executed at Prajna Client, 
 /// it usually involes one or more DSet peer parameters, and one or more functions to be executed upon. 
@@ -563,8 +575,8 @@ and [<AllowNullLiteral; Serializable>]
                 if (x.JobEnvVars.Count <> 0) then
                     failwith "Environment variables not allowed in thread/appdomain - only allowed if ApplicationMask is set"
                 x.State <- TaskState.InExecution
-//                let threadStart = new Threading.ParameterizedThreadStart( Task.Start )
-//                let thread = new Threading.Thread( threadStart )
+//                let threadStart = Threading.ParameterizedThreadStart( Task.Start )
+//                let thread = Threading.Thread( threadStart )
 //                thread.IsBackground <- true
 //                x.Thread <- thread
 //                thread.Start( x )
@@ -856,7 +868,7 @@ and [<AllowNullLiteral; Serializable>]
         x.TraverseAllObjects TraverseUpstream (List<_>(DeploymentSettings.NumObjectsPerJob)) dset (x.ResetAll jbInfo)
         x.TraverseAllObjectsWDirection TraverseUpstream (List<_>(DeploymentSettings.NumObjectsPerJob)) dset (x.PreBeginSync jbInfo)
 
-    member x.CloseAllSync jbInfo ( dset: DSet ) = 
+    member x.CloseAllSync jobAction jbInfo ( dset: DSet ) = 
         let t1 = (PerfDateTime.UtcNow())       
         Logger.LogF( x.JobID, LogLevel.MildVerbose, ( fun _ -> sprintf "start PreClose %A %s:%s ........" dset.ParamType dset.Name dset.VersionString ) )
         if Utils.IsNull x.WaitForCloseAllStreamsHandleCollection then 
@@ -929,7 +941,7 @@ and [<AllowNullLiteral; Serializable>]
         cur.WaitForCloseAllStreamsViaHandle( x.WaitForCloseAllStreamsHandleCollection, jbInfo, t1 )
 
     member x.ConstructJobInfo( jobID: Guid, dset:DSet, queue:NetworkCommandQueue, endPoint:Net.IPEndPoint, bIsMainProject ) = 
-        let jbInfo = new JobInformation( jobID, bIsMainProject, dset.Name, dset.Version.Ticks, 
+        let jbInfo = JobInformation( jobID, bIsMainProject, dset.Name, dset.Version.Ticks, 
                                         ClustersInfo = x.ClustersInfo, 
                                         ReportClosePartition = x.TaskReportClosePartition, 
                                         HostQueue = queue, 
@@ -976,12 +988,13 @@ and [<AllowNullLiteral; Serializable>]
     /// OnJobFinish govern freeing of the resource of the Task object. 
     /// It has been registered when the Task is first established, and will garantee to execute when job is done or cancelled
     member x.OnJobFinish() = 
-        for i=0 to x.NumBlobs-1 do
-            if (Utils.IsNotNull x.Blobs.[i]) then
-                if (Utils.IsNotNull x.Blobs.[i].Hash) then
-                    BlobFactory.remove x.Blobs.[i].Hash
-                if (Utils.IsNotNull x.Blobs.[i].Stream) then
-                    (x.Blobs.[i].Stream :> IDisposable).Dispose()
+        if Utils.IsNotNull x.Blobs then
+            for i=0 to x.NumBlobs-1 do
+                if (Utils.IsNotNull x.Blobs.[i]) then
+                    if (Utils.IsNotNull x.Blobs.[i].Hash) then
+                        BlobFactory.remove x.Blobs.[i].Hash
+                    if (Utils.IsNotNull x.Blobs.[i].Stream) then
+                        (x.Blobs.[i].Stream :> IDisposable).Dispose()
         if (Utils.IsNotNull x.MetadataStream) then
             (x.MetadataStream :> IDisposable).Dispose()
         Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "SA Recv Stack size %d %d" Cluster.Connects.BufStackRecv.StackSize Cluster.Connects.BufStackRecv.GetStack.Size)
@@ -1134,7 +1147,7 @@ and [<AllowNullLiteral; Serializable>]
         if (Utils.IsNotNull msRep) then
             (msRep :> IDisposable).Dispose()
 
-    member val JobFinished = new List<WaitHandle>()
+    member val JobFinished = List<WaitHandle>()
 
     member x.SyncJobExecutionAsSeparateApp ( queueHost:NetworkCommandQueue, endPoint:Net.IPEndPoint, dset: DSet, usePartitions ) 
                 taskName syncAction beginJob endJob= 
@@ -1218,7 +1231,7 @@ and [<AllowNullLiteral; Serializable>]
                             jobAction.EncounterExceptionAtContainer( ex, "___ SyncJobExecutionAsSeparateApp (loop on WaitForAll) ___" )
                         // JinL: note some of the write task may not finish at this moment. 
                         if x.IsJobInitializer(dset) && not (!bExistPriorTasks) then 
-                            x.CloseAllSync jbInfo dset
+                            x.CloseAllSync jobAction jbInfo dset
                             Logger.LogF( x.JobID, LogLevel.MildVerbose, ( fun _ -> sprintf "%s Task %s:%s, DSet %s:%s is completed in %f ms........." taskName x.Name x.VersionString dset.Name dset.VersionString ((PerfDateTime.UtcNow()).Subtract( x.JobStartTime ).TotalMilliseconds) ))
                             Logger.LogF( x.JobID, LogLevel.MildVerbose, ( fun _ -> "=======================================================================================================================================" ))
                             x.JobReady.Reset() |> ignore
@@ -1762,6 +1775,8 @@ and [<AllowNullLiteral; Serializable>]
     /// clientModuleName: the host client's module name
     /// clientStartTimeTicks: the ticks of the host client's start time
     static member StartTaskAsSeperateApp( sigName:string, sigVersion:int64, ip : string, port, jobip, jobport, authParams, clientProcessId, clientModuleName, clientStartTimeTicks) = 
+        DistributedFunctionEnvironment.Init()
+        Process.ReportSystemThreadPoolStat()
         let (bRequireAuth, guid, rsaParam, pwd) = authParams
         // Start a client. 
         // Only in App Domain that we can load assembly, and deserialize function object. 
@@ -1776,7 +1791,7 @@ and [<AllowNullLiteral; Serializable>]
                 qAdd
         /// Allow exporting to daemon 
         ContractServerQueues.Default.AddQueue( queue )
-        let listener = 
+        use listener = 
             if jobport > 0 then 
                 JobListener.InitializeListenningPort( jobip, jobport )
             else 
@@ -1921,7 +1936,7 @@ and [<AllowNullLiteral; Serializable>]
                 curDSet.ResetForRead( hostQueue :> NetworkCommandQueue )
                 let bAllCancelled = ref false
                 let tasks = List<_>()
-                let cts = new CancellationTokenSource()
+                use cts = new CancellationTokenSource()
                 let jbInfo = JobInformation( x.JobID, true, curDSet.Name, curDSet.Version.Ticks )
                 for parti in x.Partitions do
                     tasks.Add( curDSet.AsyncReadChunk jbInfo parti
@@ -2713,6 +2728,12 @@ and [<AllowNullLiteral; Serializable>]
         else
             Logger.LogF( LogLevel.Warning, ( fun _ -> sprintf "!!! The queue to the associated job of task %s:%s is not operational" x.Name x.VersionString) )
 
+    interface IDisposable with
+        member x.Dispose() = 
+            x.EvJobStarted.Dispose()
+            base.DisposeResource()
+            GC.SuppressFinalize(x)
+
 and internal ContainerAppDomainLauncher() = 
     inherit System.MarshalByRefObject() 
     member x.Start(name, ver, bUseAllDrive, ticks, memory_size, ip, port, jobip, jobport, logdir, verbose_level:int, jobdir:string, jobenvvars:List<string*string>,
@@ -2767,7 +2788,7 @@ and [<AllowNullLiteral>]
                     // Make sure that we have unique name, even if the same job is launched again and again
                     AppDomain.CreateDomain( x.Name + "_" + x.Version.ToString("X") + VersionToString(DateTime(x.Ticks)) )
                 else
-                    let ads = new AppDomainSetup()
+                    let ads = AppDomainSetup()
                     ads.ApplicationBase <- x.JobDir
                     // Make sure that we have unique name, even if the same job is launched again and again
                     AppDomain.CreateDomain( x.Name + "_" + x.Version.ToString("X") + VersionToString(DateTime(x.Ticks)), new Security.Policy.Evidence(), ads)
@@ -3181,7 +3202,7 @@ and internal TaskQueue() =
             x.EvEmptyExecutionTable.Reset() |> ignore 
             let refInitialHolder = ref Unchecked.defaultof<_>
             let addFunc key = 
-                refInitialHolder := ExecutedTaskHolder( SignatureName = ta.SignatureName, SignatureVersion = ta.SignatureVersion, TypeOf = ta.TypeOf, JobDirectory = ta.JobDirectory, JobEnvVars = ta.JobEnvVars)
+                refInitialHolder := new ExecutedTaskHolder( SignatureName = ta.SignatureName, SignatureVersion = ta.SignatureVersion, TypeOf = ta.TypeOf, JobDirectory = ta.JobDirectory, JobEnvVars = ta.JobEnvVars)
                 let nodeInfo = x.JobManagement.Use( ta.SignatureName )
                 (!refInitialHolder).CurNodeInfo <- nodeInfo
                 !refInitialHolder
@@ -3712,6 +3733,11 @@ and internal TaskQueue() =
                 let bRemove, _ = jobHolder.JobList.TryRemove( (ta.Name, ta.Version ) )
                 ()
             
+    interface IDisposable with
+        member x.Dispose() = 
+            x.EvEmptyExecutionTable.Dispose()            
+            GC.SuppressFinalize(x)
+
 type internal ContainerLauncher() = 
     static member Main orgargv = 
         let argv = Array.copy orgargv
@@ -3738,7 +3764,7 @@ type internal ContainerLauncher() =
         let rsaKeyStrAuth = parse.ParseString( "-rsakeyauth", "" )
         let rsaKeyStrExch = parse.ParseString( "-rsakeyexch", "" )
         let rsaKeyPwd = parse.ParseString( "-rsapwd", "" )
-        let mutable guid = new Guid()
+        let mutable guid = Guid()
         let mutable rsaKey : byte[]*byte[] = (null, null)
         let clientId = parse.ParseInt( "-clientPid", -1 )
         let clientModuleName = parse.ParseString( "-clientModuleName", "" )
@@ -3747,6 +3773,13 @@ type internal ContainerLauncher() =
         if (requireAuth) then
             guid <- new Guid(guidStr)
             rsaKey <- (Convert.FromBase64String(rsaKeyStrAuth), Convert.FromBase64String(rsaKeyStrExch))
+
+        // Currently, the runtime still has blocking operations (e.g. safeWaitOne) that can hold on a thread
+        // When such operation was performed on thread pool thread, it can hold a pool thread being unusable. 
+        // Pool needs to be able to launch new threads quickly. To allevaite such scenarios, adjust the min thread 
+        // for pool to be higher
+        let _, minIoThs = ThreadPool.GetMinThreads()
+        ThreadPool.SetMinThreads(Environment.ProcessorCount * 2, minIoThs) |> ignore
 
     //    DeploymentSettings.ClientPort <- port
         let memory_size = parse.ParseInt64( "-mem", (DeploymentSettings.MaxMemoryLimitInMB) )

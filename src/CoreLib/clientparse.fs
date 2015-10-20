@@ -62,7 +62,7 @@ type internal RemoteConfig() =
                 let oms = System.Management.ManagementScope( srvNameSpace )
                 let oQuery = System.Management.ObjectQuery( "select FreeSpace, Size, Name from Win32_LogicalDisk where DriveType=3" )       
                 use oSearch = new System.Management.ManagementObjectSearcher( oms, oQuery )
-                let result = new System.Management.ManagementOperationObserver()
+                let result = System.Management.ManagementOperationObserver()
                 result.ObjectReady.Add ( fun obj ->  let oRet = obj.NewObject
                                                      let freeSpace:uint64 = unbox(oRet.GetPropertyValue("FreeSpace"))
                                                      let size:uint64 =  unbox(oRet.GetPropertyValue("FreeSpace"))
@@ -215,7 +215,7 @@ type internal Listener =
             ip = listenIP
             port = listenerPort;
             connects = 
-                let c = new ClientConnections()
+                let c = ClientConnections()
                 c.Initialize()
                 c
             listener =
@@ -229,7 +229,7 @@ type internal Listener =
             InListeningState = false
             Activity = false
             callback = Dictionary<Object, ( Object -> bool) >()
-            taskqueue = TaskQueue()
+            taskqueue = new TaskQueue()
         }
     member x.Port with get() = x.port
     member x.ConnectsClient with get() = x.connects
@@ -314,6 +314,7 @@ type internal Listener =
                         queue.MonitorRcvd()
                         queue.ToSend( retCmd, msSend ) 
                     // Command: Set CurrentClusterInfo
+                    // We have changed logic, where Set, Cluster always proceed, Set, DSet command in DSet.store 
                     | (ControllerVerb.Set, ControllerNoun.ClusterInfo ) ->
                         if Utils.IsNotNull queuePeer then 
                             // Set CurrentClusterInfo should only be received from NetworkCommandQueuePeer
@@ -321,11 +322,11 @@ type internal Listener =
                             match obj with
                             | Some ( cluster ) ->
                                 let fname = cluster.Persist()
-                                if Utils.IsNotNull queuePeer.SetDSetMSG then 
-                                    let cmd, msSend = queuePeer.SetDSet( Guid.Empty )
-                                    x.ParseSendBackAtDaemonAndDispose( queuePeer, cmd, msSend )
-                                else    
-                                    queue.ToSend( ControllerCommand( ControllerVerb.Acknowledge, ControllerNoun.ClusterInfo ), null )
+//                                if Utils.IsNotNull queuePeer.SetDSetMSG then 
+//                                    let cmd, msSend = queuePeer.SetDSet( Guid.Empty )
+//                                    x.ParseSendBackAtDaemonAndDispose( queuePeer, cmd, msSend )
+//                                else    
+                                queue.ToSend( ControllerCommand( ControllerVerb.Acknowledge, ControllerNoun.ClusterInfo ), null )
                             | None ->
                                 let msg = "Set CurrentClusterInfo can't be unpacked, object is not based on ClusterInfoBase"
                                 Logger.Log( LogLevel.Error, msg )
@@ -344,7 +345,7 @@ type internal Listener =
                         let name, verNumber = DSet.Peek( ms )
                         let jobLifeCycleObj = JobLifeCycleCollectionDaemon.BeginJob( jobID, name, verNumber, queue.RemoteEndPointSignature )
                         if Utils.IsNotNull queuePeer then 
-                            let cmd, msReply = queuePeer.SetDSet( jobID, ms ) 
+                            let cmd, msReply = queuePeer.SetDSet( jobLifeCycleObj, ms ) 
                             x.ParseSendBackAtDaemonAndDispose( queuePeer, cmd, msReply )
                         else
                             let msg = "Set DSet should not be called from outgoing connection"
@@ -442,7 +443,7 @@ type internal Listener =
                                                         hostQueue.ToSend( cmd, msInfo )
                                                 | _ ->
                                                     ()
-                                            let cmd, msReply =curDSet.WriteDSet( ms, queue, command.Verb=ControllerVerb.ReplicateWrite ) 
+                                            let cmd, msReply =curDSet.WriteDSet( jobAction, ms, queue, command.Verb=ControllerVerb.ReplicateWrite ) 
                                             x.ParseSendBackAtDaemonAndDispose( queuePeer, cmd, msReply ) 
                                         | (ControllerVerb.Close, ControllerNoun.Partition ) ->
                                             let parti = ms.ReadVInt32()
@@ -452,7 +453,8 @@ type internal Listener =
                                         | (ControllerVerb.Close, ControllerNoun.DSet ) 
                                         | (ControllerVerb.ReplicateClose, ControllerNoun.DSet ) ->
                                             let cmd, msReply = curDSet.CloseDSet( jobID, ms, queue, command.Verb=ControllerVerb.ReplicateClose, x.callback ) 
-                                            x.ParseSendBackAtDaemonAndDispose( queuePeer, cmd, msReply ) 
+                                            let ret = x.ParseSendBackAtDaemonAndDispose( queuePeer, cmd, msReply ) 
+                                            ret 
                                         | (ControllerVerb.Use, ControllerNoun.DSet ) ->
                                             let cmd, msReply = DSetPeer.UseDSet( jobID, name, verNumber )
                                             x.ParseSendBackAtDaemonAndDispose( queuePeer, cmd, msReply ) 
@@ -806,5 +808,9 @@ type internal Listener =
         | _ ->
             failwith "Incorrect logic, Listener.EndAccept should always be called with Listener as an object"
 
-
+    interface IDisposable with
+        member x.Dispose() = 
+           if Utils.IsNotNull x.taskqueue then
+              (x.taskqueue :> IDisposable).Dispose()
+           GC.SuppressFinalize(x)
 

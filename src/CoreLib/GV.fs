@@ -428,10 +428,19 @@ type internal JobLifeCycle(jobID:Guid) =
     member x.LogException() =
         let cntRef = ref 0 
         for ex in exCollections do 
-            for key in ex.Data.Keys do 
-                Logger.LogF( jobID, LogLevel.Info, fun _ -> sprintf "Exception Info %A=%A" key (ex.Data.Item(key)) )
+            if Utils.IsNotNull ex.Data then
+                for key in ex.Data.Keys do 
+                    Logger.LogF( jobID, LogLevel.Info, fun _ -> sprintf "Exception Info %A=%A" key (ex.Data.Item(key)) )
             Logger.LogF( jobID, LogLevel.Info, fun _ -> sprintf "Exception %d ... %A" !cntRef ex )
             cntRef := !cntRef + 1 
+    /// Exception AT Daemon 
+    member x.DSetExceptionAtDaemon( ex: Exception, dSetName, dSetVersion) = 
+        let ms = new MemStream( 1024 )
+        ms.WriteGuid( jobID )
+        ms.WriteString( dSetName ) 
+        ms.WriteInt64( dSetVersion )
+        ms.WriteException( ex )
+        ControllerCommand( ControllerVerb.Exception, ControllerNoun.DSet ), ms
 
     /// Cancel by Exception 
     member x.CancelByException( ex: Exception ) = 
@@ -439,7 +448,6 @@ type internal JobLifeCycle(jobID:Guid) =
         if Utils.IsNotNull ex then 
             for act in onException do 
                 act.Invoke( ex )
-
             /// First exception will be thrown 
             exCollections.Enqueue( ex )
             Logger.LogF( jobID, LogLevel.Info, fun _ -> sprintf "Exception %d has been received with message %s" (exCollections.Count) ex.Message )
@@ -755,6 +763,7 @@ type internal SingleJobActionGeneric<'T when 'T :> JobLifeCycle and 'T : null >(
 type internal SingleJobActionApp ( jobLifeCycleObj: JobLifeCycle ) = 
     inherit SingleJobActionGeneric<JobLifeCycle>( jobLifeCycleObj )
     member x.LifeCycleObject with get() = jobLifeCycleObj
+    // caller is responsible for disposing the returned SingleJobActionApp
     static member TryFind( jobID: Guid ) = 
         let lifeCycleObj = JobLifeCycleCollectionApp.TryFind( jobID)
         if Utils.IsNull lifeCycleObj then 
@@ -766,6 +775,7 @@ type internal SingleJobActionApp ( jobLifeCycleObj: JobLifeCycle ) =
                 null 
             else
                 jobActionObj
+    // caller is responsible for disposing the returned SingleJobActionApp
     static member TryEnter( jobLifeCycleObj ) = 
         let jobActionObj = new SingleJobActionApp( jobLifeCycleObj )
         if jobActionObj.IsCancelled then 
@@ -773,6 +783,7 @@ type internal SingleJobActionApp ( jobLifeCycleObj: JobLifeCycle ) =
             null 
         else
             jobActionObj
+    // caller is responsible for disposing the returned SingleJobActionApp
     static member TryEnterAndThrow( jobLifeCycleObj ) = 
         let jobActionObj = new SingleJobActionApp( jobLifeCycleObj )
         if jobActionObj.IsCancelled then 
@@ -1151,7 +1162,7 @@ and [<AllowNullLiteral>]
     DistributedObject internal ( cl: Cluster, ty:FunctionParamType, name:string, ver: DateTime) as this = 
     inherit DParam( cl, name, ver) 
     internal new () = 
-        DistributedObject( null, FunctionParamType.None, "", DateTime.MinValue )
+        new DistributedObject( null, FunctionParamType.None, "", DateTime.MinValue )
 
     /// <summary> 
     /// Blob that represent the coded stream of the current object. It is used to speed up serialization (i.e., if the Hash exists, we assume 
@@ -1458,8 +1469,9 @@ and [<AllowNullLiteral>]
 
     member val internal CloseAllStreams : bool -> unit = fun _ -> () with get, set
     member val internal TasksWaitAll = None with get, set
+    // WaitForUpstreamCanCloseEvents is not the owner of the ManualResetEvent's, and is not responsible for disposing them
     member val internal WaitForUpstreamCanCloseEvents = List<ManualResetEvent>() with get
-    member internal x.SetUpstreamCanCloseEvent( event ) = 
+    member internal x.SetUpstreamCanCloseEvent( event ) =         
         x.WaitForUpstreamCanCloseEvents.Clear()
         x.WaitForUpstreamCanCloseEvents.Add( event ) 
     member internal  x.SetUpstreamCanCloseEvents( events ) = 
@@ -1500,15 +1512,15 @@ and [<AllowNullLiteral>]
     member internal x.BaseWaitForCloseAllStreamsViaHandle( waithandles, jbInfo, tstart ) = 
         if not (Utils.IsNull x.ThreadPool) then 
             let closeDownstream() =
-                Logger.LogF( jbInfo.JobID, LogLevel.WildVerbose, (fun _ -> sprintf "Done wait for handle done execution"))
+                Logger.LogF( jbInfo.JobID, LogLevel.WildVerbose, (fun _ -> sprintf "Done wait for handle done execution for ThreadPoolWithWaitHandles:%s" x.ThreadPool.ThreadPoolName))
                 Logger.LogF( jbInfo.JobID, LogLevel.MildVerbose, ( fun _ -> sprintf "WaitForCloseAllStreamsViaHandle %A %s:%s CanCloseDownstreamEvent set" x.ParamType x.Name x.VersionString ))
                 x.CanCloseDownstreamEvent.Set() |> ignore
 
             let contWaitAllJobDone() = 
                 Logger.LogF( jbInfo.JobID, LogLevel.MildVerbose, ( fun _ -> sprintf "WaitForCloseAllStreamsViaHandle %A %s:%s waiting for ThreadPool Jobs" x.ParamType x.Name x.VersionString ))
                 let event = x.ThreadPool.WaitForAllNonBlocking()
-                Logger.LogF( jbInfo.JobID, LogLevel.WildVerbose, (fun _ -> sprintf "Starting wait for handle done execution"))
-                ThreadPoolWait.WaitForHandle (fun _ -> sprintf "Wait For Thread Termination") event closeDownstream null
+                Logger.LogF( jbInfo.JobID, LogLevel.WildVerbose, (fun _ -> sprintf "Starting wait for handle done execution for ThreadPoolWithWaitHandles:%s" x.ThreadPool.ThreadPoolName))
+                ThreadPoolWait.WaitForHandle (fun _ -> sprintf "Wait For handle done execution for ThreadPoolWithWaitHandles:%s" x.ThreadPool.ThreadPoolName) event closeDownstream null
 
             Logger.LogF( jbInfo.JobID, LogLevel.MildVerbose, ( fun _ -> sprintf "WaitForCloseAllStreamsViaHandle %A %s:%s wait for upstream close events & threadpool jobs" x.ParamType x.Name x.VersionString ))
             x.BaseWaitForUpstreamEvents waithandles contWaitAllJobDone
@@ -1700,14 +1712,26 @@ and [<AllowNullLiteral>]
     member private x.NetworkReadyImpl( jbInfo ) = 
         x.BaseNetworkReady( jbInfo ) |> ignore
 
+    member internal x.DisposeResource() = 
+         x.CanCloseDownstreamEvent.Dispose()
+         x.AllPeerClosedEvent.Dispose()
+
+//    Note: cannot make DistributedObject disposable, otherwise, DSet will be, which affects its usablility
+//          need a better design
+//    interface IDisposable with
+//        member x.Dispose() = 
+//            if Utils.IsNotNull x.ThreadPool then
+//                (x.ThreadPool :> IDisposable).Dispose()
+//            x.DisposeResource()
+//            GC.SuppressFinalize(x)
+
 // A global variable in Prajna
 [<Serializable; AllowNullLiteral>]
 type internal GV( cl, name, ver) = 
     inherit DistributedObject( cl, FunctionParamType.GV, name, ver )
     new () = 
         GV( null, DeploymentSettings.GetRandomName(), (PerfDateTime.UtcNow()) )
-
-
+        
 // Prajna Aggregate functions
 [<AllowNullLiteral>]
 type internal AggregateFunction( func: Object -> Object -> Object ) = 

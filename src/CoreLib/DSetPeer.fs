@@ -395,9 +395,10 @@ and [<AllowNullLiteral>]
             let file = x.StorageProvider.Choose( x.ConstructDSetPath(), x.MetaDataName() )
             x.SaveToMetaData( file, DSetMetadataStorageFlag.None )
         
-    member x.WriteDSet( ms: StreamBase<byte>, queue:NetworkCommandQueue, bReplicateWrite ) =
+    member x.WriteDSet( jobAction:SingleJobActionDaemon, ms: StreamBase<byte>, queue:NetworkCommandQueue, bReplicateWrite ) =
         let msSend = new MemStream( 1024 )
         let retCmd = ControllerCommand( ControllerVerb.EchoReturn, ControllerNoun.DSet )
+        msSend.WriteGuid( jobAction.JobID )
         msSend.WriteString( x.Name )
         msSend.WriteInt64( x.Version.Ticks )
         try
@@ -472,7 +473,7 @@ and [<AllowNullLiteral>]
                         if Utils.IsNotNull x.Password && x.Password.Length>0 then 
                             // Encryption content when save to disk
                             let tdes = x.GetAesAlg parti
-                            let enc = new System.Text.UTF8Encoding( true, true )
+                            let enc = System.Text.UTF8Encoding( true, true )
                             let bytePassword = enc.GetBytes( x.Password )
                             let hashPassword = 
                                 x.GetHashProvider( parti ).ComputeHash( bytePassword )
@@ -482,11 +483,9 @@ and [<AllowNullLiteral>]
                             tdes.IV <- BitConverter.GetBytes( x.Version.Ticks )
                             let msCrypt = new MemStream( bufRcvdLen )
                             let cStream = new CryptoStream( msCrypt, tdes.CreateEncryptor(tdes.Key,tdes.IV), CryptoStreamMode.Write)
-                            let sWriter = new BinaryWriter( cStream ) 
+                            use sWriter = new BinaryWriter( cStream ) // will dispose cStream when it's disposed
                             sWriter.Write( ms.GetBuffer(), curBufPos, (bufRcvdLen - curBufPos) )
                             (ms :> IDisposable).Dispose()
-                            sWriter.Close()
-                            cStream.Close()
                             ( msCrypt :> StreamBase<byte>, 0, int msCrypt.Length )
                         else
                             ( ms, curBufPos, bufRcvdLen - curBufPos )
@@ -515,6 +514,7 @@ and [<AllowNullLiteral>]
                     if bReplicateWrite then 
                         if Utils.IsNotNull x.HostQueue && x.HostQueue.CanSend then 
                             use msInfo = new MemStream( 1024 )
+                            msInfo.WriteGuid( jobAction.JobID )
                             msInfo.WriteString( x.Name )
                             msInfo.WriteInt64( x.Version.Ticks )
                             msInfo.WriteVInt32( parti ) 
