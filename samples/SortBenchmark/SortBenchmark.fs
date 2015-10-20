@@ -129,15 +129,16 @@ module Interop =
         dbufHandle.Free()
         sbufHandle.Free()
 
-type RepartitionStage = StageOne=1 | StageTwo=2
+type RepartitionStage = | StageOne=1 | StageTwo=2
 
 /// records is total number of records
 [<Serializable>]
 type RemoteFunc( filePartNum:int, records:int64, _dim:int , partNumS1:int, partNumS2:int, stageOnePartionBoundary:int[], stageTwoPartionBoundary:int[]) =    
+    let approxBlockSize = 1024*1000*100
+
     member val dim = _dim with get 
     member val diskHelper = new DiskHelper(records) with get
     
-
 
     static member val sharedMem = new ConcurrentQueue<byte[]>()
     static member val sharedMemSize = ref 0
@@ -146,16 +147,13 @@ type RemoteFunc( filePartNum:int, records:int64, _dim:int , partNumS1:int, partN
     static member val partiSharedMem = new ConcurrentQueue<byte[]>()
     static member val partiSharedMemSize = ref 0
     
-    member val blockSizeReadFromFile = 1024*1000*100
+    member val blockSizeReadFromFile = approxBlockSize/_dim*_dim with get // multiple of dimension
     member x.repartitionBlockSize = (x.blockSizeReadFromFile / partNumS1 / 1000) * 100
-
     
     member x.HDIndex = [|"c:\\";"d:\\";"e:\\";"f:\\"|]
     member x.HDReaderLocker = Array.init (x.HDIndex.Length) (fun _ -> ref 0)
 
-
-    member x.Validate (parti) = 
-        
+    member x.Validate (parti) =         
         let filename = x.diskHelper.GenerateSortedFilePath(parti)
         let dir = @"C:\sortbenchmark\val_"+(string) records
         if not (Directory.Exists(dir)) then
@@ -260,10 +258,6 @@ type RemoteFunc( filePartNum:int, records:int64, _dim:int , partNumS1:int, partN
         (parti, genLength)
 
 
-
-
-
-
     member x.GetReadFileBuf() = 
             let byt = ref Unchecked.defaultof<_>
             let bnewbuf = ref false
@@ -289,7 +283,6 @@ type RemoteFunc( filePartNum:int, records:int64, _dim:int , partNumS1:int, partN
 
                 let totalReadLen = ref 0L
                 
-
                 let ret =
                     seq {
                         use file = new FileStream(filename, FileMode.Open)
@@ -363,174 +356,227 @@ type RemoteFunc( filePartNum:int, records:int64, _dim:int , partNumS1:int, partN
 
 
     member internal x.ReadFilesToMemStream parti = 
-            let defaultReadBlock = x.blockSizeReadFromFile
-            let tbuf = Array.zeroCreate<byte> defaultReadBlock
-            let _, filename = x.diskHelper.GetDataFilePath()
-            if Utils.IsNotNull filename then
-                let fi = new FileInfo(filename)
-                let len = fi.Length
-                let totalReadLen = ref 0L
-                let readLen = ref Int32.MaxValue
-                let ret =
-                    seq {
-                        use file = new FileStream(filename, FileMode.Open)
-                        let counter = ref 0
-                        while !readLen > 0 do 
-                                let memBuf = new MemoryStreamB()
-
-                                readLen := file.Read( tbuf, 0, defaultReadBlock)
-                                if !readLen > 0 then
-                                    memBuf.Write(tbuf,0,!readLen)
-                                    totalReadLen := !totalReadLen + (int64) !readLen
-
-                                    counter := !counter + 1
-                                    if (!counter % 100 = 0) then
-                                        Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "Read %d bytes from file" !totalReadLen) )
-                                    x.diskHelper.ReportReadBytes((int64)!readLen)
-                                    yield memBuf
-                        Logger.LogF( LogLevel.MildVerbose, (fun _ -> sprintf "UTC %s, all data from file %s has been read" (UtcNowToString()) filename)    )        
-                    }
-                
-                ret
-            else
-                Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "!!!!!Cannot Get Data file " ))
-                Seq.empty
-
-
-    member internal x.ReadFilesToMemStreamF parti = 
-            
-            let defaultReadBlock = x.blockSizeReadFromFile
-            let tbuf = Array.zeroCreate<byte> defaultReadBlock
-            let rand = new Random()
-            rand.NextBytes(tbuf)
-            
-            let counter = ref 0
-            let len = 62500000000L
+        let defaultReadBlock = x.blockSizeReadFromFile
+        let tbuf = Array.zeroCreate<byte> defaultReadBlock
+        let _, filename = x.diskHelper.GetDataFilePath()
+        if Utils.IsNotNull filename then
+            let fi = new FileInfo(filename)
+            let len = fi.Length
             let totalReadLen = ref 0L
+            let readLen = ref Int32.MaxValue
             let ret =
                 seq {
-                    while !totalReadLen < len do 
-                        let toRead = int32 (Math.Min(int64 defaultReadBlock, len - !totalReadLen))
-                        if toRead > 0 then
-                            let memBuf = new MemoryStreamB()
-                            let ttbuf = Array.zeroCreate<byte> tbuf.Length
-                            Buffer.BlockCopy(tbuf,0,ttbuf,0,tbuf.Length)
-                            memBuf.Write(tbuf,0,toRead)
-                            totalReadLen := !totalReadLen + (int64) toRead
+                    use file = new FileStream(filename, FileMode.Open)
+                    let counter = ref 0
+                    while !readLen > 0 do 
+                        let memBuf = new MemoryStreamB()
 
+                        readLen := file.Read( tbuf, 0, defaultReadBlock)
+                        if !readLen > 0 then
+                            //memBuf.Write(tbuf,0,!readLen)
+                            memBuf.WriteArrAlign(tbuf, 0, !readLen, x.dim) // make sure each buffer has integer number of records
+                            totalReadLen := !totalReadLen + (int64) !readLen
                             counter := !counter + 1
                             if (!counter % 100 = 0) then
                                 Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "Read %d bytes from file" !totalReadLen) )
-                            x.diskHelper.ReportReadBytes((int64)toRead)
+                            x.diskHelper.ReportReadBytes((int64)!readLen)
                             yield memBuf
+                    Logger.LogF( LogLevel.MildVerbose, (fun _ -> sprintf "UTC %s, all data from file %s has been read" (UtcNowToString()) filename)    )        
                 }
+                
             ret
+        else
+            Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "!!!!!Cannot Get Data file " ))
+            Seq.empty
+
+    member internal x.ReadFilesToMemStreamF parti =             
+        let defaultReadBlock = x.blockSizeReadFromFile
+        let tbuf = Array.zeroCreate<byte> defaultReadBlock
+        let rand = new Random()
+        rand.NextBytes(tbuf)
+            
+        let counter = ref 0
+//        let len = 62500000000L
+        let len = 6250000000L
+        let totalReadLen = ref 0L
+        let ret =
+            seq {
+                while !totalReadLen < len do 
+                    let toRead = int32 (Math.Min(int64 defaultReadBlock, len - !totalReadLen))
+                    if toRead > 0 then
+                        let memBuf = new MemoryStreamB()
+//                            let ttbuf = Array.zeroCreate<byte> tbuf.Length
+//                            Buffer.BlockCopy(tbuf,0,ttbuf,0,tbuf.Length)
+                        //memBuf.Write(tbuf,0,toRead)
+                        memBuf.WriteArrAlign(tbuf, 0, toRead, x.dim)
+                        totalReadLen := !totalReadLen + (int64) toRead
+
+                        counter := !counter + 1
+                        if (!counter % 100 = 0) then
+                            Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "Read %d bytes from file" !totalReadLen) )
+                        x.diskHelper.ReportReadBytes((int64)toRead)
+                        yield memBuf
+            }
+        ret
 
     member val repartitionThread = ref 0
-
 
     member internal x.RepartitionMemStream (stage:RepartitionStage) (buffer:MemoryStreamB) = 
         if buffer.Length > 0L then
             let retseq = seq {
+                let partionBoundary =
+                    if stage = RepartitionStage.StageOne then
+                        stageOnePartionBoundary
+                    else 
+                        stageTwoPartionBoundary    
 
-                        let partionBoundary =
-                            if stage = RepartitionStage.StageOne then
-                                stageOnePartionBoundary
-                            else 
-                                stageTwoPartionBoundary    
+                let nump = 
+                    if stage = RepartitionStage.StageOne then
+                        partNumS1
+                    else 
+                        partNumS2
 
-                        let nump = 
-                            if stage = RepartitionStage.StageOne then
-                                partNumS1
-                            else 
-                                partNumS2
+                let partstream = Array.init<MemoryStreamB> nump (fun i -> 
+                                                                    null
+                                                                    )
+                let t1 = DateTime.UtcNow
+                let bHasBuf = ref true
+                let sr = new StreamReader<byte>(buffer,0L)
 
-                        let partstream = Array.init<MemoryStreamB> nump (fun i -> 
-                                                                            null
-                                                                            )
+                let bRemainRecord = ref false
+                let remainBuf = ref Unchecked.defaultof<byte[]>
+                let remainpos = ref 0
+                let remainLen = ref 0
 
-                        let t1 = DateTime.UtcNow
-                        let bHasBuf = ref true
-                        let sr = new StreamReader<byte>(buffer,0L)
+                while !bHasBuf do
+                    let (buf, pos,len) = sr.GetMoreBuffer()
+                    if len > 0 then
+                        let idx = ref pos
 
-                        let bRemainRecord = ref false
-                        let remainBuf = ref Unchecked.defaultof<byte[]>
-                        let remainpos = ref 0
-                        let remainLen = ref 0
+                        if !bRemainRecord then
+                            if (!remainLen - !remainpos >=2) then
+                                let index = (((int) (!remainBuf).[!remainpos]) <<< 8) + ((int) (!remainBuf).[!remainpos + 1])
+                                let parti = partionBoundary.[index]
 
-                        while !bHasBuf do
-                            let (buf, pos,len) = sr.GetMoreBuffer()
-                            if len > 0 then
-                                let idx = ref pos
+                                if Utils.IsNull partstream.[parti] then
+                                    let ms = new MemoryStreamB()
+                                    ms.WriteByte((byte)parti)
+                                    partstream.[parti] <- ms
+                                partstream.[parti].Write((!remainBuf),!remainpos,(!remainLen - !remainpos))
 
-                                if !bRemainRecord then
-                                    if (!remainLen - !remainpos >=2) then
-                                        let index = (((int) (!remainBuf).[!remainpos]) <<< 8) + ((int) (!remainBuf).[!remainpos + 1])
-                                        let parti = partionBoundary.[index]
-
-                                        if Utils.IsNull partstream.[parti] then
-                                            let ms = new MemoryStreamB()
-                                            ms.WriteByte((byte)parti)
-                                            partstream.[parti] <- ms
-                                        partstream.[parti].Write((!remainBuf),!remainpos,(!remainLen - !remainpos))
-
-                                        //there is a bug, need to handle the case of new buffer is shorter than 100-(!remainLen - !remainpos) bytes!!
-                                        partstream.[parti].Write(buf,!idx,x.dim - (!remainLen - !remainpos))
-                                        idx := !idx + x.dim - (!remainLen - !remainpos)
-                                    else
-                                        let index = (((int) (!remainBuf).[!remainpos]) <<< 8) + ((int) buf.[!idx])
-                                        let parti = partionBoundary.[index]
-
-                                        if Utils.IsNull partstream.[parti] then
-                                            let ms = new MemoryStreamB()
-                                            ms.WriteByte((byte)parti)
-                                            partstream.[parti] <- ms
-                                        partstream.[parti].Write((!remainBuf),!remainpos,(!remainLen - !remainpos))
-
-                                        //there is a bug, need to handle the case of new buffer is shorter than 100-(!remainLen - !remainpos) bytes!!
-                                        partstream.[parti].Write(buf,!idx,x.dim - (!remainLen - !remainpos))
-                                        idx := !idx + x.dim - (!remainLen - !remainpos)
-
-                                while (!idx < pos) do
-                                    let index = (((int) buf.[!idx]) <<< 8) + ((int) buf.[!idx + 1])
-                                    let parti = partionBoundary.[index]
-
-                                    if Utils.IsNull partstream.[parti] then
-                                        let ms = new MemoryStreamB()
-                                        ms.WriteByte((byte)parti)
-                                        partstream.[parti] <- ms
-                                    partstream.[parti].Write(buf,!idx,x.dim)
-                                    idx := !idx + x.dim
-                                if !idx < len then
-                                    bRemainRecord := true
-                                    remainBuf := buf
-                                    remainpos := !idx
-                                    remainLen := len
+                                //there is a bug, need to handle the case of new buffer is shorter than 100-(!remainLen - !remainpos) bytes!!
+                                partstream.[parti].Write(buf,!idx,x.dim - (!remainLen - !remainpos))
+                                idx := !idx + x.dim - (!remainLen - !remainpos)
                             else
-                                bHasBuf := false
-                        sr.Release()
+                                let index = (((int) (!remainBuf).[!remainpos]) <<< 8) + ((int) buf.[!idx])
+                                let parti = partionBoundary.[index]
 
-                        (buffer :> IDisposable).Dispose()
-                        let t2 = DateTime.UtcNow
+                                if Utils.IsNull partstream.[parti] then
+                                    let ms = new MemoryStreamB()
+                                    ms.WriteByte((byte)parti)
+                                    partstream.[parti] <- ms
+                                partstream.[parti].Write((!remainBuf),!remainpos,(!remainLen - !remainpos))
 
-                        for i = 0 to nump - 1 do
-                            if Utils.IsNotNull partstream.[i] then
-                                if (partstream).[i].Length > 0L then
-                                    (partstream).[i].Seek(0L, SeekOrigin.Begin) |> ignore
-                                    let tBuf = Array.zeroCreate<byte> ((int)(partstream).[i].Length)
-                                    let rand = new Random()
-                                    rand.NextBytes(tBuf)
-                                    yield (partstream).[i]
-                                else 
-                                    ((partstream).[i] :> IDisposable).Dispose()
+                                //there is a bug, need to handle the case of new buffer is shorter than 100-(!remainLen - !remainpos) bytes!!
+                                partstream.[parti].Write(buf,!idx,x.dim - (!remainLen - !remainpos))
+                                idx := !idx + x.dim - (!remainLen - !remainpos)
+
+                        while (!idx < pos) do
+                            let index = (((int) buf.[!idx]) <<< 8) + ((int) buf.[!idx + 1])
+                            let parti = partionBoundary.[index]
+
+                            if Utils.IsNull partstream.[parti] then
+                                let ms = new MemoryStreamB()
+                                ms.WriteByte((byte)parti)
+                                partstream.[parti] <- ms
+                            partstream.[parti].Write(buf,!idx,x.dim)
+                            idx := !idx + x.dim
+                        if !idx < len then
+                            bRemainRecord := true
+                            remainBuf := buf
+                            remainpos := !idx
+                            remainLen := len
+                    else
+                        bHasBuf := false
+                sr.Release()
+
+                (buffer :> IDisposable).Dispose()
+                let t2 = DateTime.UtcNow
+
+                for i = 0 to nump - 1 do
+                    if Utils.IsNotNull partstream.[i] then
+                        if (partstream).[i].Length > 0L then
+                            (partstream).[i].Seek(0L, SeekOrigin.Begin) |> ignore
+                            let tBuf = Array.zeroCreate<byte> ((int)(partstream).[i].Length)
+                            let rand = new Random()
+                            rand.NextBytes(tBuf)
+                            yield (partstream).[i]
+                        else 
+                            ((partstream).[i] :> IDisposable).Dispose()
                         
-                        Logger.LogF( LogLevel.WildVerbose, (fun _ -> sprintf "repartition: %d records, takes %f s" (buffer.Length / 100L) ((t2-t1).TotalSeconds) )          )          
-                }
+                Logger.LogF( LogLevel.WildVerbose, (fun _ -> sprintf "repartition: %d records, takes %f s" (buffer.Length / 100L) ((t2-t1).TotalSeconds) )          )          
+            }
             retseq
-
         else
             Seq.empty
 
+    member internal x.RepartitionMemStreamS (stage:RepartitionStage) (buffer:MemoryStreamB) = 
+        if buffer.Length > 0L then
+            let retseq = seq {
+                let partionBoundary =
+                    if stage = RepartitionStage.StageOne then
+                        stageOnePartionBoundary
+                    else 
+                        stageTwoPartionBoundary    
+
+                let nump = 
+                    if stage = RepartitionStage.StageOne then
+                        partNumS1
+                    else 
+                        partNumS2
+
+                let partstream = Array.init<MemoryStreamB> nump (fun i -> null)
+                let t1 = DateTime.UtcNow
+                let bHasBuf = ref true
+                use sr = new StreamReader<byte>(buffer,0L)
+
+                while !bHasBuf do
+                    let (buf, pos, len) = sr.GetMoreBuffer()
+                    if (Utils.IsNotNull buf) then
+                        let idx = ref pos
+                        while (!idx + x.dim <= len) do
+                            let index = (((int) buf.[!idx]) <<< 8) + ((int) buf.[!idx + 1])
+                            let parti = partionBoundary.[index]
+
+                            if Utils.IsNull partstream.[parti] then
+                                let ms = new MemoryStreamB()
+                                ms.WriteByte((byte)parti)
+                                partstream.[parti] <- ms
+                            partstream.[parti].Write(buf, !idx, x.dim)
+                            idx := !idx + x.dim
+                    else
+                        bHasBuf := false
+
+                (buffer :> IDisposable).Dispose()
+                sr.Release()
+                let t2 = DateTime.UtcNow
+
+                for i = 0 to nump - 1 do
+                    if Utils.IsNotNull partstream.[i] then
+                        if (partstream).[i].Length > 0L then
+                            (partstream).[i].Seek(0L, SeekOrigin.Begin) |> ignore
+//                            let tBuf = Array.zeroCreate<byte> ((int)(partstream).[i].Length)
+//                            let rand = new Random()
+//                            rand.NextBytes(tBuf)
+                            yield (partstream).[i]
+                        else 
+                            ((partstream).[i] :> IDisposable).Dispose()
+                        
+                Logger.LogF( LogLevel.WildVerbose, (fun _ -> sprintf "repartition: %d records, takes %f s" (buffer.Length / 100L) ((t2-t1).TotalSeconds) )          )          
+            }
+            retseq
+        else
+            Seq.empty
 
     member x.GetRepartitionMemBuf() = 
         let oBuf = ref Unchecked.defaultof<byte[]>
@@ -544,7 +590,6 @@ type RemoteFunc( filePartNum:int, records:int64, _dim:int , partNumS1:int, partN
                 while not (RemoteFunc.partiSharedMem.TryDequeue(oBuf)) do
                     ()    
         !oBuf
-
 
     static member val sharedrepartitionBuf = new ConcurrentQueue<byte[]>()
     static member val sharedrepartitionBufSize = ref 0
@@ -566,240 +611,201 @@ type RemoteFunc( filePartNum:int, records:int64, _dim:int , partNumS1:int, partN
     member x.NativeRepartition (stage:int) (buffer:byte[], size:int)=
         if size > 0 then
             let retseq = seq {
-                            let partionBoundary =
-                                if stage = 1 then
-                                    stageOnePartionBoundary
-                                else 
-                                    stageTwoPartionBoundary
-                            let nump = 
-                                if stage = 1 then
-                                    partNumS1
-                                else 
-                                    partNumS2
+                let partionBoundary =
+                    if stage = 1 then
+                        stageOnePartionBoundary
+                    else 
+                        stageTwoPartionBoundary
+                let nump = 
+                    if stage = 1 then
+                        partNumS1
+                    else 
+                        partNumS2
 
 
-                            let t1 = DateTime.UtcNow
-                            Interlocked.Increment(x.repartitionThread) |> ignore
+                let t1 = DateTime.UtcNow
+                Interlocked.Increment(x.repartitionThread) |> ignore
 
-                            //let oBuf, bnewbuf = x.GetReadFileBuf() 
-                            let oBuf = x.GetSharedrepartitionBuf()
-                            let r = Interop.NativeBin(buffer,size,x.dim,nump,partionBoundary,oBuf)
+                //let oBuf, bnewbuf = x.GetReadFileBuf() 
+                let oBuf = x.GetSharedrepartitionBuf()
+                let r = Interop.NativeBin(buffer,size,x.dim,nump,partionBoundary,oBuf)
 
-                            //RemoteFunc.sharedMem.Enqueue(buffer)
+                //RemoteFunc.sharedMem.Enqueue(buffer)
 
-                            let t2 = DateTime.UtcNow
-                            let partitionNum = ref 0
-                            if r.[0] > 0 then
-                                let toCopyLen = r.[0]
-                                let tl = ref 0
-                                while (!tl < toCopyLen) do
-                                    let iBuf:byte[] = x.GetRepartitionMemBuf()
-                                    let cpLen = Math.Min(toCopyLen - !tl, (iBuf.Length))
-                                    Buffer.BlockCopy(buffer,0,iBuf,0,cpLen)
-                                    tl := !tl + cpLen
-                                    yield (0,iBuf,cpLen)
-                                partitionNum := !partitionNum + 1
+                let t2 = DateTime.UtcNow
+                let partitionNum = ref 0
+                if r.[0] > 0 then
+                    let toCopyLen = r.[0]
+                    let tl = ref 0
+                    while (!tl < toCopyLen) do
+                        let iBuf:byte[] = x.GetRepartitionMemBuf()
+                        let cpLen = Math.Min(toCopyLen - !tl, (iBuf.Length))
+                        Buffer.BlockCopy(buffer,0,iBuf,0,cpLen)
+                        tl := !tl + cpLen
+                        yield (0,iBuf,cpLen)
+                    partitionNum := !partitionNum + 1
                         
-                            for i = 1 to nump-1 do
-                                if r.[i] > r.[i-1] then
-                                    let toCopyLen = (r.[i]-r.[i-1])
-                                    let tl = ref 0
-                                    while (!tl < toCopyLen) do
-                                        let iBuf:byte[] = x.GetRepartitionMemBuf()
-                                        let cpLen = Math.Min(toCopyLen - !tl, (iBuf.Length))
-                                        Buffer.BlockCopy(buffer,0,iBuf,0,cpLen)
-                                        tl := !tl + cpLen
-                                        yield (i ,iBuf,cpLen)
-                                    partitionNum := !partitionNum + 1
+                for i = 1 to nump-1 do
+                    if r.[i] > r.[i-1] then
+                        let toCopyLen = (r.[i]-r.[i-1])
+                        let tl = ref 0
+                        while (!tl < toCopyLen) do
+                            let iBuf:byte[] = x.GetRepartitionMemBuf()
+                            let cpLen = Math.Min(toCopyLen - !tl, (iBuf.Length))
+                            Buffer.BlockCopy(buffer,0,iBuf,0,cpLen)
+                            tl := !tl + cpLen
+                            yield (i ,iBuf,cpLen)
+                        partitionNum := !partitionNum + 1
 
-                            RemoteFunc.sharedrepartitionBuf.Enqueue(oBuf) |> ignore
-                            let t3 = DateTime.UtcNow
-                            Interlocked.Decrement(x.repartitionThread) |> ignore
-                            //RemoteFunc.sharedMem.Enqueue(oBuf)
-                            Logger.LogF( LogLevel.MildVerbose, (fun _ -> sprintf "native repartition: %d records, into %d partitions, takes %f / %f s; # repartition threads: %d; shareMem Len: %d; " (size / 100) !partitionNum ((t2-t1).TotalSeconds) ((t3-t1).TotalSeconds) !x.repartitionThread RemoteFunc.sharedMem.Count)  )                  
+                RemoteFunc.sharedrepartitionBuf.Enqueue(oBuf) |> ignore
+                let t3 = DateTime.UtcNow
+                Interlocked.Decrement(x.repartitionThread) |> ignore
+                //RemoteFunc.sharedMem.Enqueue(oBuf)
+                Logger.LogF( LogLevel.MildVerbose, (fun _ -> sprintf "native repartition: %d records, into %d partitions, takes %f / %f s; # repartition threads: %d; shareMem Len: %d; " (size / 100) !partitionNum ((t2-t1).TotalSeconds) ((t3-t1).TotalSeconds) !x.repartitionThread RemoteFunc.sharedMem.Count)  )                  
 
-                        }
+            }
             retseq
         else 
             Seq.empty
-
-
    
     member internal x.NativeRepartitionWithMemStream (stage:RepartitionStage) (buffer:byte[], size:int)=
         if size > 1 then
             let retseq = seq {
-                            let partionBoundary =
-                                if stage = RepartitionStage.StageOne then
-                                    stageOnePartionBoundary
-                                else 
-                                    stageTwoPartionBoundary
-                            let nump = 
-                                if stage = RepartitionStage.StageOne then
-                                    partNumS1
-                                else 
-                                    partNumS2
+                let partionBoundary =
+                    if stage = RepartitionStage.StageOne then
+                        stageOnePartionBoundary
+                    else 
+                        stageTwoPartionBoundary
+                let nump = 
+                    if stage = RepartitionStage.StageOne then
+                        partNumS1
+                    else 
+                        partNumS2
 
                             
-                            let t1 = DateTime.UtcNow
-                            Interlocked.Increment(x.repartitionThread) |> ignore
+                let t1 = DateTime.UtcNow
+                Interlocked.Increment(x.repartitionThread) |> ignore
 
-                            let oBuf, bnewbuf = x.GetReadFileBuf() 
+                let oBuf, bnewbuf = x.GetReadFileBuf() 
 
 
-                            let r = Interop.NativeBin(buffer,size,x.dim,nump,partionBoundary,oBuf)
+                let r = Interop.NativeBin(buffer,size,x.dim,nump,partionBoundary,oBuf)
 
-                            RemoteFunc.sharedMem.Enqueue(buffer)
+                RemoteFunc.sharedMem.Enqueue(buffer)
 
-                            let t2 = DateTime.UtcNow
+                let t2 = DateTime.UtcNow
 
-                            let partitionNum = ref 0
-                            if r.[0] > 0 then
+                let partitionNum = ref 0
+                if r.[0] > 0 then
                                 
-                                let iBuf = new MemoryStreamB()
-                                iBuf.WriteByte(byte 0)
-                                iBuf.Write(oBuf,0,r.[0])
-                                partitionNum := !partitionNum + 1
-                                iBuf.Seek(0L,SeekOrigin.Begin) |> ignore
-                                yield iBuf
+                    let iBuf = new MemoryStreamB()
+                    iBuf.WriteByte(byte 0)
+                    iBuf.Write(oBuf,0,r.[0])
+                    partitionNum := !partitionNum + 1
+                    iBuf.Seek(0L,SeekOrigin.Begin) |> ignore
+                    yield iBuf
                         
-                            for i = 1 to nump-1 do
-                                if r.[i] > r.[i-1] then
-                                    let toCopyLen = (r.[i]-r.[i-1])
-                                    let tl = ref 0
+                for i = 1 to nump-1 do
+                    if r.[i] > r.[i-1] then
+                        let toCopyLen = (r.[i]-r.[i-1])
+                        let tl = ref 0
 
-                                    let iBuf = new MemoryStreamB(toCopyLen)
-                                    iBuf.WriteByte(byte i)
-                                    iBuf.Write(oBuf,r.[i-1],toCopyLen)
-                                    partitionNum := !partitionNum + 1
-                                    yield iBuf
+                        let iBuf = new MemoryStreamB(toCopyLen)
+                        iBuf.WriteByte(byte i)
+                        iBuf.Write(oBuf,r.[i-1],toCopyLen)
+                        partitionNum := !partitionNum + 1
+                        yield iBuf
 
 
 
-                            let t3 = DateTime.UtcNow
-                            Interlocked.Decrement(x.repartitionThread) |> ignore
-                            RemoteFunc.sharedMem.Enqueue(oBuf)
-                            Logger.LogF( LogLevel.MildVerbose, (fun _ -> sprintf "repartition: %d records, into %d partitions, takes %f / %f s; # repartition threads: %d; shareMem Len: %d; new allocated mem: %A" (size / 100) !partitionNum ((t2-t1).TotalSeconds) ((t3-t1).TotalSeconds) !x.repartitionThread RemoteFunc.sharedMem.Count bnewbuf)  )                  
+                let t3 = DateTime.UtcNow
+                Interlocked.Decrement(x.repartitionThread) |> ignore
+                RemoteFunc.sharedMem.Enqueue(oBuf)
+                Logger.LogF( LogLevel.MildVerbose, (fun _ -> sprintf "repartition: %d records, into %d partitions, takes %f / %f s; # repartition threads: %d; shareMem Len: %d; new allocated mem: %A" (size / 100) !partitionNum ((t2-t1).TotalSeconds) ((t3-t1).TotalSeconds) !x.repartitionThread RemoteFunc.sharedMem.Count bnewbuf)  )                  
 
-                        }
+            }
             retseq
         elif size = 1 then
-                Logger.LogF( LogLevel.Info, ( fun _ -> sprintf "Send Flush Buffer signal from repartition"))
+            Logger.LogF( LogLevel.Info, ( fun _ -> sprintf "Send Flush Buffer signal from repartition"))
                 
-                seq {
-                    let nump = 
-                        if stage = RepartitionStage.StageOne then
-                            partNumS1
-                        else 
-                            partNumS2 
-                    for i = 0 to nump-1 do
-                        let iBuf = new MemoryStreamB()
-                        iBuf.WriteByte((byte) i)
-                        iBuf.WriteByte((byte) 1)
-                        yield iBuf  
-                    }      
+            seq {
+                let nump = 
+                    if stage = RepartitionStage.StageOne then
+                        partNumS1
+                    else 
+                        partNumS2 
+                for i = 0 to nump-1 do
+                    let iBuf = new MemoryStreamB()
+                    iBuf.WriteByte((byte) i)
+                    iBuf.WriteByte((byte) 1)
+                    yield iBuf  
+                }      
         else 
             Seq.empty
-
-
-
 
     // repartition, use per-allocated memory. For testing and comparing to MemoryStreamB only, cannot be used in remote server
     member x.RepartitionSharedMemory (stage:RepartitionStage) (buffer:byte[], size:int) = 
-        if size > 0 then
-            
+        if size > 0 then            
             let retseq = seq {
-                        let partionBoundary =
-                            if stage = RepartitionStage.StageOne then
-                                stageOnePartionBoundary
-                            else 
-                                stageTwoPartionBoundary        
-                        let nump = 
-                            if stage = RepartitionStage.StageOne then
-                                partNumS1
-                            else 
-                                partNumS2
+                let partionBoundary =
+                    if stage = RepartitionStage.StageOne then
+                        stageOnePartionBoundary
+                    else 
+                        stageTwoPartionBoundary        
+                let nump = 
+                    if stage = RepartitionStage.StageOne then
+                        partNumS1
+                    else 
+                        partNumS2
 
-                        let hashByteSize = 
-                            if stage = RepartitionStage.StageOne then
-                                let hashBitSize = (Math.Max(8, (int) (Math.Log((float) (partNumS1-1),2.0)) + 1)) 
-                                (hashBitSize - 1 ) / 8 + 1
-                            else 
-                                let hashBitSize = (Math.Max(8, (int) (Math.Log((float) (partNumS2-1),2.0)) + 1)) 
-                                (hashBitSize - 1 ) / 8 + 1
-
-
-                        let partstream = Array.init nump (fun _ -> x.GetRepartitionMemBuf())
+                let hashByteSize = 
+                    if stage = RepartitionStage.StageOne then
+                        let hashBitSize = (Math.Max(8, (int) (Math.Log((float) (partNumS1-1),2.0)) + 1)) 
+                        (hashBitSize - 1 ) / 8 + 1
+                    else 
+                        let hashBitSize = (Math.Max(8, (int) (Math.Log((float) (partNumS2-1),2.0)) + 1)) 
+                        (hashBitSize - 1 ) / 8 + 1
 
 
-                        let posi = Array.zeroCreate<int> nump
-                        let t1 = DateTime.UtcNow
-
-                        for i in [|0..(size/x.dim - 1)|] do
-                            let indexV = ref 0
-                            for p = 0 to hashByteSize - 1 do
-                                indexV := (!indexV <<< 8) + int buffer.[i*x.dim+p]
-
-                            let parti = partionBoundary.[!indexV]
+                let partstream = Array.init nump (fun _ -> x.GetRepartitionMemBuf())
 
 
-                            if parti >= nump then
-                                    Logger.LogF( LogLevel.Error, ( fun _ -> sprintf " partition index %d is bigger then the number of partitions %d" parti nump ))
+                let posi = Array.zeroCreate<int> nump
+                let t1 = DateTime.UtcNow
+
+                for i in [|0..(size/x.dim - 1)|] do
+                    let indexV = ref 0
+                    for p = 0 to hashByteSize - 1 do
+                        indexV := (!indexV <<< 8) + int buffer.[i*x.dim+p]
+
+                    let parti = partionBoundary.[!indexV]
+
+
+                    if parti >= nump then
+                            Logger.LogF( LogLevel.Error, ( fun _ -> sprintf " partition index %d is bigger then the number of partitions %d" parti nump ))
                                             
-                            Buffer.BlockCopy (buffer, i*x.dim,(partstream).[parti], posi.[parti],x.dim)   
+                    Buffer.BlockCopy (buffer, i*x.dim,(partstream).[parti], posi.[parti],x.dim)   
                                 
-                            posi.[parti] <- posi.[parti] + x.dim
-                            if posi.[parti]  = x.repartitionBlockSize then
-                                yield parti, (partstream).[parti], posi.[parti] 
-                                Logger.LogF( LogLevel.WildVerbose, (fun _ -> sprintf "repartition: %d records " (posi.[parti] / 100) ) )
-                                posi.[parti] <- 0
-                                (partstream).[parti] <- x.GetRepartitionMemBuf()
+                    posi.[parti] <- posi.[parti] + x.dim
+                    if posi.[parti]  = x.repartitionBlockSize then
+                        yield parti, (partstream).[parti], posi.[parti] 
+                        Logger.LogF( LogLevel.WildVerbose, (fun _ -> sprintf "repartition: %d records " (posi.[parti] / 100) ) )
+                        posi.[parti] <- 0
+                        (partstream).[parti] <- x.GetRepartitionMemBuf()
 
 
-                        let t2 = DateTime.UtcNow
+                let t2 = DateTime.UtcNow
 
-                        for i = 0 to posi.Length - 1 do
-                            if posi.[i] > 0 then
-                                yield i,(partstream).[i],posi.[i] 
+                for i = 0 to posi.Length - 1 do
+                    if posi.[i] > 0 then
+                        yield i,(partstream).[i],posi.[i] 
 
-                        Logger.LogF( LogLevel.MildVerbose ,(fun _ -> sprintf "repartition: %d records, takes %f s, !RemoteFunc.partiSharedMemSize %d; RemoteFunc.partiSharedMem.length %d " (size / 100) ((t2-t1).TotalSeconds) !RemoteFunc.partiSharedMemSize RemoteFunc.partiSharedMem.Count)                    )
-                        RemoteFunc.sharedMem.Enqueue(buffer)
-                    }
+                Logger.LogF( LogLevel.MildVerbose ,(fun _ -> sprintf "repartition: %d records, takes %f s, !RemoteFunc.partiSharedMemSize %d; RemoteFunc.partiSharedMem.length %d " (size / 100) ((t2-t1).TotalSeconds) !RemoteFunc.partiSharedMemSize RemoteFunc.partiSharedMem.Count)                    )
+                RemoteFunc.sharedMem.Enqueue(buffer)
+            }
             retseq
-
         else 
             Seq.empty
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-//
-//    member val writeFileLock = Array.create stageTwoPartionBoundary.Length (ref 0)
-//    member val minparti = Int32.MaxValue with get, set
-//    member val writeCacheBlockSize = 10000000
-//    member val writeCache = new ConcurrentDictionary<int,byte[]>()
-//    member val writeCachePos = new ConcurrentDictionary<int,int>()
-//
-//
-//
-//
-//    member val memStreamBuf =  new ConcurrentQueue<MemoryStreamB>()
-//    
-//    member val memStreamBufEmptyHandel:Object = null with get,set
-//    member val memStreamBufFullHandel:Object = null with get,set
-
-
-
 
     member val sortThread = null with get,set
     member x.SortDumpFile() =
@@ -822,20 +828,17 @@ type RemoteFunc( filePartNum:int, records:int64, _dim:int , partNumS1:int, partN
     static member val repartitionBufReady = new ConcurrentQueue<byte[]*int>()
     member val writeActionQ = Array.init partNumS2 (fun _ ->  null)
     member val writeFileHandle = Array.init<Object> partNumS2 (fun _ ->  null)
-    member x.writeAct (parti:int,buf:byte[],off:int,len:int, flush:bool) ()=
-                                        if not flush then
-                                            if (Utils.IsNull x.writeFileHandle.[parti]) then
-                                                x.writeFileHandle.[parti] <- new FileStream( x.diskHelper.GeneratePartitionFilePath(parti),FileMode.Append) :> Object
-                                            (x.writeFileHandle.[parti]  :?> FileStream).Write(buf,off,len)
-                                            RemoteFunc.partiSharedMem.Enqueue(buf)
-                                            ()
-                                        else
-                                            if (Utils.IsNotNull x.writeFileHandle.[parti]) then
-                                                (x.writeFileHandle.[parti]  :?> FileStream).Close()
-                                                x.writeFileHandle.[parti]  <- Unchecked.defaultof<_>
-
-
-
+    member x.writeAct (parti:int,buf:byte[],off:int,len:int, flush:bool) () =
+        if not flush then
+            if (Utils.IsNull x.writeFileHandle.[parti]) then
+                x.writeFileHandle.[parti] <- new FileStream( x.diskHelper.GeneratePartitionFilePath(parti),FileMode.Append) :> Object
+            (x.writeFileHandle.[parti]  :?> FileStream).Write(buf,off,len)
+            RemoteFunc.partiSharedMem.Enqueue(buf)
+            ()
+        else
+            if (Utils.IsNotNull x.writeFileHandle.[parti]) then
+                (x.writeFileHandle.[parti]  :?> FileStream).Close()
+                x.writeFileHandle.[parti]  <- Unchecked.defaultof<_>
 
     member x.RepartitionMem() =
         RemoteFunc.repartitionBuf.Push(Array.zeroCreate<byte> x.maxDumpFileSize,0)
@@ -871,7 +874,6 @@ type RemoteFunc( filePartNum:int, records:int64, _dim:int , partNumS1:int, partN
     member val internal dumpCache = new ConcurrentQueue<MemoryStreamB>()
     member val maxDumpFileSize = 100000000
 
-
     member internal x.RepartitionAndWriteToFileMem ( ms:MemoryStreamB ) = 
         (ms :> IDisposable).Dispose()
 
@@ -892,57 +894,56 @@ type RemoteFunc( filePartNum:int, records:int64, _dim:int , partNumS1:int, partN
 
     member val CleanUpSignalCount = ref 0
 
-    member internal x.RepartitionAndWriteToFileMemuseless ( ms:MemoryStreamB ) = 
-        
+    member internal x.RepartitionAndWriteToFileMemuseless ( ms:MemoryStreamB ) =         
         let CleanCache(bForceCache:bool) = 
-                let elem = ref Unchecked.defaultof<_> 
-                let cacheCount = x.dumpCache.Count
-                if bForceCache && cacheCount > 0 then
-                    if not (RemoteFunc.repartitionBuf.TryPop(elem)) then
-                        elem := (Array.zeroCreate<byte> x.maxDumpFileSize,0)
-                        ()
+            let elem = ref Unchecked.defaultof<_> 
+            let cacheCount = x.dumpCache.Count
+            if bForceCache && cacheCount > 0 then
+                if not (RemoteFunc.repartitionBuf.TryPop(elem)) then
+                    elem := (Array.zeroCreate<byte> x.maxDumpFileSize,0)
+                    ()
 
-                if (bForceCache && cacheCount > 0 || RemoteFunc.repartitionBuf.TryPop(elem)) then
-                    let mutable fp, filesize = !elem
+            if (bForceCache && cacheCount > 0 || RemoteFunc.repartitionBuf.TryPop(elem)) then
+                let mutable fp, filesize = !elem
 
                     
-                    for i = 0 to cacheCount - 1 do
-                        let ms:MemoryStreamB ref = ref Unchecked.defaultof<_>
-                        if (x.dumpCache.TryDequeue(ms)) then
-                            let bHasBuf = ref true
-                            let sr = new StreamReader<byte>((!ms),(!ms).Position)
+                for i = 0 to cacheCount - 1 do
+                    let ms:MemoryStreamB ref = ref Unchecked.defaultof<_>
+                    if (x.dumpCache.TryDequeue(ms)) then
+                        let bHasBuf = ref true
+                        let sr = new StreamReader<byte>((!ms),(!ms).Position)
 
-                            //x.maxDumpFileSize has to be divisible by x.dim!!
-                            while !bHasBuf do
-                                let (buf, pos,len) = sr.GetMoreBuffer()
+                        //x.maxDumpFileSize has to be divisible by x.dim!!
+                        while !bHasBuf do
+                            let (buf, pos,len) = sr.GetMoreBuffer()
 
 
-                                let mutable rlen = len
-                                let mutable rpos = pos
-                                while rlen > 0 do
-                                    let toWrite = Math.Min(rlen,x.maxDumpFileSize-filesize)
-                                    Buffer.BlockCopy(buf,rpos,fp,filesize,toWrite)
-                                    rlen <- rlen - toWrite
-                                    filesize <- filesize + toWrite
-                                    rpos <- rpos + toWrite
-                                    if filesize >= x.maxDumpFileSize then
-                                        RemoteFunc.repartitionBufReady.Enqueue(fp,filesize)
-                                        (x.WriteEventHandle :?> ManualResetEvent).Set() |> ignore
-                                        let elem1 = ref Unchecked.defaultof<_> 
-                                        if bForceCache then
-                                            if not (RemoteFunc.repartitionBuf.TryPop(elem1)) then
-                                                elem1 := (Array.zeroCreate<byte> x.maxDumpFileSize,0)
-                                                ()
-                                        else 
-                                            while not (RemoteFunc.repartitionBuf.TryPop(elem1)) do
-                                                ()
-                                        fp <-fst (!elem1)
-                                        filesize <- snd (!elem1)
-                                if len = 0 then
-                                    bHasBuf := false
-                            sr.Release()
-                            ((!ms) :> IDisposable).Dispose()
-                    RemoteFunc.repartitionBuf.Push(fp,filesize)
+                            let mutable rlen = len
+                            let mutable rpos = pos
+                            while rlen > 0 do
+                                let toWrite = Math.Min(rlen,x.maxDumpFileSize-filesize)
+                                Buffer.BlockCopy(buf,rpos,fp,filesize,toWrite)
+                                rlen <- rlen - toWrite
+                                filesize <- filesize + toWrite
+                                rpos <- rpos + toWrite
+                                if filesize >= x.maxDumpFileSize then
+                                    RemoteFunc.repartitionBufReady.Enqueue(fp,filesize)
+                                    (x.WriteEventHandle :?> ManualResetEvent).Set() |> ignore
+                                    let elem1 = ref Unchecked.defaultof<_> 
+                                    if bForceCache then
+                                        if not (RemoteFunc.repartitionBuf.TryPop(elem1)) then
+                                            elem1 := (Array.zeroCreate<byte> x.maxDumpFileSize,0)
+                                            ()
+                                    else 
+                                        while not (RemoteFunc.repartitionBuf.TryPop(elem1)) do
+                                            ()
+                                    fp <-fst (!elem1)
+                                    filesize <- snd (!elem1)
+                            if len = 0 then
+                                bHasBuf := false
+                        sr.Release()
+                        ((!ms) :> IDisposable).Dispose()
+                RemoteFunc.repartitionBuf.Push(fp,filesize)
 
         if Utils.IsNull x.sortThread then
             lock(x) (fun _ ->
@@ -1214,14 +1215,14 @@ type SamplingFunc( filePartNum:int, records:int64, dim:int, sampleRate:int, keyL
         else
             Seq.empty
 
-
+#if DEBUG
 
 // Define your library scripting code here
 [<EntryPoint>]
 let main orgargs = 
     let args = Array.copy orgargs
     let parse = ArgumentParser(args)
-    let PrajnaClusterFile = parse.ParseString( "-cluster", "" )
+    let PrajnaClusterFile = parse.ParseString( "-cluster", "c:\onenet\cluster\onenet21-25.inf" )
     let localdir = parse.ParseString( "-local", "" )
     let remoteDKVname = parse.ParseString( "-remote", "" )
     let nrep = parse.ParseInt( "-rep", 3 )
@@ -1242,14 +1243,11 @@ let main orgargs =
     let dirSortGen = parse.ParseString( "-dir", "." )
     //let num = parse.ParseInt( "-nump", 200 ) // number of partitions
     let num2 = parse.ParseInt( "-nump", 200 ) // number of partitions
-    let nSort = parse.ParseInt( "-sort", 0 )
+    let nSort = parse.ParseInt( "-sort", 1 )
     let nRand = parse.ParseInt( "-nrand", 16 )
     let nFilePN = parse.ParseInt( "-nfile", 8 )
     
     let mutable bExecute = false
-
-
-
 
     Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "Program %s" (Process.GetCurrentProcess().MainModule.FileName) ))
     Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "Execution param %A" orgargs ))
@@ -1272,12 +1270,8 @@ let main orgargs =
 
         let binBoundary2 = Array.init 65536 (fun i -> Math.Min(numStage2-1,i/(65536/numStage2)) )
 
-
-
         let rmtPart = RemoteFunc( 16, records, nDim,num, num*num2,binBoundary,binBoundary2)
        
-
-
         // number of data files generated by each node
         let dataFileNumPerNode = nFilePN
       
@@ -1289,9 +1283,6 @@ let main orgargs =
         let hashByteSize = (hashBitSize - 1 ) / 8 + 1
         
         let maxHashValue = 1 <<< (hashByteSize * 8) 
-
-
-
 
         let hashBitSize2 = (Math.Max(8, (int) (Math.Log((float) (num2*num-1),2.0)) + 1)) 
         let hashByteSize2 = (hashBitSize2 - 1 ) / 8 + 1
@@ -1306,10 +1297,8 @@ let main orgargs =
             curJob.AddDataDirectory( dirSortGen ) |> ignore 
             
             let t = (DateTime.UtcNow)
-            
-
+           
             let totalLen = ref 0L
-
 
             let startDKV = DSet<_>( Name = "SortGen", SerializationLimit = 1 ) 
             let dkv1 = startDKV.SourceN (dataFileNumPerNode, ( fun i -> Seq.singleton 1 ))
@@ -1446,8 +1435,6 @@ let main orgargs =
             let binBoundary2 = Array.init maxHashValue2 (fun i -> Math.Min(numStage2-1,i/(maxHashValue2/numStage2)) )
             let rmtPart = RemoteFunc( dataFileNum, records, nDim,num, num*num2,binBoundary,binBoundary2)
 
-                
-
             let conf5() =
                 let startDSet = DSet<_>( Name = "SortGen", SerializationLimit = 1) 
                 startDSet.NumParallelExecution <- dataFileNumPerNode 
@@ -1512,26 +1499,38 @@ let main orgargs =
                     |> DSet.collect Operators.id
                     |> DSet.iter rmtPart.ReturnSharedBuf
 
+            let cntLenFn (cnt : int64) (ms : MemoryStreamB) =
+                let ret = cnt + (ms.Length-(int64 sizeof<int>))/(int64 rmtPart.dim)
+                (ms :> IDisposable).Dispose()
+                ret
+
+            let aggrFn (cnt1 : int64) (cnt2 : int64) =
+                cnt1 + cnt2
 
             //test memstream
+            // currently 62.5GB per node, only create streams to send and validate count
             let MemStream_Fake_conf() =
                 let startDSet = DSet<_>( Name = "SortGen", SerializationLimit = 1) 
                 startDSet.NumParallelExecution <- 16 
-                
+
+                let watch = Stopwatch.StartNew()
+
                 let dset1 = startDSet |> DSet.sourceI dataFileNum (rmtPart.ReadFilesToMemStreamF)
                 dset1.NumParallelExecution <- 16 
                 dset1.SerializationLimit <- 1
-                let dset3 = dset1 |> DSet.map (rmtPart.RepartitionMemStream RepartitionStage.StageOne)
+                let dset3 = dset1 |> DSet.map (rmtPart.RepartitionMemStreamS RepartitionStage.StageOne)
                 dset3.NumParallelExecution <- 16 
                 dset3.SerializationLimit <- 1
                 
                 let dset4 = dset3 |> DSet.collect Operators.id
                 dset4.NumParallelExecution <- 16 
 
+                let cnt = dset4 |> DSet.fold cntLenFn aggrFn 0L
+                Logger.LogF(LogLevel.Info, fun _ -> sprintf "Creating remapp stream takes: %f seconds num: %d" watch.Elapsed.TotalSeconds cnt)
+
                 //dset4 |> DSet.iter rmtPart.RepartitionAndWriteToFile
 
-                dset4 |> DSet.iter rmtPart.DeRefMemStream
-
+                //dset4 |> DSet.iter rmtPart.DeRefMemStream
 
             //test memstream with network
             let MemStream_conf() =
@@ -1599,21 +1598,22 @@ let main orgargs =
 
 
             let t1 = (DateTime.UtcNow)
-            NativeRepartitionConf()
+            //NativeRepartitionConf()
+            MemStream_Fake_conf()
             let t2= (DateTime.UtcNow)
             Logger.LogF( LogLevel.Info, ( fun _ -> sprintf "Data is distributed, takes %f ms"  ((DateTime.UtcNow - t1).TotalMilliseconds) ))
 
-            let sortDSet = DSet<_>( Name = "SortSet", NumPartitions = num2*num) 
-            
-
-            let resSet = sortDSet |> DSet.initS (fun (p,s) -> p) 1
-            resSet.NumPartitions <- num2*num
-            
-            resSet.NumParallelExecution <- 60
-            
-            resSet  |> DSet.mapi (rmtPart.PipelineSort 20)
-                    |> DSet.toSeq 
-                    |> Seq.iter (fun (i,t) ->  Logger.LogF( LogLevel.Info, ( fun _ -> sprintf "Sorted partition %d takes %f s" i t)))
+//            let sortDSet = DSet<_>( Name = "SortSet", NumPartitions = num2*num) 
+//            
+//
+//            let resSet = sortDSet |> DSet.initS (fun (p,s) -> p) 1
+//            resSet.NumPartitions <- num2*num
+//            
+//            resSet.NumParallelExecution <- 60
+//            
+//            resSet  |> DSet.mapi (rmtPart.PipelineSort 20)
+//                    |> DSet.toSeq 
+//                    |> Seq.iter (fun (i,t) ->  Logger.LogF( LogLevel.Info, ( fun _ -> sprintf "Sorted partition %d takes %f s" i t)))
             
             
             Logger.LogF( LogLevel.Info, ( fun _ -> sprintf "Done, takes %f ms: stage 1 takes: %f ms, stage 2 takes: %f ms"  ((DateTime.UtcNow - t1).TotalMilliseconds) ((t2-t1).TotalMilliseconds)  ((DateTime.UtcNow - t2).TotalMilliseconds) ))
@@ -1633,3 +1633,142 @@ let main orgargs =
     if not bExecute && bAllParsed then 
         parse.PrintUsage Usage
     0
+
+#else
+
+open System.Diagnostics
+
+[<EntryPoint>]
+let newMain argv =
+    let parse = ArgumentParser(argv, true)
+    let PrajnaClusterFile = parse.ParseString("-cluster", "c:\onenet\cluster\onenet21-25.inf")
+    let dim = parse.ParseInt("-dim", 100)
+    //let numVecPerNode = parse.ParseInt64("-num", 500000000L) // 500M vectors @ 100 per vector = 50GB
+    let numVecPerNode = parse.ParseInt64("-num", 50000000L)
+    let numProcPerNode = parse.ParseInt("-numproc", 16)
+
+    Cluster.Start(null, PrajnaClusterFile)
+
+    let numNodes = Cluster.Current.Value.NumNodes
+    let totalVec = numVecPerNode * (int64 numNodes)
+    let numBins =  numNodes * numProcPerNode // also same as number of partitions
+    // at least 50K chunks per machine approximately, or at least around 10MB
+    let chunkSize = Math.Max(numNodes * 50000, 10000000)
+    // make it multiple of dim
+    let chunkSize = chunkSize / dim * dim
+    let totalChunks = totalVec * (int64 dim) / (int64 chunkSize)
+
+    // create vectors in RAM
+    let partitionSizeFunc (total : int64) (numPartitions : int) (parti : int) =
+        let numInPartition = total / (int64 numPartitions)
+        if parti < int (total % int64 numPartitions) then
+            int(numInPartition) + 1
+        else
+            int numInPartition
+
+    let initVectorFunc (chunkSize : int) (dim : int) (parti : int, serial : int) : StreamBase<byte> =
+        let ms = new MemoryStreamB()
+        let rnd = new Random()
+        let mutable chunkToGo = chunkSize
+        while (chunkToGo > 0) do
+            let (buf, pos, cnt) = ms.SealAndGetNextWriteBuffer()
+            let amt = cnt / dim * dim // align
+            rnd.NextBytes(buf.Buffer) // fill entire buffer
+            ms.MoveForwardAfterWrite(amt)
+            chunkToGo <- chunkToGo - amt
+        ms :> StreamBase<byte>
+
+    let countFn (cnt : int64) (ms : StreamBase<byte>) =
+        cnt + 1L
+    let countLenFn (cnt : int64) (ms : StreamBase<byte>) =
+        cnt + (ms.Length-(int64 sizeof<int32>))/(int64 dim)
+    let aggrFn (cnt1 : int64) (cnt2 : int64) =
+        cnt1 + cnt2
+
+    let watch = Stopwatch.StartNew()
+
+    watch.Restart()
+    let dsetStart = DSet<StreamBase<byte>>()
+    dsetStart.NumParallelExecution <- numProcPerNode
+    dsetStart.InitN(initVectorFunc chunkSize dim, partitionSizeFunc totalChunks) |> ignore
+    let dsetOrig = dsetStart.CacheInMemory()
+    let cnt = dsetOrig.Fold(countFn, aggrFn, 0L)
+    Logger.LogF(LogLevel.Info, fun _ -> sprintf "Generation takes %f seconds, cnt: %d" watch.Elapsed.TotalSeconds cnt)
+    
+    // uniform distribution boundaries - use 20 bits
+    let numIndex = 1L<<<20
+    assert(int64 numBins <= numIndex)
+    let partitionIndex = Array.zeroCreate<uint16>(int numIndex)
+    for i = 0 to numBins - 1 do
+        let start = (int64 i)*numIndex / (int64 numBins)
+        let next = (int64 (i+1))*numIndex / (int64 numBins)
+        for j = (int start) to (int next)-1 do
+            partitionIndex.[j] <- uint16 i
+
+    let repartition (numBins : int, chunkSize : int, dim : int) (ms : StreamBase<byte>) : seq<StreamBase<byte>> =
+        seq {
+            let msOut = Array.init<StreamBase<byte>>(numBins) (fun _ -> null)
+            let numVec = chunkSize / dim
+            let numNonZero = ref 0
+            use sr = new StreamReader<byte>(ms, 0L)
+            let fnProcess(buf : byte[], pos : int, cnt : int) =
+                let numVec = cnt / dim
+                let mutable offset = 0
+                for i = 0 to numVec-1 do
+                    // take top 20 bits
+                    let index = ((int buf.[offset] <<< 16) ||| (int buf.[offset+1] <<< 8) ||| int buf.[offset+2]) >>> 4
+                    let parti = int partitionIndex.[index]
+                    if (msOut.[parti] = null) then
+                        msOut.[parti] <- new MemoryStreamB() :> StreamBase<byte>
+                        msOut.[parti].WriteInt32(parti)
+                        numNonZero := !numNonZero + 1
+                    msOut.[parti].Write(buf, offset, dim)
+                    offset <- offset + dim
+            sr.ApplyFnToBuffers(fnProcess)
+            for i = 0 to numBins-1 do
+                if (msOut.[i] <> null && msOut.[i].Length > 0L) then
+                    //yield (i, msOut)
+                    msOut.[i].Seek(0L, SeekOrigin.Begin) |> ignore
+                    yield msOut.[i]
+        }
+    
+    //let dsetRepart = dsetOrig |> DSet.map (repartition (numBins, chunkSize, dim)) |> DSet.collect (fun a -> a) |> DSet.repartition (fun (i, ms) -> i) |> DSet.map (fun (i, ms) -> ms)
+
+    watch.Restart()
+    
+    dsetOrig.NumParallelExecution <- numProcPerNode
+    //dsetOrig.SerializationLimit <- 1
+    let dsetMap = dsetOrig |> DSet.map (repartition (numBins, chunkSize, dim))
+    dsetMap.NumPartitions <- dsetOrig.NumPartitions
+
+    dsetMap.NumParallelExecution <- numProcPerNode
+    //dsetMap.SerializationLimit <- 1
+    let dsetCollect = dsetMap |> DSet.collect (fun a -> a) |> DSet.rowsReorg 1
+    dsetCollect.NumPartitions <- dsetMap.NumPartitions
+
+    dsetCollect.NumParallelExecution <- numProcPerNode
+    //dsetCollect.SerializationLimit <- 1
+    let partitionIndexFn (ms : StreamBase<byte>) =
+        let index = ms.ReadInt32()
+        ms.Seek(0L, SeekOrigin.Begin) |> ignore
+        //Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "partitionIndex: %d" index)
+        index
+
+    let dparam = new DParam()
+    //dparam.SerializationLimit <- 1
+    // can switch # of partitions here
+    dparam.NumPartitions <- numBins
+
+    let dsetRepart = dsetCollect |> DSet.repartitionP dparam partitionIndexFn
+
+    dsetRepart.NumPartitions <- dsetRepart.NumPartitions
+
+    dsetRepart.NumParallelExecution <- numProcPerNode
+    //dsetRepart.SerializationLimit <- 1
+    let count = dsetRepart |> DSet.fold countLenFn aggrFn 0L
+
+    Logger.LogF(LogLevel.Info, fun _ -> sprintf "Repartition takes %f seconds, count: %d" watch.Elapsed.TotalSeconds count)
+
+    0
+
+#endif
