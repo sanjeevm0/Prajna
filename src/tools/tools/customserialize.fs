@@ -58,6 +58,39 @@ type private CSharpDisplayClassSerializationSurrogate () =
             getInstanceFields obj |> Array.iter (fun f -> f.SetValue(obj, info.GetValue(f.Name, f.FieldType)))
             obj
   
+module GenericSerialization = 
+    
+    let private raiseAlreadyPresent =
+        Func<Guid, (ISurrogateSelector -> IFormatter), (ISurrogateSelector -> IFormatter)>(fun _ _ -> 
+            raise <| ArgumentException("Formatter with same Guid already present."))
+
+    /// Default generic serializer (standard .Net BinaryFormatter)
+    let BinaryFormatterGuid = Guid( "4721F23B-65D3-499D-9750-2D6FE6A6AE54" )
+    
+    /// New generic serializer (our BinarySerializer)
+    let PrajnaFormatterGuid = Guid("99CB89AA-A823-41D5-B817-8E582DE8E086")
+
+    let mutable DefaultFormatterGuid = PrajnaFormatterGuid
+
+    let internal FormatterMap : ConcurrentDictionary<Guid, ISurrogateSelector -> IFormatter> = 
+        let stdFormatter surrogateSelector = Formatters.Binary.BinaryFormatter(SurrogateSelector = surrogateSelector) :> IFormatter
+        let prajnaFormatter surrogateSelector = 
+            let ser = BinarySerializer() :> IFormatter
+            ser.SurrogateSelector <- surrogateSelector
+            ser
+        let fmtMap = ConcurrentDictionary<_,_>()
+        fmtMap.AddOrUpdate( BinaryFormatterGuid, stdFormatter, raiseAlreadyPresent ) |> ignore
+        fmtMap.AddOrUpdate( PrajnaFormatterGuid, prajnaFormatter, raiseAlreadyPresent) |> ignore
+        fmtMap
+
+    let GetFormatter (guid: Guid, surrogateSelector: ISurrogateSelector) = FormatterMap.[guid] surrogateSelector
+
+    let AddFormatter(guid: Guid, fmt: ISurrogateSelector -> IFormatter) = 
+        FormatterMap.AddOrUpdate(guid, Func<Guid, (ISurrogateSelector -> IFormatter)>(fun _ -> fmt),  raiseAlreadyPresent )
+
+    let GetDefaultFormatter(surrogateSelector: ISurrogateSelector) = GetFormatter(DefaultFormatterGuid, surrogateSelector)
+
+
 /// Programmer will implementation CustomizedSerializerAction of Action<Object*Stream> to customarily serialize an object 
 type CustomizedSerializerAction = Action<Object*Stream>
 /// Programmer will implementation CustomizedSerializerAction of Func<MemStream, Object> to customarily deserialize an object 
@@ -109,6 +142,29 @@ and internal CustomizedSerialization() =
     static member InstallSerializer( id: Guid, fullname, wrappedEncodeFunc ) = 
         CustomizedSerialization.EncoderCollectionByName.Item( fullname ) <- id 
         CustomizedSerialization.EncoderCollectionByGuid.Item( id ) <- wrappedEncodeFunc
+    /// A schema has been requested, the deserializer of the particular schema hasn't been installed, 
+    /// However, the developer has claimed that an alternative deserializer (of a different schema) will be able to handle the deserialization of the object. 
+    static member AlternateDeserializerID (id: Guid ) = 
+        // Currently, we haven't install alternate serializer/deserializer 
+        id
+    /// A schema has been requested, the deserializer of the particular schema hasn't been installed, 
+    /// However, the developer has claimed that an alternative deserializer (of a different schema) will be able to handle the deserialization of the object. 
+    static member AlternateSerializerID (id: Guid ) = 
+        // Currently, we haven't install alternate serializer/deserializer 
+        id
+
+
+    /// Get the Installed Serializer SchemaID of a certain type 
+    static member GetInstalledSchemaID( fullname ) = 
+        let bExist, id = CustomizedSerialization.EncoderCollectionByName.TryGetValue( fullname )
+        if bExist then 
+            id
+        else
+            Guid.Empty
+    /// Get the Installed Serializer SchemaID of a certain type 
+    static member GetInstalledSchemaID<'Type>( ) = 
+        CustomizedSerialization.GetInstalledSchemaID( typeof<'Type>.FullName )
+
     /// <summary>
     /// Install a customized deserializer, with a unique GUID that identified the use of the deserializer in the bytestream. 
     /// </summary>
@@ -123,6 +179,7 @@ and internal CustomizedSerialization() =
                 decodeFunc ( ms ) :> Object
             CustomizedSerialization.DecoderCollectionByName.Item( fullname ) <- id 
             CustomizedSerialization.DecoderCollectionByGuid.Item( id ) <- wrappedDecodeFunc
+
     /// <summary>
     /// Install a customized serializer, in raw format of storage and no checking
     /// </summary>
@@ -168,9 +225,7 @@ and internal CustomizedSerialization() =
             CustomizedSerialization.DecoderCollectionByGuid.Item( id ) <- wrappedDecodeFunc
 
     static member internal GetBinaryFormatter(getNewMs, getNewMsBuf) =
-        let fmt = Runtime.Serialization.Formatters.Binary.BinaryFormatter()
-        fmt.SurrogateSelector <- CustomizedSerializationSurrogateSelector(getNewMs, getNewMsBuf)
-        fmt
+        GenericSerialization.GetDefaultFormatter(CustomizedSerializationSurrogateSelector(getNewMs, getNewMsBuf)) 
 
     /// <summary> 
     /// Serialize a particular object to bytestream using BinaryFormatter, support serialization of null.  
@@ -286,41 +341,6 @@ and private CustomizedSerializationSurrogateSelector(getNewMs : unit->MemoryStre
                 else
                     null
 
-module GenericSerialization = 
-    
-    let private raiseAlreadyPresent =
-        Func<Guid, (unit -> IFormatter), (unit -> IFormatter)>(fun _ _ -> 
-            raise <| ArgumentException("Formatter with same Guid already present."))
-
-    /// Default generic serializer (standard .Net BinaryFormatter)
-    let BinaryFormatterGuid = Guid( "4721F23B-65D3-499D-9750-2D6FE6A6AE54" )
-    
-    /// New generic serializer (our BinarySerializer)
-    let PrajnaFormatterGuid = Guid("99CB89AA-A823-41D5-B817-8E582DE8E086")
-
-    let mutable DefaultFormatterGuid = PrajnaFormatterGuid
-
-    let internal FormatterMap : ConcurrentDictionary<Guid, unit -> IFormatter> = 
-        let getNew = fun () -> new MemStream() :> MemoryStream
-        let getNewBuf = fun (a,b,c,d,e) -> new MemStream(a,b,c,d,e) :> MemoryStream
-        let selector() = CustomizedSerializationSurrogateSelector(getNew, getNewBuf) :> ISurrogateSelector
-        let stdFormatter() = Formatters.Binary.BinaryFormatter(SurrogateSelector = selector()) :> IFormatter
-        let prajnaFormatter() = 
-            let ser = BinarySerializer() :> IFormatter
-            ser.SurrogateSelector <- selector()
-            ser
-        let fmtMap = ConcurrentDictionary<_,_>()
-        fmtMap.AddOrUpdate( BinaryFormatterGuid, stdFormatter, raiseAlreadyPresent ) |> ignore
-        fmtMap.AddOrUpdate( PrajnaFormatterGuid, prajnaFormatter, raiseAlreadyPresent) |> ignore
-        fmtMap
-
-    let GetFormatter(guid: Guid) = FormatterMap.[guid]()
-
-    let AddFormatter(guid: Guid, fmt: unit -> IFormatter) = 
-        FormatterMap.AddOrUpdate(guid, Func<Guid, (unit -> IFormatter)>(fun _ -> fmt),  raiseAlreadyPresent )
-
-    let GetDefaultFormatter() = GetFormatter DefaultFormatterGuid
-
 ///// <summary> 
 ///// Adds serialization related methods to MemStream, which allows us to break dependency cycles between
 ///// MemStream and CustomizedSerialization stuff.
@@ -344,7 +364,7 @@ type StreamBaseExtension =
     [<Extension>]
     static member internal Serialize( x : StreamBase<'T>, obj )=
         StreamBaseExtension.BinaryFormatterSerializeFromTypeName(x, obj, obj.GetType().FullName)
-//        let fmt = new Runtime.Serialization.Formatters.Binary.BinaryFormatter()
+//        let fmt = Runtime.Serialization.Formatters.Binary.BinaryFormatter()
 //        if Utils.IsNull obj then 
 //            fmt.Serialize( x, NullObjectForSerialization() )
 //        else
@@ -353,7 +373,7 @@ type StreamBaseExtension =
     /// Deserialize an object from bytestream with BinaryFormatter, support deserialization of null. 
     [<Extension>]
     static member internal Deserialize(x : StreamBase<'T>) =
-//        let fmt = new Runtime.Serialization.Formatters.Binary.BinaryFormatter()
+//        let fmt = Runtime.Serialization.Formatters.Binary.BinaryFormatter()
         let fmt = CustomizedSerialization.GetBinaryFormatter(x.GetNewMs, x.GetNewMsByteBuf)
         let o = fmt.Deserialize( x )
         match o with 
@@ -435,7 +455,10 @@ type StreamBaseExtension =
                         (arr.[i] :> IDisposable).Dispose()
                 | _ ->
                     x.WriteBytes( GenericSerialization.DefaultFormatterGuid.ToByteArray() )
-                    let fmt = GenericSerialization.GetDefaultFormatter()
+                    let fmt = 
+                        let getNew = fun () -> new MemStream() :> MemoryStream
+                        let getNewBuf = fun (a,b,c,d,e) -> new MemStream(a,b,c,d,e) :> MemoryStream
+                        GenericSerialization.GetDefaultFormatter( CustomizedSerializationSurrogateSelector(getNew, getNewBuf) )
                     StreamBaseExtension.FormatterSerializeFromTypeName( x, obj, fullname, fmt )
 
     //static member ArrToReadTo = Array.zeroCreate<byte>(50000)
@@ -479,14 +502,19 @@ type StreamBaseExtension =
             match CustomizedSerialization.DecoderCollectionByGuid.TryGetValue( markerGuid ) with
             | true, decodeFunc -> decodeFunc x
             | _ -> 
+                let selector = 
+                    let getNew = fun () -> new MemStream() :> MemoryStream
+                    let getNewBuf = fun (a,b,c,d,e) -> new MemStream(a,b,c,d,e) :> MemoryStream
+                    CustomizedSerializationSurrogateSelector(getNew, getNewBuf)
                 match GenericSerialization.FormatterMap.TryGetValue( markerGuid ) with
-                | true, fmt -> StreamBaseExtension.FormatterDeserializeToTypeName( x, fullname, fmt() ) 
+                | true, fmt -> 
+                    StreamBaseExtension.FormatterDeserializeToTypeName( x, fullname, fmt selector ) 
                 | _ -> 
                     // This move back is added for compatible reason, old Serializer don't add a Guid, so if we can't figure out the guid in the beginning of
                     // bytestream, we just move back 
                     x.Seek( pos, SeekOrigin.Begin ) |> ignore
                     // Can't parse the guid, using the default serializer
-                    StreamBaseExtension.FormatterDeserializeToTypeName( x, fullname, GenericSerialization.GetFormatter GenericSerialization.BinaryFormatterGuid) 
+                    StreamBaseExtension.FormatterDeserializeToTypeName( x, fullname, GenericSerialization.GetFormatter(GenericSerialization.BinaryFormatterGuid, selector)) 
 
     /// Serialize a particular object to bytestream, allow use of customizable serializer if one is installed. 
     /// The customized serializer is of typeof<'U>.FullName, even the object passed in is of a derivative type. 

@@ -1,8 +1,9 @@
 namespace Prajna.Test.Common
 
 open System
-open System.IO
 open System.Diagnostics
+open System.IO
+open System.Threading
 
 open Prajna.Core
 open Prajna.Tools
@@ -16,7 +17,11 @@ type TestEnvironment private () =
     static let useAppDomainForDaemonsAndContainers = true
     static let clusterSize = 2
 
-    static let env = lazy(let e = new TestEnvironment()
+    static let env = lazy(let _, minIOThs = ThreadPool.GetMinThreads()
+                          // In UT, daemons/containers/app use the same process thus share the same thread pool
+                          // make the min thread a bit higher 
+                          ThreadPool.SetMinThreads(Environment.ProcessorCount * 4, minIOThs) |> ignore
+                          let e = new TestEnvironment()
                           AppDomain.CurrentDomain.DomainUnload.Add(fun _ -> (e :> IDisposable).Dispose())
                           e)
 
@@ -48,7 +53,8 @@ type TestEnvironment private () =
         Logger.Log( LogLevel.Info, sprintf "Current AppDomain: %s" (AppDomain.CurrentDomain.FriendlyName))
     
     let reportProcessStatistics msg = 
-        // GC.Collect()
+        GC.Collect()
+        GC.WaitForPendingFinalizers()
         let proc = Process.GetCurrentProcess()
         Logger.Log(LogLevel.Info, 
                    sprintf "%s -- # of TH: %i, GC Heap: %f MB, Private Memory: %f MB" 
