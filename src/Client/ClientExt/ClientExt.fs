@@ -39,5 +39,5 @@ open Prajna.Core
 [<EntryPoint>]
 let main orgargv = 
 //    if (Environment.MachineName.Equals("onenet21", StringComparison.OrdinalIgnoreCase)) then
-//        System.Diagnostics.Debugger.Break()
+//        assert(false)
     ContainerLauncher.Main orgargv
