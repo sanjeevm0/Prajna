@@ -134,10 +134,10 @@ type RepartitionStage = | StageOne=1 | StageTwo=2
 /// records is total number of records
 [<Serializable>]
 type RemoteFunc( filePartNum:int, records:int64, _dim:int , partNumS1:int, partNumS2:int, partNumF : int, stageOnePartitionBoundary:int[], stageTwoPartitionBoundary:int[]) =    
-    let approxBlockSize = 1024*1000*100
+    let approxBlockSize = 1024*1000*_dim
 //    let perFileLen = 62500000000L
 //    let perFileLen = 6250000000L 
-    let perFileLen = 6250000000L / 4L
+    let perFileLen = (6250000000L*(int64 _dim)/100L) / 4L
 
     let maxPerStage2 = (65536 + partNumS2 - 1) / partNumS2
     let maxStage2 = (maxPerStage2 <<< 8) + 256
@@ -1244,19 +1244,20 @@ type RemoteFunc( filePartNum:int, records:int64, _dim:int , partNumS1:int, partN
         let addFn (parti : uint32) =
             Array.init<int64 ref*byte[]> partNumF (fun i -> (ref 0L, Array.zeroCreate<byte>(int x.MaxSubPartitionLen)))
         let partArr = x.SubPartition.GetOrAdd(parti, addFn)
-        let vec = Array.zeroCreate<byte>(x.dim)
+        let alignLen = (x.dim + 7)/8*8
+        let vec = Array.zeroCreate<byte>(alignLen)
         while (ms.Read(vec, 0, x.dim) = x.dim) do
             let index0 = ((int vec.[0]) <<< 8) ||| (int vec.[1])
             //assert(int parti = stageTwoPartitionBoundary.[index0])
             let index1 = ((index0 - minPart0.[int parti]) <<< 8) ||| (int vec.[2])
             let (cnt, arr) = partArr.[binBoundary3.[index1]]
-            let start = Interlocked.Add(cnt, int64 x.dim) - (int64 x.dim)
-            if (start + (int64 x.dim) > x.MaxSubPartitionLen) then
-                Interlocked.Add(cnt, int64 -x.dim) |> ignore
+            let start = Interlocked.Add(cnt, int64 alignLen) - (int64 alignLen)
+            if (start + (int64 alignLen) > x.MaxSubPartitionLen) then
+                Interlocked.Add(cnt, int64 -alignLen) |> ignore
                // throw away, not enough space in cache
                 Logger.LogF(LogLevel.Error, fun _ -> "Error: Max Length exceeded")
             else
-                Buffer.BlockCopy(vec, 0, arr, int start, x.dim)
+                Buffer.BlockCopy(vec, 0, arr, int start, alignLen)
         RemoteFunc.Current <- Some(x)
         (ms :> IDisposable).Dispose()
 
@@ -1622,9 +1623,9 @@ let main orgargs =
             let doSort (cnt : int64 ref, a : byte[]) : int64 ref*byte[] =
                 (cnt, a)
 
-            let cntLenByteArrFn (cnt : int64) (cntPlusArr : int64 ref*byte[]) =
+            let cntLenByteArrFn (dim : int) (alignLen : int) (cnt : int64) (cntPlusArr : int64 ref*byte[]) =
                 let (cntArrR, arr) = cntPlusArr
-                cnt + !cntArrR/(int64 rmtPart.dim)
+                cnt + !cntArrR/(int64 alignLen)
 
             //test memstream
             // currently 62.5GB per node, only create streams to send and validate count
@@ -1672,7 +1673,8 @@ let main orgargs =
                 //let dset6 = startRepart |> DSet.sourceI dset5.NumPartitions RemoteFunc.GetCacheMem
                 let dset6 = startRepart |> DSet.sourceI dset5.NumPartitions RemoteFunc.GetCacheMemSubPart
                 let dset7 = dset6 |> DSet.map doSort
-                let cnt = dset7 |> DSet.fold cntLenByteArrFn aggrFn 0L
+                let alignLen = (rmtPart.dim + 7)/8*8
+                let cnt = dset7 |> DSet.fold (cntLenByteArrFn rmtPart.dim alignLen) aggrFn 0L
                 Logger.LogF(LogLevel.Info, fun _ -> sprintf "Creating remap + repartition stream + caceh + sort takes: %f seconds num: %d rate per node: %f Gbps" watch.Elapsed.TotalSeconds cnt ((double cnt)*(double rmtPart.dim)*8.0/1.0e9/(double cluster.NumNodes)/watch.Elapsed.TotalSeconds))
 
                 let dset8 = DSet<_>(Name = "ClearCache", SerializationLimit = 1) |> DSet.sourceI dset5.NumPartitions RemoteFunc.GetCachePtr
