@@ -81,6 +81,15 @@ module Interop =
     [<DllImport(@"qsort.dll", CallingConvention=CallingConvention.StdCall)>]
     extern void stdqsort(nativeint buf, int len, int dim);
 
+    [<DllImport(@"qsort.dll", CallingConvention=CallingConvention.StdCall)>]
+    extern void alignsort64(IntPtr buf, int align, int num)
+    let inline AlignSort(buffer : byte[], align : int, num : int) =
+        let bufferHandle = GCHandle.Alloc(buffer, GCHandleType.Pinned)
+        try
+            alignsort64(bufferHandle.AddrOfPinnedObject(), (align+7)/8*8, num)
+        finally
+            bufferHandle.Free()
+
     let STLqsortwithLen (buffer:byte[], dim:int, len:int) = 
         let bufferHandle = GCHandle.Alloc(buffer,GCHandleType.Pinned);
         let pinedbuffer = bufferHandle.AddrOfPinnedObject()        
@@ -1298,6 +1307,66 @@ type RemoteFunc( filePartNum:int, records:int64, _dim:int , partNumS1:int, partN
         match RemoteFunc.Current with
             | None -> ()
             | Some(x) -> x.ClearCacheMemSubPart(parti)
+
+    member val SubPartitionN = ConcurrentDictionary<uint32, (int64 ref*IntPtr)[]>() with get
+
+    member x.FurtherPartitionCacheInRAMAndDisposeN(ms : StreamBase<byte>) =
+        ms.Seek(0L, SeekOrigin.Begin) |> ignore
+        let parti = ms.ReadUInt32()
+        let addFn (parti : uint32) =
+            let createArrFn (i : int) =
+                let allocLen = (int x.MaxSubPartitionLen + sizeof<uint64> - 1)/ sizeof<uint64>
+                let arr = Array.zeroCreate<uint64>(allocLen)
+                let handle = GCHandle.Alloc(arr, GCHandleType.Pinned)
+                (ref 0L, handle.AddrOfPinnedObject())
+            Array.init<int64 ref*IntPtr> partNumF createArrFn
+        let partArr = x.SubPartitionN.GetOrAdd(parti, addFn)
+        let alignLen = (x.dim + 7)/8*8
+        let vec = Array.zeroCreate<byte>(alignLen)
+        while (ms.Read(vec, 0, x.dim) = x.dim) do
+            let index0 = ((int vec.[0]) <<< 8) ||| (int vec.[1])
+            //assert(int parti = stageTwoPartitionBoundary.[index0])
+            let index1 = ((index0 - minPart0.[int parti]) <<< 8) ||| (int vec.[2])
+            let (cnt, arr) = partArr.[binBoundary3.[index1]]
+            let start = Interlocked.Add(cnt, int64 alignLen) - (int64 alignLen)
+            if (start + (int64 alignLen) > x.MaxSubPartitionLen) then
+                Interlocked.Add(cnt, int64 -alignLen) |> ignore
+               // throw away, not enough space in cache
+                Logger.LogF(LogLevel.Error, fun _ -> "Error: Max Length exceeded")
+            else
+                Marshal.Copy(vec, 0, IntPtr.Add(arr, int start), alignLen)
+        RemoteFunc.Current <- Some(x)
+        (ms :> IDisposable).Dispose()
+
+    member x.GetCacheMemSubPartN(parti : int) : seq<int64 ref*IntPtr> =
+        //if (x.PartitionIndex.ContainsKey(parti)) then
+        //    yield (snd x.Partition.[x.PartitionIndex.[parti]])
+        if (x.SubPartitionN.ContainsKey(uint32 parti)) then 
+            Seq.ofArray(x.SubPartitionN.[uint32 parti])
+        else
+            Seq.empty
+
+    member x.ClearCacheMemSubPartN(parti : uint32) =
+        if (x.SubPartitionN.ContainsKey(parti)) then 
+            if (Utils.IsNotNull x.SubPartitionN.[parti]) then
+                for elem in x.SubPartitionN.[parti] do
+                    let (cnt, arr) = elem
+                    cnt := 0L
+
+    static member FurtherPartitionCacheInRAMAndDisposeN ms =
+        match RemoteFunc.Current with
+            | None -> ()
+            | Some(x) -> x.FurtherPartitionCacheInRAMAndDisposeN(ms)
+
+    static member GetCacheMemSubPartN parti =
+        match RemoteFunc.Current with
+            | None -> Seq.empty
+            | Some(x) -> x.GetCacheMemSubPartN(parti)
+
+    static member ClearCacheMemSubPartN parti =
+        match RemoteFunc.Current with
+            | None -> ()
+            | Some(x) -> x.ClearCacheMemSubPartN(parti)
         
 [<Serializable>]
 type SamplingFunc( filePartNum:int, records:int64, dim:int, sampleRate:int, keyLen:int ) = 
@@ -1620,10 +1689,21 @@ let main orgargs =
                 let index = ms.ReadUInt32()
                 int index
 
-            let doSort (cnt : int64 ref, a : byte[]) : int64 ref*byte[] =
-                (cnt, a)
+            let doSort (alignLen : int) (cnt : int64 ref, buf : byte[]) : int64 ref*byte[] =
+                let num = int(!cnt/(int64 alignLen))
+                Interop.AlignSort(buf, alignLen, num)
+                (cnt, buf)
+
+            let doSortN (alignLen : int) (cnt : int64 ref, buf : IntPtr) : int64 ref*IntPtr =
+                let num = int(!cnt/(int64 alignLen))
+                //Interop.alignsort64(buf, alignLen>>>3, num)
+                (cnt, buf)
 
             let cntLenByteArrFn (dim : int) (alignLen : int) (cnt : int64) (cntPlusArr : int64 ref*byte[]) =
+                let (cntArrR, arr) = cntPlusArr
+                cnt + !cntArrR/(int64 alignLen)
+
+            let cntLenByteArrNFn (dim : int) (alignLen : int) (cnt : int64) (cntPlusArr : int64 ref*IntPtr) =
                 let (cntArrR, arr) = cntPlusArr
                 cnt + !cntArrR/(int64 alignLen)
 
@@ -1659,9 +1739,11 @@ let main orgargs =
                 // cache in RAM: - gives approx 3Gbps (mostly limited by allocation)
                 //dset5 |> DSet.iter rmtPart.CacheInRAMAndDispose
                 if (bFirst) then
-                    dset5 |> DSet.iter rmtPart.FurtherPartitionCacheInRAMAndDispose
+                    //dset5 |> DSet.iter rmtPart.FurtherPartitionCacheInRAMAndDispose
+                    dset5 |> DSet.iter rmtPart.FurtherPartitionCacheInRAMAndDisposeN
                 else
-                    dset5 |> DSet.iter RemoteFunc.FurtherPartitionCacheInRAMAndDispose
+                    //dset5 |> DSet.iter RemoteFunc.FurtherPartitionCacheInRAMAndDispose
+                    dset5 |> DSet.iter RemoteFunc.FurtherPartitionCacheInRAMAndDisposeN
                 let cnt = rmtPart.TotalSizeInByte / (int64 rmtPart.dim)
                 Logger.LogF(LogLevel.Info, fun _ -> sprintf "Creating remap + repartition + cacheInRam stream takes: %f seconds num: %d rate per node: %f Gbps" watch.Elapsed.TotalSeconds cnt ((double cnt)*(double rmtPart.dim)*8.0/1.0e9/(double cluster.NumNodes)/watch.Elapsed.TotalSeconds))
 
@@ -1671,14 +1753,16 @@ let main orgargs =
 
                 // mapping must also match dset5, hopefully just setting NumPartitions will do the trick
                 //let dset6 = startRepart |> DSet.sourceI dset5.NumPartitions RemoteFunc.GetCacheMem
-                let dset6 = startRepart |> DSet.sourceI dset5.NumPartitions RemoteFunc.GetCacheMemSubPart
-                let dset7 = dset6 |> DSet.map doSort
+                //let dset6 = startRepart |> DSet.sourceI dset5.NumPartitions RemoteFunc.GetCacheMemSubPart
+                let dset6 = startRepart |> DSet.sourceI dset5.NumPartitions RemoteFunc.GetCacheMemSubPartN
                 let alignLen = (rmtPart.dim + 7)/8*8
-                let cnt = dset7 |> DSet.fold (cntLenByteArrFn rmtPart.dim alignLen) aggrFn 0L
+                let dset7 = dset6 |> DSet.map (doSortN alignLen)
+                let cnt = dset7 |> DSet.fold (cntLenByteArrNFn rmtPart.dim alignLen) aggrFn 0L
                 Logger.LogF(LogLevel.Info, fun _ -> sprintf "Creating remap + repartition stream + caceh + sort takes: %f seconds num: %d rate per node: %f Gbps" watch.Elapsed.TotalSeconds cnt ((double cnt)*(double rmtPart.dim)*8.0/1.0e9/(double cluster.NumNodes)/watch.Elapsed.TotalSeconds))
 
                 let dset8 = DSet<_>(Name = "ClearCache", SerializationLimit = 1) |> DSet.sourceI dset5.NumPartitions RemoteFunc.GetCachePtr
-                dset8 |> DSet.iter RemoteFunc.ClearCacheMemSubPart
+                //dset8 |> DSet.iter RemoteFunc.ClearCacheMemSubPart
+                dset8 |> DSet.iter RemoteFunc.ClearCacheMemSubPartN
 
                 //dset4 |> DSet.iter rmtPart.RepartitionAndWriteToFile
 

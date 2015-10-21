@@ -85,6 +85,11 @@
       <Project>{159bb552-8346-4313-8e10-43b88beca63b}</Project>
       <Private>True</Private>
     </ProjectReference>
+    <ProjectReference Include="qsort\qsort.vcxproj">
+      <Name>qsort</Name>
+      <Project>{e95d819a-b8e3-4f94-b7ee-300e31ab0181}</Project>
+      <Private>True</Private>
+    </ProjectReference>
   </ItemGroup>
   <PropertyGroup>
     <PreBuildEvent />
