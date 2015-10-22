@@ -1442,6 +1442,8 @@ let main orgargs =
     let bAllParsed = parse.AllParsed Usage
 
     if bAllParsed then 
+        JobDependencies.Current.Add([|"qsort.dll"|])
+
         Cluster.Start( null, PrajnaClusterFile )
         
         let cluster = Cluster.GetCurrent()        
@@ -1696,7 +1698,7 @@ let main orgargs =
 
             let doSortN (alignLen : int) (cnt : int64 ref, buf : IntPtr) : int64 ref*IntPtr =
                 let num = int(!cnt/(int64 alignLen))
-                //Interop.alignsort64(buf, alignLen>>>3, num)
+                Interop.alignsort64(buf, alignLen>>>3, num)
                 (cnt, buf)
 
             let cntLenByteArrFn (dim : int) (alignLen : int) (cnt : int64) (cntPlusArr : int64 ref*byte[]) =
@@ -1737,6 +1739,7 @@ let main orgargs =
                 //Logger.LogF(LogLevel.Info, fun _ -> sprintf "Creating remap + repartition stream takes: %f seconds num: %d rate per node: %f Gbps" watch.Elapsed.TotalSeconds cnt ((double cnt)*(double rmtPart.dim)*8.0/1.0e9/(double cluster.NumNodes)/watch.Elapsed.TotalSeconds))
 
                 // cache in RAM: - gives approx 3Gbps (mostly limited by allocation)
+                // gives 3.6Gbps on 2nd try
                 //dset5 |> DSet.iter rmtPart.CacheInRAMAndDispose
                 if (bFirst) then
                     //dset5 |> DSet.iter rmtPart.FurtherPartitionCacheInRAMAndDispose
@@ -1863,9 +1866,27 @@ let main orgargs =
 //        if bClose then 
 //            RemoteInstance.Stop( MonitorNetworkParam.MonitorNetworkServiceName )
 //            bExecute <- true  
-//                
+//                  
 
-        Cluster.Stop()
+    if not bExecute then
+        // simple sort test
+        let a = Array.zeroCreate<byte>((int)(62500000L*104L/100L))
+        let b = Array.zeroCreate<uint64>(a.Length/8)
+        let h = GCHandle.Alloc(b, GCHandleType.Pinned)
+        let ptr = h.AddrOfPinnedObject()
+        let rnd = Random()
+        let w = Stopwatch.StartNew()
+        for i = 0 to 99 do
+            rnd.NextBytes(a)
+            Marshal.Copy(a, 0, ptr, a.Length)
+            w.Restart()
+            Interop.alignsort64(ptr, 104/8, a.Length/104)
+            Console.WriteLine("Takes: {0} seconds", w.Elapsed.TotalSeconds)
+        h.Free()
+        bExecute <- true
+
+    Cluster.Stop()
+
     // Make sure we don't print the usage information twice. 
     if not bExecute && bAllParsed then 
         parse.PrintUsage Usage
