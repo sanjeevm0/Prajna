@@ -166,7 +166,7 @@ type [<AbstractClass>] NetUtils() =
     static member internal RecvOrClose(conn : IConn, fn, e) =
         let (closed, asyncOper) = NetUtils.RecvAsync(conn.Socket, e)
         if (closed) then
-            //Logger.LogF(LogLevel.MildVerbose, (fun _ -> sprintf "baseNetwork; close is called %A, BytesTransferred %d, SocketError %A, receive buffer size:%d" (LocalDNS.GetShowInfo(conn.Socket.RemoteEndPoint)) e.BytesTransferred e.SocketError conn.Socket.ReceiveBufferSize ))
+            Logger.LogF(LogLevel.MildVerbose, (fun _ -> sprintf "baseNetwork; close is called %A, BytesTransferred %d, SocketError %A, receive buffer size:%d" (LocalDNS.GetShowInfo(conn.Socket.RemoteEndPoint)) e.BytesTransferred e.SocketError conn.Socket.ReceiveBufferSize ))
             conn.Close()
         else if (not asyncOper) then
             fn e
@@ -778,10 +778,11 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
     let bCloseDone = ref -1
     let bTerminateDone = ref -1
     let processors = ConcurrentDictionary<string, ('T->ManualResetEvent)*bool>(StringComparer.Ordinal)
-    let count = ref -1
+    let processorCount = ref -1
     let waitTimeMs = 0
-    let mutable bMultipleInit = false
     let lockObj = Object()
+    let mutable bStartedProcessing = false
+    let [<VolatileField>] mutable bMultipleInit = false
     let [<VolatileField>] mutable isTerminated = false
     let [<VolatileField>] mutable bInProcessing = false
     let [<VolatileField>] mutable procCount = 0
@@ -1053,8 +1054,8 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
                     if (bDone) then
                         threadPool.HandleDoneExecution.Set() |> ignore
                 Some(fnFinish)
-        //Component<'T>.StartOnSystemThreadPool func compBase threadPool
-        threadPool.EnqueueRepeatableFunction func cts tpKey infoFunc
+        Component<'T>.StartOnSystemThreadPool func finishCb
+        //threadPool.EnqueueRepeatableFunction func cts tpKey infoFunc
         //Component<'T>.StartProcessOnOwnThread func tpKey finishCb infoFunc
         //Prajna.Tools.ThreadPool.Current.AddWorkItem(func, finishCb, infoFunc(tpKey))
 
@@ -1077,12 +1078,15 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
                                   (cts : CancellationToken)
                                   (tpKey : 'TP)
                                   (infoFunc : 'TP -> string) : unit =
-        proc <- Component.Process item x.Dequeue x.Proc x.IsClosed x.Close tpKey infoFunc x
-        compBase.SharedStateObj <- SharedComponentState.Add(compBase.ComponentId, compBase, threadPool)
-        //Component<'T>.StartOnSystemThreadPool proc None
-        Component<'T>.StartOnThreadPool threadPool proc cts tpKey infoFunc
-        //Component<'T>.StartProcessOnOwnThread proc tpKey finishCb infoFunc
-        //Prajna.Tools.ThreadPool.Current.AddWorkItem(proc, None, infoFunc(tpKey))
+        lock (lockObj) (fun _ ->
+            proc <- Component.Process item x.Dequeue x.Proc x.IsClosed x.Close tpKey infoFunc x
+            compBase.SharedStateObj <- SharedComponentState.Add(compBase.ComponentId, compBase, threadPool)
+            Component<'T>.StartOnSystemThreadPool proc None
+            //Component<'T>.StartOnThreadPool threadPool proc cts tpKey infoFunc
+            //Component<'T>.StartProcessOnOwnThread proc tpKey finishCb infoFunc
+            //Prajna.Tools.ThreadPool.Current.AddWorkItem(proc, None, infoFunc(tpKey))
+            bStartedProcessing <- true
+        )
 
     /// Start work item on pool
     /// <param name="threadPool">The thread pool to execute upon</param>
@@ -1095,8 +1099,8 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
                                         (infoFunc : 'TP -> string) =
         let compBase = new ComponentBase()
         compBase.SharedStateObj <- SharedComponentState.Add(compBase.ComponentId, compBase, threadPool)
-        //Component<'T>.StartOnSystemThreadPool func None
-        Component<'T>.StartOnThreadPool threadPool func cts tpKey infoFunc
+        Component<'T>.StartOnSystemThreadPool func None
+        //Component<'T>.StartOnThreadPool threadPool func cts tpKey infoFunc
         //Component<'T>.StartProcessOnOwnThread func tpKey finishCb infoFunc
         //Prajna.Tools.ThreadPool.Current.AddWorkItem(func, None, infoFunc(tpKey))
         compBase
@@ -1134,8 +1138,9 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
         // avoid frequent lock with first check
         if (bMultipleInit = false) then
             lock (lockObj) (fun() ->
-                if (bMultipleInit = false) then
-                    x.InitMultipleProcess()                 
+                if (bStartedProcessing && bMultipleInit = false) then
+                    x.InitMultipleProcess()
+                    bMultipleInit <- true
             )
 
     /// Register a processor for the component with name
@@ -1144,26 +1149,31 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
     /// <param name="processItem">A function which does processing, returns event if cannot complete</param>
     member x.RegisterProc(name : string, processItem) =
         x.CheckAndInitMultipleProcess()
+        let cnt = Interlocked.Increment(processorCount)
+        Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Registering processor %d : %s to %A" cnt name x)
         processors.[name] <- (processItem, false)
 
-    /// Register a processor for the component - same as RegisterProc, but default name is created and returned
+    /// Get or add a new processor for the component with name
+    /// If this is used, the Proc property does not need to be set
+    /// <param name="name">The name of the processing component - used for unregistering</param>
     /// <param name="processItem">A function which does processing, returns event if cannot complete</param>
-    /// <returns>The internal name of the processor - can use for unregistering</returns>
-    member x.GetOrAddProc(name: string, processItem : 'T->ManualResetEvent) =
-        x.CheckAndInitMultipleProcess() 
-        processors.GetOrAdd( name, fun _ -> if Interlocked.Increment( count ) <> 0 then 
-                                                Logger.LogF( LogLevel.WildVerbose, (fun _ -> sprintf "Registering processor %d" (!count+1)))
-                                            (processItem, false)
-                                            ) |> ignore
+    member x.GetOrAddProc(name: string, processItem : 'T->ManualResetEvent) : unit =
+        let addFn (name : string) =
+            x.CheckAndInitMultipleProcess()
+            let cnt = Interlocked.Increment(processorCount)
+            Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Registering processor %d : %s to %A" cnt name x)
+            (processItem, false)
+        processors.GetOrAdd(name, addFn) |> ignore
 
     /// Register a processor for the component - same as RegisterProc, but default name is created and returned
     /// <param name="processItem">A function which does processing, returns event if cannot complete</param>
     /// <returns>The internal name of the processor - can use for unregistering</returns>
     member x.AddProc(processItem : 'T->ManualResetEvent) =
-        if (!count <> -1) then
-            Logger.LogF( LogLevel.WildVerbose, (fun _ -> sprintf "Registering processor %d" (!count+1)))
-        let name = sprintf "Listener:%d:%d" compBase.ComponentId (Interlocked.Increment(count))
-        x.RegisterProc(name, processItem)
+        x.CheckAndInitMultipleProcess()
+        let cnt = Interlocked.Increment(processorCount)
+        let name = sprintf "Listener:%d:%d" compBase.ComponentId cnt
+        Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Registering processor %d : %s to %A" cnt name x)
+        processors.[name] <- (processItem, false)
         name
 
     /// Unregister a processor for the component

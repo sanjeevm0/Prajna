@@ -701,7 +701,8 @@ type [<AllowNullLiteral>] NetworkCommandQueue() as x =
         // perform callback - future enumerations will automatically invoke
         x.OnConnect.Trigger()
         // no networking starts unitl initialized set to true
-        ThreadPoolWaitHandles.safeWaitOne( eInitialized ) |> ignore
+        //ThreadPoolWaitHandles.safeWaitOne( eInitialized ) |> ignore
+        eInitialized.WaitOne() |> ignore
         // start current processing recv pool - provided its needed (at least one processor must be registered)
         if (xCRecv.Processors.Count > 0) then
             // start NetworkCommand receiver processing
@@ -919,9 +920,8 @@ type [<AllowNullLiteral>] NetworkCommandQueue() as x =
             x.MarkFail() 
             if Utils.IsNotNull soc then soc.Dispose()
             Logger.Log( LogLevel.Error, (sprintf "NetworkCommandQueue.BeginConnect failed with exception %A" e ))
-            
-    static member private EndConnect( ar ) =
-        let (x, soc) = ar.AsyncState :?> (NetworkCommandQueue*Socket)
+
+    member x.EndConnect(ar, soc : Socket) =
         if not x.Shutdown then 
             try
                 soc.EndConnect( ar )
@@ -932,7 +932,11 @@ type [<AllowNullLiteral>] NetworkCommandQueue() as x =
                 x.MarkFail()
                 (x :> IDisposable).Dispose()
                 soc.Dispose()                
-                Logger.Log( LogLevel.Error, (sprintf "NetworkCommandQueue.BEndConnect failed with exception %A" e ))
+                Logger.Log( LogLevel.Error, (sprintf "NetworkCommandQueue.BEndConnect to %A failed with exception %A" remoteEndPoint e ))
+            
+    static member private EndConnect( ar ) =
+        let (x, soc) = ar.AsyncState :?> (NetworkCommandQueue*Socket)
+        x.EndConnect(ar, soc)
 
     /// Initialize the NetworkCommandQueue - Only call after AddRecvProc are all done
     member x.Initialize() =
@@ -947,7 +951,7 @@ type [<AllowNullLiteral>] NetworkCommandQueue() as x =
     abstract Close : unit -> unit
     default x.Close() =
         if (Interlocked.CompareExchange(x.CloseDone, 1, 0) = 0) then
-            // Logger.LogStackTrace(LogLevel.MildVerbose)
+            Logger.LogStackTrace(LogLevel.MildVerbose)
             Logger.LogF( LogLevel.MildVerbose, (fun _ -> sprintf "Close of NetworkCommandQueue %s" x.EPInfo))
             Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "SA Recv Stack size %d %d" x.ONet.BufStackRecv.StackSize x.ONet.BufStackRecv.GetStack.Size)
             Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "SA Send Stack size %d %d" x.ONet.BufStackSend.StackSize x.ONet.BufStackSend.GetStack.Size)

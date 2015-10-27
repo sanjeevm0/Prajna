@@ -972,7 +972,7 @@ and [<AllowNullLiteral; Serializable>]
                 Logger.LogF( jbInfo.JobID, LogLevel.MildVerbose, fun _ -> sprintf "[ClosePartition, Job %A cancelled] DSet %s" jbInfo.JobID dset.Name )   
             else
                 if not jobAction.IsCancelled then 
-                    Logger.LogF( jbInfo.JobID, LogLevel.MediumVerbose, ( fun _ -> sprintf "Reaching end of part %d with %d mistakes" meta.Partition meta.NumElems ))
+                    Logger.LogF( jbInfo.JobID, LogLevel.MildVerbose, ( fun _ -> sprintf "Reaching end of part %d with %d mistakes" meta.Partition meta.NumElems ))
                 if not jbInfo.HostShutDown then 
                         using( new MemStream( 1024 ) ) ( fun msWire ->
                             msWire.WriteGuid( jbInfo.JobID )
@@ -1218,7 +1218,8 @@ and [<AllowNullLiteral; Serializable>]
                         // JinL: 05/10/2014, need to find a way to wait for all intermediate task.  
                             if not (!bExistPriorTasks) then 
                                 Component<_>.ExecTP tasks
-                                let bDone = tasks.WaitForAll( -1 )
+                                let bDone = tasks.HandleDoneExecution.WaitOne( -1 )
+                                //let bDone = tasks.WaitForAll( -1 )
                                 endJob jbInfo
                                 // Release the resource of the execution engine
                                 let tp = ref Unchecked.defaultof<ThreadPoolWithWaitHandles<int>>

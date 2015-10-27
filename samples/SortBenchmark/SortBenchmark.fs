@@ -336,6 +336,8 @@ type RemoteFunc( filePartNum:int, records:int64, _dim:int , partNumS1:int, partN
                 Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "!!!!!Cannot Get Data file " ))
                 Seq.empty
 
+    member val ReadCnt = ref -1 with get
+
     member x.ReadFilesToSeqF parti = 
             let toRead = x.blockSizeReadFromFile
             if true then
@@ -394,8 +396,9 @@ type RemoteFunc( filePartNum:int, records:int64, _dim:int , partNumS1:int, partN
                             memBuf.WriteArrAlign(tbuf, 0, !readLen, x.dim) // make sure each buffer has integer number of records
                             totalReadLen := !totalReadLen + (int64) !readLen
                             counter := !counter + 1
-                            if (!counter % 100 = 0) then
-                                Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "Read %d bytes from file" !totalReadLen) )
+                            //if (!counter % 100 = 0) then
+                            //    Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "Read %d bytes from file" !totalReadLen) )
+                            Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "Read %d bytes from file" !totalReadLen) )
                             x.diskHelper.ReportReadBytes((int64)!readLen)
                             yield memBuf
                     Logger.LogF( LogLevel.MildVerbose, (fun _ -> sprintf "UTC %s, all data from file %s has been read" (UtcNowToString()) filename)    )        
@@ -417,6 +420,7 @@ type RemoteFunc( filePartNum:int, records:int64, _dim:int , partNumS1:int, partN
         let totalReadLen = ref 0L
         let ret =
             seq {
+                let instCnt = Interlocked.Increment(x.ReadCnt)
                 while !totalReadLen < len do 
                     let toRead = int32 (Math.Min(int64 defaultReadBlock, len - !totalReadLen))
                     if toRead > 0 then
@@ -428,10 +432,12 @@ type RemoteFunc( filePartNum:int, records:int64, _dim:int , partNumS1:int, partN
                         totalReadLen := !totalReadLen + (int64) toRead
 
                         counter := !counter + 1
-                        if (!counter % 100 = 0) then
-                            Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "Read %d bytes from file" !totalReadLen) )
+                        //if (!counter % 100 = 0) then
+                        //    Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "Read %d bytes from file" !totalReadLen) )
+                        Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "%d Read %d bytes from file total %d - rem %d" instCnt toRead !totalReadLen (len-(!totalReadLen))) )
                         x.diskHelper.ReportReadBytes((int64)toRead)
                         yield memBuf
+                Logger.LogF( LogLevel.MildVerbose, (fun _ -> sprintf "All data from file has been read"))  
             }
         ret
 
@@ -1425,7 +1431,8 @@ let main orgargs =
     let dirSortGen = parse.ParseString( "-dir", "." )
     //let num = parse.ParseInt( "-nump", 200 ) // number of partitions
     let num2 = parse.ParseInt( "-nump", 2 ) // number of partitions
-    let furtherPartition = parse.ParseInt("-fnump", 200)
+    //let furtherPartition = parse.ParseInt("-fnump", 200)
+    let furtherPartition = parse.ParseInt("-fnump", 25)
     let nSort = parse.ParseInt( "-sort", 1 )
     let nRand = parse.ParseInt( "-nrand", 16 )
     let nFilePN = parse.ParseInt( "-nfile", 8 )
