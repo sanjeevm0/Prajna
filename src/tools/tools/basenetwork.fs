@@ -119,24 +119,34 @@ type [<AbstractClass>] NetUtils() =
         try
             let asyncOper = sock.ReceiveAsync(e)
             if (not asyncOper && (0 = e.BytesTransferred)) then
-                (true, asyncOper)
+                //(true, asyncOper)
+                (false, asyncOper)
             else
                 (false, asyncOper)
-        with
-            | :? ObjectDisposedException as ex -> (true, true)
-            | :? SocketException as ex when (e.SocketError = SocketError.ConnectionReset || true) -> (true, true)
+        with ex ->
+            Logger.LogF(LogLevel.Error, fun _ -> sprintf "Socket %A encounters exception %A error %A" sock.RemoteEndPoint ex e.SocketError)
+            match ex with
+                | :? ObjectDisposedException as ex -> (true, true)
+                | :? SocketException as ex when (e.SocketError = SocketError.ConnectionReset || true) -> (true, true)
+                | _ -> reraise()
+                       (true, true)
 
     static member internal SendAsync(sock : Socket, e : SocketAsyncEventArgs) =
         try
             let asyncOper = sock.SendAsync(e)
             if (not asyncOper && (0 = e.BytesTransferred)) then
                 Logger.LogF( LogLevel.MildVerbose, (fun _ -> sprintf "Send %d bytes to %s， asyncOper %A, socketError: %A" e.BytesTransferred (sock.RemoteEndPoint.ToString()) asyncOper e.SocketError))
-                (true, asyncOper)
+                //(true, asyncOper)
+                (false, asyncOper)
             else
                 (false, asyncOper)
-        with
-            | :? ObjectDisposedException as ex -> (true, true)
-            | :? SocketException as ex when (e.SocketError = SocketError.ConnectionReset || true) -> (true, true)
+        with ex ->
+            Logger.LogF(LogLevel.Error, fun _ -> sprintf "Socket %A encounters exception %A error %A" sock.RemoteEndPoint ex e.SocketError)
+            match ex with
+                | :? ObjectDisposedException as ex -> (true, true)
+                | :? SocketException as ex when (e.SocketError = SocketError.ConnectionReset || true) -> (true, true)
+                | _ -> reraise()
+                       (true, true)
 
     // From https://msdn.microsoft.com/en-us/library/ms145160(v=vs.110).aspx
     // If you are using a connection-oriented protocol, Send will block until all of the bytes in the buffer are sent, unless a time-out was set by using Socket.SendTimeout
@@ -175,8 +185,15 @@ type [<AbstractClass>] NetUtils() =
         let (closed, asyncOper) = NetUtils.SendAsync(conn.Socket, e)
         if (closed) then
             conn.Close()
+            true
         else if (not asyncOper) then
-            fn e
+            if (e.BytesTransferred > 0) then
+                fn e
+                true
+            else
+                false // no data transferred
+        else
+            true
 
     static member internal SyncSendOrClose(conn : IConn, buf : byte[], offset : int, count : int) =
         let (closed, sent) = NetUtils.SendSync(conn.Socket, buf, offset, count)
@@ -234,7 +251,7 @@ type GenericVal<'V>(conn : IConn) as x =
         if (e.Offset + e.BytesTransferred <> sizeof<'V>) then
             let newOffset = e.Offset + e.BytesTransferred
             e.SetBuffer(newOffset, (sizeof<'V>)-newOffset)
-            NetUtils.SendOrClose(xConn, x.AsyncSendValueCb, e)
+            NetUtils.SendOrClose(xConn, x.AsyncSendValueCb, e) |> ignore
         else
             let (callback, state) = e.UserToken :?> (obj->unit)*obj
             callback(state)
@@ -251,7 +268,7 @@ type GenericVal<'V>(conn : IConn) as x =
         let valBuf = Prajna.Tools.Serialize.ConvertFrom<'V>(value)
         Buffer.BlockCopy(valBuf, 0, eSendVal.Buffer, 0, sizeof<'V>)
         eSendVal.SetBuffer(0, sizeof<'V>) // reset
-        NetUtils.SendOrClose(xConn, x.AsyncSendValueCb, eSendVal)
+        NetUtils.SendOrClose(xConn, x.AsyncSendValueCb, eSendVal) |> ignore
 
     interface IDisposable with
         /// Releases all resources used by the current instance.
@@ -345,7 +362,7 @@ type GenericBuf(conn : IConn, maxBufferSize : int) as x =
         if (e.Offset + e.BytesTransferred <> sendBufferSize) then
             let newOffset = e.Offset + e.BytesTransferred
             e.SetBuffer(newOffset, sendBufferSize-newOffset)
-            NetUtils.SendOrClose(xConn, x.AsyncSendBufCb, e)
+            NetUtils.SendOrClose(xConn, x.AsyncSendBufCb, e) |> ignore
         else
             let (callbackO, state) = e.UserToken :?> (Option<obj->unit>)*obj
             match callbackO with
@@ -370,7 +387,7 @@ type GenericBuf(conn : IConn, maxBufferSize : int) as x =
             sendBufferSize <- bufferSize
             eSendBuf.SetBuffer(0, bufferSize)
             Buffer.BlockCopy(buf, bufferOffset, eSendBuf.Buffer, 0, bufferSize)
-            NetUtils.SendOrClose(xConn, x.AsyncSendBufCb, eSendBuf)
+            NetUtils.SendOrClose(xConn, x.AsyncSendBufCb, eSendBuf) |> ignore
         else
             Logger.LogF( LogLevel.Error, (fun _ -> sprintf "Send size %d larger than maximum allowed %d - connection closes" bufferSize eSendBuf.Buffer.Length))
             xConn.Close()            
@@ -413,7 +430,7 @@ type GenericBuf(conn : IConn, maxBufferSize : int) as x =
             let sizeBuf = BitConverter.GetBytes(bufferSize)
             Buffer.BlockCopy(sizeBuf, 0, eSendBuf.Buffer, 0, sizeBuf.Length)
             Buffer.BlockCopy(buf, bufferOffset, eSendBuf.Buffer, sizeBuf.Length, bufferSize)
-            NetUtils.SendOrClose(xConn, x.AsyncSendBufCb, eSendBuf)
+            NetUtils.SendOrClose(xConn, x.AsyncSendBufCb, eSendBuf) |> ignore
         else
             Logger.LogF( LogLevel.Error, (fun _ -> sprintf "Send size %d larger than maximum allowed %d - connection closes" (bufferSize+sizeof<int>) eSendBuf.Buffer.Length))
             xConn.Close()

@@ -944,6 +944,21 @@ type [<AllowNullLiteral>] NetworkCommandQueue() as x =
         eInitialized.Set() |> ignore
         bInitialized <- true
 
+    member x.StatusInfo() =
+        sprintf "\
+Channel :%A \
+Last ToSent Ticks: %A Last Socket Sent Ticks: %A sendcount: %d finishsendcount: %d \
+Last Socket Recv Start: %A recvcount: %d finishrecvcount: %d \
+sending cmd queue: %d sending queue:%d receiving queue:%d receiving command queue: %d \
+sending queue size:%d recv queue size: %d \
+UnprocessedCmD:%d bytes Status:%A" 
+            (LocalDNS.GetShowInfo(x.RemoteEndPoint)) 
+            x.LastSendTicks x.Conn.LastSendTicks x.Conn.SendCounter x.Conn.FinishSendCounter 
+            x.Conn.LastRecvTicks x.Conn.RecvCounter x.Conn.FinishRecvCounter
+            (x.SendCommandQueueLength) (x.SendQueueLength) (x.ReceivingQueueLength) (x.ReceivingCommandQueueLength) 
+            (x.SendQueueSize) (x.RecvQueueSize) 
+            (x.UnProcessedCmdInBytes) x.ConnectionStatus
+
     member val private CloseDone = ref 0 with get
     /// <summary>
     /// Normal close of socket/queue, 
@@ -952,10 +967,11 @@ type [<AllowNullLiteral>] NetworkCommandQueue() as x =
     default x.Close() =
         if (Interlocked.CompareExchange(x.CloseDone, 1, 0) = 0) then
             Logger.LogStackTrace(LogLevel.MildVerbose)
-            Logger.LogF( LogLevel.MildVerbose, (fun _ -> sprintf "Close of NetworkCommandQueue %s" x.EPInfo))
+            Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Close of NetworkCommandQueue %s" x.EPInfo)
             Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "SA Recv Stack size %d %d" x.ONet.BufStackRecv.StackSize x.ONet.BufStackRecv.GetStack.Size)
             Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "SA Send Stack size %d %d" x.ONet.BufStackSend.StackSize x.ONet.BufStackSend.GetStack.Size)
             Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Memory Stream Stack size %d %d" MemoryStreamB.MemStack.StackSize MemoryStreamB.MemStack.GetStack.Size)
+            Logger.LogF(LogLevel.MildVerbose, x.StatusInfo)
             MemoryStreamB.DumpStreamsInUse()
             MemoryStreamB.MemStack.DumpInUse(LogLevel.MildVerbose)
             x.ONet.BufStackRecv.DumpInUse(LogLevel.MildVerbose)
@@ -1237,7 +1253,7 @@ type [<AllowNullLiteral>] NetworkCommandQueue() as x =
     // SA Recv ==========================
     member inline private x.RecvSAFullMax (size : int64) () =
         ((!x.ONet.TotalSARecvSize + !x.ONet.TotalCmdRecvSize + size) > int64 x.ONet.MaxMemory ||
-         recvSAQ.CurrentSize > recvSAQ.MaxSize ||
+         //recvSAQ.CurrentSize > recvSAQ.MaxSize ||
          recvSAQ.Count > recvSAQ.MaxLen)
         && recvSAQ.CurrentSize > 0L
         && not recvCmdQ.Q.IsEmpty
@@ -1626,7 +1642,7 @@ and [<AllowNullLiteral>] NetworkConnections() as x =
             Seq.iter2 (fun (q: NetworkCommandQueue) s -> q.SetSendSpeed(s) ) channelLists nSendingRate
         x.AdjustSpeed.ExecOnce(adjustSendSpeeds)
     /// Maximum Number of Channels to monitor 
-    static member val private MaxChannelsToMonitor = 20 with get, set
+    static member val private MaxChannelsToMonitor = 200 with get, set
     /// Channel monitor levels 
     static member val private ChannelMonitorLevel = LogLevel.MildVerbose with get, set
     /// Interval in seconds to monitor channel connectivity (in Ms)
