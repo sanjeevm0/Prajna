@@ -898,6 +898,10 @@ type [<AllowNullLiteral>] NetworkCommandQueue() as x =
         //xgc.SetTokenUse(16384L*8L, (int64 DeploymentSettings.SendTokenBucketSize)*8L, usedMSS, Math.Min(x.SendSpeed, x.RcvdSpeed))
         xgc.InitConnectionAndStart(soc, x.ONet) x.Start
 
+    member val private ConnectTime = new Stopwatch() with get
+    member val private TryConnectCount = 0 with get, set
+    static member val MaxTryConnectCount = 2 with get
+
     /// Begin connection to IP address
     /// <param name="addr">The IPAddress to connect to</param>
     /// <param name="port">The port to connect to</param>
@@ -913,7 +917,9 @@ type [<AllowNullLiteral>] NetworkCommandQueue() as x =
                 soc.Bind(new IPEndPoint(IPAddress.Parse(x.ONet.IpAddr), 0))
             connectionStatus <- ConnectionStatus.BeginConnect
             Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "BeginConnect to host %s with address %A" (x.MachineName) (addr.ToString()) ))
-            let ar = soc.BeginConnect( addr, port, AsyncCallback(NetworkCommandQueue.EndConnect), (x, soc) )
+            x.ConnectTime.Restart()
+            x.TryConnectCount <- x.TryConnectCount + 1
+            let ar = soc.BeginConnect( addr, port, AsyncCallback(NetworkCommandQueue.EndConnect), (x, soc, addr, port) )
             ()
         with 
         | e ->
@@ -921,22 +927,29 @@ type [<AllowNullLiteral>] NetworkCommandQueue() as x =
             if Utils.IsNotNull soc then soc.Dispose()
             Logger.Log( LogLevel.Error, (sprintf "NetworkCommandQueue.BeginConnect failed with exception %A" e ))
 
-    member x.EndConnect(ar, soc : Socket) =
+    member x.EndConnect(ar, soc : Socket, addr : IPAddress, port : int) =
         if not x.Shutdown then 
+            Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Connection takes %f seconds" x.ConnectTime.Elapsed.TotalSeconds)
             try
                 soc.EndConnect( ar )
                 x.ConnectionStatusSet <- ConnectionStatus.Connected
                 x.InitConnection(soc)
             with
             | e ->
-                x.MarkFail()
-                (x :> IDisposable).Dispose()
-                soc.Dispose()                
-                Logger.Log( LogLevel.Error, (sprintf "NetworkCommandQueue.BEndConnect to %A failed with exception %A" remoteEndPoint e ))
+                Logger.LogF(LogLevel.Error, fun _ -> sprintf "Connection tried for %f seconds and failed" x.ConnectTime.Elapsed.TotalSeconds)
+                if (x.TryConnectCount < NetworkCommandQueue.MaxTryConnectCount) then
+                    Logger.LogF(LogLevel.Error, fun _ -> sprintf "Try again %d" x.TryConnectCount)
+                    x.BeginConnect(addr, port)
+                else
+                    Logger.LogF(LogLevel.Error, fun _ -> sprintf "Done trying - give up %d" x.TryConnectCount)
+                    x.MarkFail()
+                    (x :> IDisposable).Dispose()
+                    soc.Dispose()                
+                    Logger.Log( LogLevel.Error, (sprintf "NetworkCommandQueue.BEndConnect to %A failed with exception %A" remoteEndPoint e ))
             
     static member private EndConnect( ar ) =
-        let (x, soc) = ar.AsyncState :?> (NetworkCommandQueue*Socket)
-        x.EndConnect(ar, soc)
+        let (x, soc, addr, port) = ar.AsyncState :?> (NetworkCommandQueue*Socket*IPAddress*int)
+        x.EndConnect(ar, soc, addr, port)
 
     /// Initialize the NetworkCommandQueue - Only call after AddRecvProc are all done
     member x.Initialize() =

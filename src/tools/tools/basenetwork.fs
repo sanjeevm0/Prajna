@@ -1071,8 +1071,8 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
                     if (bDone) then
                         threadPool.HandleDoneExecution.Set() |> ignore
                 Some(fnFinish)
-        Component<'T>.StartOnSystemThreadPool func finishCb
-        //threadPool.EnqueueRepeatableFunction func cts tpKey infoFunc
+        //Component<'T>.StartOnSystemThreadPool func finishCb
+        threadPool.EnqueueRepeatableFunction func cts tpKey infoFunc
         //Component<'T>.StartProcessOnOwnThread func tpKey finishCb infoFunc
         //Prajna.Tools.ThreadPool.Current.AddWorkItem(func, finishCb, infoFunc(tpKey))
 
@@ -1098,8 +1098,8 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
         lock (lockObj) (fun _ ->
             proc <- Component.Process item x.Dequeue x.Proc x.IsClosed x.Close tpKey infoFunc x
             compBase.SharedStateObj <- SharedComponentState.Add(compBase.ComponentId, compBase, threadPool)
-            Component<'T>.StartOnSystemThreadPool proc None
-            //Component<'T>.StartOnThreadPool threadPool proc cts tpKey infoFunc
+            //Component<'T>.StartOnSystemThreadPool proc None
+            Component<'T>.StartOnThreadPool threadPool proc cts tpKey infoFunc
             //Component<'T>.StartProcessOnOwnThread proc tpKey finishCb infoFunc
             //Prajna.Tools.ThreadPool.Current.AddWorkItem(proc, None, infoFunc(tpKey))
             bStartedProcessing <- true
@@ -1116,8 +1116,8 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
                                         (infoFunc : 'TP -> string) =
         let compBase = new ComponentBase()
         compBase.SharedStateObj <- SharedComponentState.Add(compBase.ComponentId, compBase, threadPool)
-        Component<'T>.StartOnSystemThreadPool func None
-        //Component<'T>.StartOnThreadPool threadPool func cts tpKey infoFunc
+        //Component<'T>.StartOnSystemThreadPool func None
+        Component<'T>.StartOnThreadPool threadPool func cts tpKey infoFunc
         //Component<'T>.StartProcessOnOwnThread func tpKey finishCb infoFunc
         //Prajna.Tools.ThreadPool.Current.AddWorkItem(func, None, infoFunc(tpKey))
         compBase
