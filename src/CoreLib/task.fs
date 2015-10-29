@@ -1218,8 +1218,8 @@ and [<AllowNullLiteral; Serializable>]
                         // JinL: 05/10/2014, need to find a way to wait for all intermediate task.  
                             if not (!bExistPriorTasks) then 
                                 Component<_>.ExecTP tasks
-                                //let bDone = tasks.HandleDoneExecution.WaitOne( -1 )
-                                let bDone = tasks.WaitForAll( -1 )
+                                // wait for pool to terminate
+                                let bDone = Component<_>.ThreadPoolWait tasks
                                 endJob jbInfo
                                 // Release the resource of the execution engine
                                 let tp = ref Unchecked.defaultof<ThreadPoolWithWaitHandles<int>>

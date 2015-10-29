@@ -119,8 +119,8 @@ type [<AbstractClass>] NetUtils() =
         try
             let asyncOper = sock.ReceiveAsync(e)
             if (not asyncOper && (0 = e.BytesTransferred)) then
-                //(true, asyncOper)
-                (false, asyncOper)
+                (true, asyncOper)
+                //(false, asyncOper)
             else
                 (false, asyncOper)
         with ex ->
@@ -1050,6 +1050,20 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
         let wc = new WaitCallback(wrappedFunc)
         System.Threading.ThreadPool.QueueUserWorkItem(wc, wc) |> ignore
 
+    static member internal ExecTP(threadPool : ThreadPoolWithWaitHandles<'TP>) =
+        // now allow closing of threadpool
+        let (ret, value) = SharedComponentState.SharedState.TryGetValue(threadPool)
+        if (ret) then
+            value.AllowClose <- true
+            if (value.Items.Count = 0) then
+               threadPool.HandleDoneExecution.Set() |> ignore
+        else
+            threadPool.HandleDoneExecution.Set() |> ignore
+
+    static member internal ThreadPoolWait (tp : ThreadPoolWithWaitHandles<'TP>) =
+        tp.WaitForAll( -1 ) // use with EnqueueRepeatableFunction in AddWorkItem
+        //tp.HandleDoneExecution.WaitOne( -1 ) // for other cases
+
     /// Add work item on pool, but don't necessarily start it until ExecTP is called
     /// <param name="threadPool">The thread pool to execute upon</param>
     /// <param name="tpKey">A key to identify the processing component</param>
@@ -1076,16 +1090,6 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
         //Component<'T>.StartProcessOnOwnThread func tpKey finishCb infoFunc
         //Prajna.Tools.ThreadPool.Current.AddWorkItem(func, finishCb, infoFunc(tpKey))
 
-    static member internal ExecTP(threadPool : ThreadPoolWithWaitHandles<'TP>) =
-        // now allow closing of threadpool
-        let (ret, value) = SharedComponentState.SharedState.TryGetValue(threadPool)
-        if (ret) then
-            value.AllowClose <- true
-            if (value.Items.Count = 0) then
-               threadPool.HandleDoneExecution.Set() |> ignore
-        else
-            threadPool.HandleDoneExecution.Set() |> ignore
-
     /// Start component processing on threadpool - internal as ThreadPoolWithWaitHandles is not internal
     /// <param name="threadPool>The thread pool to execute upon</param>
     /// <param name="cts">A cancellation token to cancel the processing</param>
@@ -1098,8 +1102,8 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
         lock (lockObj) (fun _ ->
             proc <- Component.Process item x.Dequeue x.Proc x.IsClosed x.Close tpKey infoFunc x
             compBase.SharedStateObj <- SharedComponentState.Add(compBase.ComponentId, compBase, threadPool)
-            //Component<'T>.StartOnSystemThreadPool proc None
-            Component<'T>.StartOnThreadPool threadPool proc cts tpKey infoFunc
+            Component<'T>.StartOnSystemThreadPool proc None
+            //Component<'T>.StartOnThreadPool threadPool proc cts tpKey infoFunc
             //Component<'T>.StartProcessOnOwnThread proc tpKey finishCb infoFunc
             //Prajna.Tools.ThreadPool.Current.AddWorkItem(proc, None, infoFunc(tpKey))
             bStartedProcessing <- true
@@ -1116,8 +1120,8 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
                                         (infoFunc : 'TP -> string) =
         let compBase = new ComponentBase()
         compBase.SharedStateObj <- SharedComponentState.Add(compBase.ComponentId, compBase, threadPool)
-        //Component<'T>.StartOnSystemThreadPool func None
-        Component<'T>.StartOnThreadPool threadPool func cts tpKey infoFunc
+        Component<'T>.StartOnSystemThreadPool func None
+        //Component<'T>.StartOnThreadPool threadPool func cts tpKey infoFunc
         //Component<'T>.StartProcessOnOwnThread func tpKey finishCb infoFunc
         //Prajna.Tools.ThreadPool.Current.AddWorkItem(func, None, infoFunc(tpKey))
         compBase

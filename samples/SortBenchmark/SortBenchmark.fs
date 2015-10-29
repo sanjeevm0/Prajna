@@ -1432,7 +1432,7 @@ let main orgargs =
     //let num = parse.ParseInt( "-nump", 200 ) // number of partitions
     let num2 = parse.ParseInt( "-nump", 2 ) // number of partitions
     //let furtherPartition = parse.ParseInt("-fnump", 200)
-    let furtherPartition = parse.ParseInt("-fnump", 25)
+    let furtherPartition = parse.ParseInt("-fnump", 3000)
     let nSort = parse.ParseInt( "-sort", 1 )
     let nRand = parse.ParseInt( "-nrand", 16 )
     let nFilePN = parse.ParseInt( "-nfile", 8 )
@@ -1877,7 +1877,8 @@ let main orgargs =
 
     if not bExecute then
         // simple sort test
-        let a = Array.zeroCreate<byte>((int)(62500000L*104L/100L))
+        //let a = Array.zeroCreate<byte>((int)(62500000L*104L/100L))
+        let a = Array.zeroCreate<byte>((int)(625000L*104L/8L))
         let b = Array.zeroCreate<uint64>(a.Length/8)
         let h = GCHandle.Alloc(b, GCHandleType.Pinned)
         let ptr = h.AddrOfPinnedObject()

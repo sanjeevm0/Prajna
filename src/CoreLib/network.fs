@@ -886,11 +886,11 @@ type [<AllowNullLiteral>] NetworkCommandQueue() as x =
 
     member private x.InitConnection(soc : Socket) =
         soc.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true)
-        soc.SendBufferSize <- TCPSendBufSize
-        soc.ReceiveBufferSize <- TCPRcvBufSize
+//        soc.SendBufferSize <- TCPSendBufSize
+//        soc.ReceiveBufferSize <- TCPRcvBufSize
+//        soc.NoDelay <- true
         soc.SendTimeout <- Int32.MaxValue
         soc.ReceiveTimeout <- Int32.MaxValue
-        soc.NoDelay <- true
         remoteEndPoint <- soc.RemoteEndPoint
         localEndPoint <- soc.LocalEndPoint
         remoteEndPointSignature <- LocalDNS.IPEndPointToInt64(soc.RemoteEndPoint :?> IPEndPoint)

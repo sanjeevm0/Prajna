@@ -336,18 +336,18 @@ type DeploymentSettings() =
     /// Gap to reconnect to a certain daemon, <0: do not reconnect, 
     static member val internal IntervalToReconnectDaemonInMs = 2000 with get, set
     /// Travel Level for Blob Availability 
-    static member val internal TraceLevelBlobAvailability = LogLevel.MildVerbose with get, set
+    static member val internal TraceLevelBlobAvailability = LogLevel.MediumVerbose with get, set
     /// Trace Level for Blob Send 
-    static member val internal TraceLevelBlobSend = LogLevel.MildVerbose with get, set
+    static member val internal TraceLevelBlobSend = LogLevel.MediumVerbose with get, set
     /// Trace Level for Starting job
     static member val internal TraceLevelStartJob = LogLevel.MildVerbose with get, set
     /// Trace Level for Blob Rcvd
-    static member val internal TraceLevelBlobRcvd = LogLevel.MildVerbose with get, set
+    static member val internal TraceLevelBlobRcvd = LogLevel.MediumVerbose with get, set
     /// Whether we will touch file when dependency/assembly is copied as a SHA256 named file in the remote node. 
     /// set the parameter to LogLevel.Info will touch dependecy/assembly when they are written. 
     static member val ExecutionLevelTouchAssembly = LogLevel.ExtremeVerbose with get, set
     /// Travel Level for Blob Send/Receive 
-    static member val internal TraceLevelBlobIO = LogLevel.MildVerbose with get, set
+    static member val internal TraceLevelBlobIO = LogLevel.MediumVerbose with get, set
     /// Validate Hash 
     static member val internal TraceLevelBlobValidateHash = LogLevel.MediumVerbose with get, set
     /// Trace Level to Monitor Seq Function
@@ -363,7 +363,6 @@ type DeploymentSettings() =
     static member val internal ExeJobLimit = 80 with get, set    
     /// App domain jobs that can be executed in parallel. 
     static member val internal AppDomainJobLimit = 80 with get, set 
-
 
     /// Monitor Interval for StandardError 
     static member val internal StandardErrorMonitorIntervalInMs = 1000 with get, set
@@ -406,7 +405,7 @@ type DeploymentSettings() =
     /// JinL to SanjeevM: Please review the following parameter 
     /// should this parameter be scaled according to number of connections? If there are thousands of connections, will the TCP Send/Receive buffer take too large a size?
     /// TCP sending buffer size
-    static member val  TCPSendBufSize = 1 <<< 22 with get, set
+    static member val  TCPSendBufSize = 1 <<< 23 with get, set
     /// TCP receiving buffer size
     static member val  TCPRcvBufSize = 1 <<< 23 with get, set
 

@@ -233,7 +233,6 @@ void MyMemoryCopy(char* srcBuf, int srcOff, char* dest, int destOff, int dstSize
 }
 
 #pragma unmanaged
-
 int __cdecl compare64(void *context, const void *a, const void *b)
 {
     int i;
@@ -263,6 +262,7 @@ int __cdecl compare64(void *context, const void *a, const void *b)
 }
 
 // "buf" has "num" alignment units of size "align"
+#pragma unmanaged
 extern "C" __declspec(dllexport)
 void __stdcall alignsort64(unsigned __int64 *buf, int align, int num)
 {
