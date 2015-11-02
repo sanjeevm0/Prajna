@@ -2514,6 +2514,7 @@ and [<AllowNullLiteral; Serializable>]
     /// true: Command parsed. 
     /// false: Command Not parsed
     member x.ParseTaskCommandAtDaemon( jobAction: SingleJobActionDaemon, queue:NetworkCommandQueuePeer, cmd:ControllerCommand, ms, taskQueue:TaskQueue ) = 
+        Logger.LogF( x.JobID, LogLevel.WildVerbose, fun _ -> sprintf "Daemon received %A from %i" cmd (x.GetIncomingQueueNumber( queue )))
         match (cmd.Verb, cmd.Noun) with 
         | ControllerVerb.Unknown, _ -> 
             true
@@ -2903,11 +2904,18 @@ and internal TaskQueue() =
                    Logger.LogF( task.JobID, 
                                 LogLevel.MildVerbose, ( fun _ ->  count := !count + 1
                                                                   let queue = task.QueueAtClientMonitor
-                                                                  sprintf "Active Task %d: %s, state %A queue is %s" 
+                                                                  let jobAction = SingleJobActionDaemon.TryFind( task.JobID )
+                                                                  let jobInfo = 
+                                                                        if Utils.IsNull jobAction then 
+                                                                            "Null"
+                                                                        else
+                                                                            sprintf "%d" (jobAction.NumberOfJobActionsInProcess())
+                                                                  sprintf "Active Task %d: %s, state %A queue is %s, Remaining Job Action is %s" 
                                                                       (!count)
                                                                       task.Name 
                                                                       task.State
                                                                       ( if Utils.IsNotNull queue && queue.CanSend then "ready" else "not ready" )
+                                                                      jobInfo
                                                                   ))
            ))
 
@@ -2975,7 +2983,8 @@ and internal TaskQueue() =
                     true
                 else
                     try 
-                        jobAction.LifeCycleObject.OnDisposeFS( fun _ -> x.RemoveTaskByJobID(jobID))
+                        jobAction.LifeCycleObject.OnDisposeFS( fun _ ->  Logger.Log(jobID, LogLevel.WildVerbose, "invoke RemoveTaskByJobID for OnDisposeFS")
+                                                                         x.RemoveTaskByJobID(jobID))
                         let task = new Task()
                         let bRet = task.UnpackToBlob( ms )
                         task.ClientAvailability(queue.RemoteEndPointSignature, Some task.ReceiveBlob, Some task.PeekBlobDSet )  
