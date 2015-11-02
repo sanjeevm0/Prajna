@@ -1768,7 +1768,7 @@ let main orgargs =
                 let alignLen = (rmtPart.dim + 7)/8*8
                 let dset7 = dset6 |> DSet.map (doSortN alignLen)
                 let cnt = dset7 |> DSet.fold (cntLenByteArrNFn rmtPart.dim alignLen) aggrFn 0L
-                Logger.LogF(LogLevel.Info, fun _ -> sprintf "Creating remap + repartition stream + caceh + sort takes: %f seconds num: %d rate per node: %f Gbps" watch.Elapsed.TotalSeconds cnt ((double cnt)*(double rmtPart.dim)*8.0/1.0e9/(double cluster.NumNodes)/watch.Elapsed.TotalSeconds))
+                Logger.LogF(LogLevel.Info, fun _ -> sprintf "Creating remap + repartition stream + cache + sort takes: %f seconds num: %d rate per node: %f Gbps" watch.Elapsed.TotalSeconds cnt ((double cnt)*(double rmtPart.dim)*8.0/1.0e9/(double cluster.NumNodes)/watch.Elapsed.TotalSeconds))
 
                 let dset8 = DSet<_>(Name = "ClearCache", SerializationLimit = 1) |> DSet.sourceI dset5.NumPartitions RemoteFunc.GetCachePtr
                 //dset8 |> DSet.iter RemoteFunc.ClearCacheMemSubPart

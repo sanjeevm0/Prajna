@@ -1849,7 +1849,7 @@ and [<AllowNullLiteral; Serializable>]
                     msSend.WriteString( sigName )
                     msSend.WriteInt64( sigVersion )
                     queue.ToSend( ControllerCommand( ControllerVerb.Link, ControllerNoun.Program ), msSend ) 
-                    Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Link program back to daemon")
+                    Logger.LogF(LogLevel.MediumVerbose, fun _ -> sprintf "Link program back to daemon")
                     // This becomes the main loop for the job 
                     let mutable bIOActivity = false
                     let mutable lastActive = (PerfDateTime.UtcNow())
@@ -3442,7 +3442,7 @@ and internal TaskQueue() =
         else
             bExist <- false
         if bExist then 
-            Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "(ConfirmStart, Program) to be sent")
+            Logger.LogF(LogLevel.MediumVerbose, fun _ -> sprintf "(ConfirmStart, Program) - Program is started")
             ( ControllerCommand( ControllerVerb.ConfirmStart, ControllerNoun.Program ), null )
         else
             let msg1 = sprintf "receive Link, Job but Job with signature %s:%s does not exist........." sigName (sigVersion.ToString("X"))

@@ -124,7 +124,7 @@ type [<AbstractClass>] NetUtils() =
             else
                 (false, asyncOper)
         with ex ->
-            Logger.LogF(LogLevel.Error, fun _ -> sprintf "Socket %A encounters exception %A error %A" sock.RemoteEndPoint ex e.SocketError)
+            //Logger.LogF(LogLevel.Error, fun _ -> sprintf "Socket %A encounters exception %A error %A" sock.RemoteEndPoint ex e.SocketError)
             match ex with
                 | :? ObjectDisposedException as ex -> (true, true)
                 | :? SocketException as ex when (e.SocketError = SocketError.ConnectionReset || true) -> (true, true)
@@ -141,7 +141,7 @@ type [<AbstractClass>] NetUtils() =
             else
                 (false, asyncOper)
         with ex ->
-            Logger.LogF(LogLevel.Error, fun _ -> sprintf "Socket %A encounters exception %A error %A" sock.RemoteEndPoint ex e.SocketError)
+            //Logger.LogF(LogLevel.Error, fun _ -> sprintf "Socket %A encounters exception %A error %A" sock.RemoteEndPoint ex e.SocketError)
             match ex with
                 | :? ObjectDisposedException as ex -> (true, true)
                 | :? SocketException as ex when (e.SocketError = SocketError.ConnectionReset || true) -> (true, true)
