@@ -234,6 +234,7 @@ type DeploymentSettings() =
 
     /// Control Default Number of Jobs to be executed related to core
     static member val internal ParallelJobsPerCore = 0.5 with get, set
+    //static member val internal ParallelJobsPerCore = 1.0 with get, set
     static member internal NumParallelJobs( numCores: int ) = 
         let ret = 
             if DeploymentSettings.ParallelJobsPerCore > 0.0 then 
@@ -268,16 +269,16 @@ type DeploymentSettings() =
     //static member val InitNetworkSocketAsyncEventArgBuffers = 128 with get, set
     static member val InitNetworkSocketAsyncEventArgBuffers = 8*1024*8 // for sort benchmark
     /// The size of network command queue for sending
-    static member val NetworkCmdSendQSize = 50000 with get, set
+    static member val NetworkCmdSendQSize = 100 with get, set
     /// The size of network command queue for receiving
-    static member val NetworkCmdRecvQSize = 50000 with get, set
+    static member val NetworkCmdRecvQSize = 100 with get, set
     /// The size of network socket async event args queue for sending
-    static member val NetworkSASendQSize = 50000 with get, set
+    static member val NetworkSASendQSize = 100 with get, set
     /// The size of network socket async event args queue for receiving
-    static member val NetworkSARecvQSize = 50000 with get, set
+    static member val NetworkSARecvQSize = 100 with get, set
     /// The initial # of buffers for shared memory pool used by BufferListStream
     //static member val InitBufferListNumBuffers = 128 with get, set
-    static member val InitBufferListNumBuffers = 8*1024*16 with get, set // for sort benchmark
+    static member val InitBufferListNumBuffers = 8*1024*8 with get, set // for sort benchmark
     /// The buffer size of buffers in shared memory pool used by BufferListStream
     static member val BufferListBufferSize = 64000 with get, set
     /// Number of threads for network processing

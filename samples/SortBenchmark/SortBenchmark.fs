@@ -146,7 +146,7 @@ type RemoteFunc( filePartNum:int, records:int64, _dim:int , partNumS1:int, partN
     let approxBlockSize = 1024*1000*_dim
 //    let perFileLen = 62500000000L
 //    let perFileLen = 6250000000L 
-    let perFileLen = (6250000000L*(int64 _dim)/100L) / 4L
+    let perFileLen = (6250000000L*(int64 _dim)/100L) / 2L
 
     let maxPerStage2 = (65536 + partNumS2 - 1) / partNumS2
     let maxStage2 = (maxPerStage2 <<< 8) + 256
@@ -1430,9 +1430,9 @@ let main orgargs =
     let sampleRate = parse.ParseInt( "-samplerate", 100 ) // number of partitions
     let dirSortGen = parse.ParseString( "-dir", "." )
     //let num = parse.ParseInt( "-nump", 200 ) // number of partitions
-    let num2 = parse.ParseInt( "-nump", 2 ) // number of partitions
+    let num2 = parse.ParseInt( "-nump", 8 ) // number of partitions
     //let furtherPartition = parse.ParseInt("-fnump", 200)
-    let furtherPartition = parse.ParseInt("-fnump", 3000)
+    let furtherPartition = parse.ParseInt("-fnump", 2500)
     let nSort = parse.ParseInt( "-sort", 1 )
     let nRand = parse.ParseInt( "-nrand", 16 )
     let nFilePN = parse.ParseInt( "-nfile", 8 )
