@@ -290,7 +290,7 @@ and [<AllowNullLiteral>]
                         if Utils.IsNotNull nodeInfo then 
                             let proc = Process.GetCurrentProcess()
                             let clientInfo = sprintf "-clientId %i -clientModuleName %s -clientStartTimeTicks %i" proc.Id proc.MainModule.ModuleName proc.StartTime.Ticks
-                            let mutable cmd_line = sprintf "-job %s -ver %d -ticks %d -loopback %d -jobport %d -mem %d -logdir %s -verbose %d %s" x.SignatureName x.SignatureVersion executeTicks DeploymentSettings.ClientPort nodeInfo.ListeningPort DeploymentSettings.MaxMemoryLimitInMB DeploymentSettings.LogFolder (int Prajna.Tools.Logger.DefaultLogLevel) clientInfo
+                            let mutable cmd_line = sprintf "-job %s -ver %d -ticks %d -loopback %d -jobport %d -mem %d -logdir %s -verbose %d %s" x.SignatureName x.SignatureVersion executeTicks DeploymentSettings.ClientPort nodeInfo.ListeningPort DeploymentSettings.MaxMemoryLimitInMB DeploymentSettings.LogFolder (int (Prajna.Tools.Logger.DefaultLogIdLogLevel)) clientInfo
                             if DeploymentSettings.StatusUseAllDrivesForData then 
                                 cmd_line <- "-usealldrives " + cmd_line
                             if not (DeploymentSettings.ClientIP.Equals("")) then
@@ -1849,7 +1849,7 @@ and [<AllowNullLiteral; Serializable>]
                     msSend.WriteString( sigName )
                     msSend.WriteInt64( sigVersion )
                     queue.ToSend( ControllerCommand( ControllerVerb.Link, ControllerNoun.Program ), msSend ) 
-                    Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Link program back to daemon")
+                    Logger.LogF(LogLevel.MediumVerbose, fun _ -> sprintf "Link program back to daemon")
                     // This becomes the main loop for the job 
                     let mutable bIOActivity = false
                     let mutable lastActive = (PerfDateTime.UtcNow())
@@ -2765,7 +2765,7 @@ and internal ContainerAppDomainLauncher() =
         DeploymentSettings.MaxMemoryLimitInMB <- memory_size
         // Need to first write a line to log, otherwise, MakeFileAccessible will fails. 
 //        Logger.Log( LogLevel.Info,  sprintf "Logging in New AppDomain...................... %s, %d MB " DeploymentSettings.PlatformFlag (DeploymentSettings.MaximumWorkingSet>>>20)  )
-        Logger.Log( LogLevel.Info, ( sprintf "Logging in New AppDomain, verbose = %A ...................... %s, %d MB " (Logger.DefaultLogLevel) DeploymentSettings.PlatformFlag (DeploymentSettings.MaxMemoryLimitInMB) ))
+        Logger.Log( LogLevel.Info, ( sprintf "Logging in New AppDomain, verbose = %A ...................... %s, %d MB " (Logger.DefaultLogIdLogLevel) DeploymentSettings.PlatformFlag (DeploymentSettings.MaxMemoryLimitInMB) ))
         if not (Utils.IsNull jobdir) && jobdir.Length > 0 then 
             Directory.SetCurrentDirectory( jobdir ) 
             Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "Current working directory <-- %s " (Directory.GetCurrentDirectory()) ))
@@ -2813,7 +2813,7 @@ and [<AllowNullLiteral>]
                     let proxy = ad2.CreateInstanceFromAndUnwrap( exeAssembly.Location, fullTypename ) 
                     let mbrt = proxy :?> ContainerAppDomainLauncher
                     mbrt.Start( x.Name, x.Version, DeploymentSettings.StatusUseAllDrivesForData, 
-                        x.Ticks, DeploymentSettings.MaxMemoryLimitInMB, DeploymentSettings.ClientIP, DeploymentSettings.ClientPort, x.JobIP, x.JobPort, DeploymentSettings.LogFolder, int (Prajna.Tools.Logger.DefaultLogLevel), x.JobDir, x.JobEnvVars, Cluster.Connects.GetAuthParam() ) 
+                        x.Ticks, DeploymentSettings.MaxMemoryLimitInMB, DeploymentSettings.ClientIP, DeploymentSettings.ClientPort, x.JobIP, x.JobPort, DeploymentSettings.LogFolder, int (Prajna.Tools.Logger.DefaultLogIdLogLevel), x.JobDir, x.JobEnvVars, Cluster.Connects.GetAuthParam() ) 
                     Logger.LogF( LogLevel.MildVerbose, fun _ -> sprintf "ContainerAppDomainLauncher.Start has returned, current domain is '%s'" AppDomain.CurrentDomain.FriendlyName)
                 else
                     failwith "Can't find ContainerAppDomainLauncher in Assemblies"
@@ -3442,7 +3442,7 @@ and internal TaskQueue() =
         else
             bExist <- false
         if bExist then 
-            Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "(ConfirmStart, Program) to be sent")
+            Logger.LogF(LogLevel.MediumVerbose, fun _ -> sprintf "(ConfirmStart, Program) - Program is started")
             ( ControllerCommand( ControllerVerb.ConfirmStart, ControllerNoun.Program ), null )
         else
             let msg1 = sprintf "receive Link, Job but Job with signature %s:%s does not exist........." sigName (sigVersion.ToString("X"))
@@ -3822,7 +3822,7 @@ type internal ContainerLauncher() =
             if String.Compare(argsToLog.[i], "-rsapwd", StringComparison.InvariantCultureIgnoreCase) = 0 then
                 argsToLog.[i + 1] <- "****"
 
-        Logger.Log( LogLevel.Info, ( sprintf "Verbose level = %A, parameters %A " (Logger.DefaultLogLevel) argsToLog ))
+        Logger.Log( LogLevel.Info, ( sprintf "Verbose level = %A, parameters %A " (Logger.DefaultLogIdLogLevel) argsToLog ))
     //    MakeFileAccessible( logfname )
     //        let task = Task( SignatureName=name, SignatureVersion=ver )
         Task.StartTaskAsSeperateApp( name, ver, ip, port, jobip, jobport, (requireAuth, guid, rsaKey, rsaKeyPwd), clientId |> Some, clientModuleName |> Some, clientStartTimeTicks |> Some)
