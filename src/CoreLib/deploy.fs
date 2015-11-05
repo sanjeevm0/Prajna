@@ -255,19 +255,34 @@ type DeploymentSettings() =
     /// Maximum Asynchronous Tasks that are allowed to pending in downstream. 
     /// This is to avoid memory exhaustion if too many tasks are pending 
     static member val internal MaxDownStreamAsyncTasks = 8 with get, set
-    /// JinL to SanjeevM: can you please provide explanation for the following three parameters? 
+
     /// Maximum combined buffer devoted to sending queue (in bytes) 
     static member val MaxSendingQueueLimit = 1024 * 1024 * 100 with get, set
     /// Maximum network stack memory (total across all connections), 0 means unbounded (in bytes)
     static member val MaxNetworkStackMemory = 1024 * 1024 * 1024 * 4 with get, set
     /// Maximum network stack memory (total across all connections) as percentage of total (as percent)
     static member val MaxNetworkStackMemoryPercentage = 0.5 with get, set
+
+    // for sort benchmark
+//    /// The buffer size used by SocketAsyncEventArgs
+//    static member val NetworkSocketAsyncEventArgBufferSize = 256000 with get, set
+//    /// The buffer size of buffers in shared memory pool used by BufferListStream
+//    static member val BufferListBufferSize = 64000 with get, set
+//    /// The initial number of buffers for shared memory pool used by BufferListStream
+//    static member val InitBufferListNumBuffers = 8*1024*8 with get, set
+//    /// The initial number of buffers in the SocketAsyncEventArgs pool for recv and send
+//    static member val InitNetworkSocketAsyncEventArgBuffers = 8*1024*8
+
+    // for regular case
     /// The buffer size used by SocketAsyncEventArgs
-    //static member val NetworkSocketAsyncEventArgBufferSize = 128000 with get, set
-    static member val NetworkSocketAsyncEventArgBufferSize = 256000 with get, set // for sort benchmark
-    /// The initial # of buffers in SocketAsyncEventArg stack
-    //static member val InitNetworkSocketAsyncEventArgBuffers = 128 with get, set
-    static member val InitNetworkSocketAsyncEventArgBuffers = 8*1024*8 // for sort benchmark
+    static member val NetworkSocketAsyncEventArgBufferSize = 128000 with get, set
+    /// The buffer size of buffers in shared memory pool used by BufferListStream
+    static member val BufferListBufferSize = 64000 with get, set
+    /// The initial number of buffers for shared memory pool used by BufferListStream
+    static member val InitBufferListNumBuffers = 128 with get, set
+    /// The initial number of buffers in the SocketAsyncEventArgs pool for recv and send
+    static member val InitNetworkSocketAsyncEventArgBuffers = 128
+
     /// The size of network command queue for sending
     static member val NetworkCmdSendQSize = 100 with get, set
     /// The size of network command queue for receiving
@@ -276,13 +291,10 @@ type DeploymentSettings() =
     static member val NetworkSASendQSize = 100 with get, set
     /// The size of network socket async event args queue for receiving
     static member val NetworkSARecvQSize = 100 with get, set
-    /// The initial # of buffers for shared memory pool used by BufferListStream
-    //static member val InitBufferListNumBuffers = 128 with get, set
-    static member val InitBufferListNumBuffers = 8*1024*8 with get, set // for sort benchmark
-    /// The buffer size of buffers in shared memory pool used by BufferListStream
-    static member val BufferListBufferSize = 64000 with get, set
+
     /// Number of threads for network processing
     static member val NumNetworkThreads = DeploymentSettings.NumParallelJobs(Environment.ProcessorCount) with get, set
+
     /// Monitor Flow Control 
     /// --------------------------
     /// Flow Control Parameter
@@ -403,12 +415,13 @@ type DeploymentSettings() =
     /// Use curJob.EnvVars.Add( envvar, DeploymentSettings.EnvStringGetJobDirectory) 
     /// to setup environment string in relationship to the JobDirectory of the remote container. 
     static member val EnvStringGetJobDirectory = """${PrajnaGetJobDirectory}""" with get, set
-    /// JinL to SanjeevM: Please review the following parameter 
-    /// should this parameter be scaled according to number of connections? If there are thousands of connections, will the TCP Send/Receive buffer take too large a size?
-    /// TCP sending buffer size
-    static member val  TCPSendBufSize = 1 <<< 23 with get, set
-    /// TCP receiving buffer size
-    static member val  TCPRcvBufSize = 1 <<< 23 with get, set
+
+    // don't use manual adjustment of TCP buffer sizes
+//    /// should this parameter be scaled according to number of connections? If there are thousands of connections, will the TCP Send/Receive buffer take too large a size?
+//    /// TCP sending buffer size
+//    static member val  TCPSendBufSize = 1 <<< 23 with get, set
+//    /// TCP receiving buffer size
+//    static member val  TCPRcvBufSize = 1 <<< 23 with get, set
 
     /// Maximum size of content each async send & recevie can get
     static member val internal MaxSendRcvdSegSize = 1 <<< 19 with get, set

@@ -1061,8 +1061,8 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
             threadPool.HandleDoneExecution.Set() |> ignore
 
     static member internal ThreadPoolWait (tp : ThreadPoolWithWaitHandles<'TP>) =
-        tp.WaitForAll( -1 ) // use with EnqueueRepeatableFunction in AddWorkItem
-        //tp.HandleDoneExecution.WaitOne( -1 ) // for other cases
+        //tp.WaitForAll( -1 ) // use with EnqueueRepeatableFunction in AddWorkItem
+        tp.HandleDoneExecution.WaitOne( -1 ) // for other cases
 
     /// Add work item on pool, but don't necessarily start it until ExecTP is called
     /// <param name="threadPool">The thread pool to execute upon</param>
@@ -1086,9 +1086,9 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
                         threadPool.HandleDoneExecution.Set() |> ignore
                 Some(fnFinish)
         //Component<'T>.StartOnSystemThreadPool func finishCb
-        threadPool.EnqueueRepeatableFunction func cts tpKey infoFunc
+        //threadPool.EnqueueRepeatableFunction func cts tpKey infoFunc
         //Component<'T>.StartProcessOnOwnThread func tpKey finishCb infoFunc
-        //Prajna.Tools.ThreadPool.Current.AddWorkItem(func, finishCb, infoFunc(tpKey))
+        Prajna.Tools.ThreadPool.Current.AddWorkItem(func, finishCb, infoFunc(tpKey))
 
     /// Start component processing on threadpool - internal as ThreadPoolWithWaitHandles is not internal
     /// <param name="threadPool>The thread pool to execute upon</param>
@@ -1102,10 +1102,10 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
         lock (lockObj) (fun _ ->
             proc <- Component.Process item x.Dequeue x.Proc x.IsClosed x.Close tpKey infoFunc x
             compBase.SharedStateObj <- SharedComponentState.Add(compBase.ComponentId, compBase, threadPool)
-            Component<'T>.StartOnSystemThreadPool proc None
+            //Component<'T>.StartOnSystemThreadPool proc None
             //Component<'T>.StartOnThreadPool threadPool proc cts tpKey infoFunc
             //Component<'T>.StartProcessOnOwnThread proc tpKey finishCb infoFunc
-            //Prajna.Tools.ThreadPool.Current.AddWorkItem(proc, None, infoFunc(tpKey))
+            Prajna.Tools.ThreadPool.Current.AddWorkItem(proc, None, infoFunc(tpKey))
             bStartedProcessing <- true
         )
 
@@ -1120,10 +1120,10 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
                                         (infoFunc : 'TP -> string) =
         let compBase = new ComponentBase()
         compBase.SharedStateObj <- SharedComponentState.Add(compBase.ComponentId, compBase, threadPool)
-        Component<'T>.StartOnSystemThreadPool func None
+        //Component<'T>.StartOnSystemThreadPool func None
         //Component<'T>.StartOnThreadPool threadPool func cts tpKey infoFunc
         //Component<'T>.StartProcessOnOwnThread func tpKey finishCb infoFunc
-        //Prajna.Tools.ThreadPool.Current.AddWorkItem(func, None, infoFunc(tpKey))
+        Prajna.Tools.ThreadPool.Current.AddWorkItem(func, None, infoFunc(tpKey))
         compBase
 
     //  internally overwrites Dequeue and Proc (Dequeue reuses old Dequeue for internal dequeueing)

@@ -90,13 +90,21 @@ type [<AbstractClass>] [<AllowNullLiteral>] ThreadBase(pool : ThreadPoolBase) =
         thread <- new Thread(threadStart)
         thread.IsBackground <- ThreadBase.BackgroundThreads
 
-    abstract ToStop : (unit->bool) with get, set
+    abstract ToStop : (unit->bool) with get
     abstract ProcessOne : unit->unit
 
     member x.Process() =
         while not (terminate || (stop && x.ToStop())) do
             x.ProcessOne()
         x.StopHandle.Set() |> ignore
+
+    override x.Finalize() =
+        x.Terminate()
+
+    interface IDisposable with
+        override x.Dispose() =
+            x.Finalize()
+            GC.SuppressFinalize(x)
 
 and [<AbstractClass>] ThreadPoolBase() =
     let id = ref -1L
@@ -147,6 +155,14 @@ and [<AbstractClass>] ThreadPoolBase() =
             nt.Start()
         inCreation <- false
 
+    override x.Finalize() =
+        x.Terminate()
+
+    interface IDisposable with
+        override x.Dispose() =
+            x.Finalize()
+            GC.SuppressFinalize(x)
+
 // =====================================================================================
 
 type WaitThread(cwait : Wait, waitPerThread : int) as x =
@@ -177,7 +193,7 @@ type WaitThread(cwait : Wait, waitPerThread : int) as x =
         Interlocked.Increment(pendingAdd) |> ignore
         x.ControlHandle.Set() |> ignore
 
-    override val ToStop = (fun () -> !(x.NumWaits)=0) with get, set
+    override val ToStop = (fun () -> !(x.NumWaits)=0) with get
 
     override x.ProcessOne() =
         // start a wait
@@ -219,6 +235,7 @@ and Wait private () =
     let waitPerThread = 63
 
     let toAdd = new ConcurrentQueue<WaitHandle*(unit->unit)*bool*(string)>()
+    let toAddCnt = ref 0L
     let mutable countSinceLastCheck = 0
     let mutable peakWaits = 0L
     let getNew = (fun (tp : ThreadPoolBase) ->
@@ -236,13 +253,18 @@ and Wait private () =
     member val TotalWaitUsed :int64 ref = ref 0L with get
 
     member x.Process() =
+        // get count prior to increasing thread count to make sure enough threads available
+        let mutable countToAdd = !toAddCnt
+        Interlocked.Add(toAddCnt, -countToAdd) |> ignore
         // increase thread count to satisfy number of waits
         while (!x.TotalWaitUsed > x.TotalWaitAvail) do
             x.CreateNewThread()
             x.TotalWaitAvail <- x.TotalWaitAvail + int64 waitPerThread
         // add new waits
         let r = ref Unchecked.defaultof<WaitHandle*(unit->unit)*bool*(string)>
-        while (toAdd.Count > 0) do
+        // don't go all the way to toAdd.Count being zero as ther may not be enough threads available
+        // next call to Process through ExecOnce will take care of the remainder
+        while (countToAdd > 0L) do
             let ret = toAdd.TryDequeue(r)
             if (ret) then
                 let mutable bDone = false
@@ -261,6 +283,7 @@ and Wait private () =
                     else
                         bDone <- true
                 assert(bFound)
+                countToAdd <- countToAdd - 1L
         // decrease thread count
         if (countSinceLastCheck > checkThreadIntervalCount) then
             let wEnum = x.Threads.GetEnumerator()
@@ -278,6 +301,7 @@ and Wait private () =
         Interlocked.Increment(x.TotalWaitUsed) |> ignore
         Logger.LogF(ThreadBase.LogLevel, fun _ -> sprintf "WaitForHandle: %s Total: %d" info !x.TotalWaitUsed)
         toAdd.Enqueue((h, cont, not bRepeat, info))
+        Interlocked.Increment(toAddCnt) |> ignore
         x.ST.ExecOnce(x.Process)
 
 // ==============================================================================
@@ -297,7 +321,8 @@ type TPThread(tp : ThreadPool, minTaskCnt : int) =
         x.ControlHandle <- x.Handle :> EventWaitHandle
         tp.WaitList.[minTaskCnt] <- (x.ControlHandle, x)
 
-    override val ToStop = (fun () -> !tp.TaskTotal <= minTaskCnt) with get, set
+    //override val ToStop = (fun () -> !tp.TaskTotal <= minTaskCnt) with get
+    override val ToStop = (fun () -> true) with get
 
     override x.ProcessOne() =
         let (ret, r) = tp.TaskQ.TryDequeue()
@@ -323,6 +348,8 @@ type TPThread(tp : ThreadPool, minTaskCnt : int) =
                         | None -> ()
                         | Some(cb) -> cb()
                     Logger.LogF(ThreadBase.LogLevel, fun _ -> "RemoveTask: " + info)
+                    // make call to adjust thread count
+                    tp.ST.ExecOnce(tp.AdjustThreadCount)
         // wait if needed
         if (!tp.TaskTotal <= minTaskCnt) then
             handle.Reset() |> ignore
@@ -337,19 +364,25 @@ and ThreadPool() as x =
     inherit ThreadPoolBase()
 
     static let current = new ThreadPool()
-    static let checkTaskInterval = 200
 
+    static let checkTaskInterval = 100
+    static let checkTaskIntervalTime = 3000L // in milliseconds
+
+    let watch = Diagnostics.Stopwatch.StartNew()
     let mutable minTasksOverWindow = Int32.MaxValue
     let mutable maxTasksOverWindow = 0
     let mutable taskIntervalCount = 0
+    let mutable taskIntervalLastTime = watch.ElapsedMilliseconds
     let createNew  = (fun (tpb : ThreadPoolBase) ->
         let waitListId = x.WaitList.Count
-        let t = TPThread(tpb :?> ThreadPool, waitListId)
+        let t = new TPThread(tpb :?> ThreadPool, waitListId)
         t :> ThreadBase
     )
+    let minThreads, minIOThreads = ThreadPool.GetMinThreads()
+    let maxThreads, maxIOThreads = ThreadPool.GetMaxThreads()
 
     new (minCount : int, maxCount : int) as x =
-        ThreadPool()
+        new ThreadPool()
         then
             x.SetThreads(minCount, maxCount)
 
@@ -366,7 +399,8 @@ and ThreadPool() as x =
     member val TaskQ : ConcurrentQueue<(unit->WaitHandle*bool)*bool*Option<unit->unit>*string> = new ConcurrentQueue<_>() with get
     member val WaitList : ConcurrentDictionary<int, EventWaitHandle*TPThread> = new ConcurrentDictionary<_,_>() with get
     member val private MinThreads = 4 with get, set
-    member val private MaxThreads = Environment.ProcessorCount * 4 with get, set
+    //member val private MaxThreads = Environment.ProcessorCount * 4 with get, set
+    member val private MaxThreads = maxThreads with get, set
     override val CreateNew = createNew with get, set
 
     //member val TaskInQ : int ref = ref 0 with get // not really useful
@@ -377,21 +411,33 @@ and ThreadPool() as x =
         maxTasksOverWindow <- Math.Max(!x.TaskTotal, maxTasksOverWindow)
         taskIntervalCount <- taskIntervalCount + 1
         let mutable newThreads = x.Threads.Count
-        if (taskIntervalCount > checkTaskInterval) then
-            if (minTasksOverWindow > x.Threads.Count*2) then
-                newThreads <- minTasksOverWindow*3/2
-            else if (maxTasksOverWindow < x.Threads.Count/2) then
-                newThreads <- maxTasksOverWindow*2/3
+        if (taskIntervalCount > checkTaskInterval ||
+            watch.ElapsedMilliseconds - taskIntervalLastTime > checkTaskIntervalTime) then
+//            if (minTasksOverWindow > x.Threads.Count*2) then
+//                newThreads <- minTasksOverWindow*3/2
+//            else if (maxTasksOverWindow < x.Threads.Count/2) then
+//                newThreads <- maxTasksOverWindow*2/3
+            newThreads <- maxTasksOverWindow // allow reduction of thread count
+            minTasksOverWindow <- !x.TaskTotal
+            maxTasksOverWindow <- !x.TaskTotal
             taskIntervalCount <- 0
+            taskIntervalLastTime <- watch.ElapsedMilliseconds
         newThreads <- Math.Max(newThreads, !x.TaskTotal)
         newThreads <- Math.Max(newThreads, x.MinThreads)
         newThreads <- Math.Min(newThreads, x.MaxThreads)
+        let newThreads = newThreads
+//        Logger.LogF(LogLevel.Info, fun _ -> 
+//            sprintf "TaskCnt: %d ThreadCnt: %d NewThreads: %d MinTasksOverWindow: %d MaxTasksOverWindow: %d" 
+//                !x.TaskTotal x.Threads.Count newThreads minTasksOverWindow maxTasksOverWindow
+//        )
         while (x.Threads.Count < newThreads) do
             x.CreateNewThread()
         while (x.Threads.Count > newThreads) do
             // remove last one
-            let (wh, t) = x.WaitList.[x.Threads.Count-1]
+            let remove = x.Threads.Count - 1
+            let (wh, t) = x.WaitList.[remove]
             t.Stop()
+            x.WaitList.TryRemove(remove) |> ignore
             x.Threads.TryRemove(t.Id) |> ignore
 
     member x.AddWorkItem (cont : unit->WaitHandle*bool, bRepeat : bool, finishCb : Option<unit->unit>, info : string) =

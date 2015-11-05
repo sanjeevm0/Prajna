@@ -239,8 +239,6 @@ type [<AllowNullLiteral>] NetworkCommandQueue() as x =
     static let count = ref -1
     static let MagicNumber = System.Guid("45F9F0E2-AAF1-4F38-82AB-75B876E282C9")
     static let MagicNumberBuf = MagicNumber.ToByteArray()
-    static let TCPSendBufSize = DeploymentSettings.TCPSendBufSize
-    static let TCPRcvBufSize = DeploymentSettings.TCPRcvBufSize
 
     // connect to GenericConn for processing of SocketAsyncEventArgs
     let xgc = new GenericConn()
@@ -886,8 +884,8 @@ type [<AllowNullLiteral>] NetworkCommandQueue() as x =
 
     member private x.InitConnection(soc : Socket) =
         soc.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true)
-//        soc.SendBufferSize <- TCPSendBufSize
-//        soc.ReceiveBufferSize <- TCPRcvBufSize
+//        soc.SendBufferSize <- DeploymentSettings.TCPSendBufSize
+//        soc.ReceiveBufferSize <- DeploymentSettings.TCPRcvBufSize
 //        soc.NoDelay <- true
         soc.SendTimeout <- Int32.MaxValue
         soc.ReceiveTimeout <- Int32.MaxValue
