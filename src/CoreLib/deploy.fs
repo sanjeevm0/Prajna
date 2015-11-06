@@ -264,24 +264,24 @@ type DeploymentSettings() =
     static member val MaxNetworkStackMemoryPercentage = 0.5 with get, set
 
     // for sort benchmark
-//    /// The buffer size used by SocketAsyncEventArgs
-//    static member val NetworkSocketAsyncEventArgBufferSize = 256000 with get, set
-//    /// The buffer size of buffers in shared memory pool used by BufferListStream
-//    static member val BufferListBufferSize = 64000 with get, set
-//    /// The initial number of buffers for shared memory pool used by BufferListStream
-//    static member val InitBufferListNumBuffers = 8*1024*8 with get, set
-//    /// The initial number of buffers in the SocketAsyncEventArgs pool for recv and send
-//    static member val InitNetworkSocketAsyncEventArgBuffers = 8*1024*8
-
-    // for regular case
     /// The buffer size used by SocketAsyncEventArgs
-    static member val NetworkSocketAsyncEventArgBufferSize = 128000 with get, set
+    static member val NetworkSocketAsyncEventArgBufferSize = 256000 with get, set
     /// The buffer size of buffers in shared memory pool used by BufferListStream
     static member val BufferListBufferSize = 64000 with get, set
     /// The initial number of buffers for shared memory pool used by BufferListStream
-    static member val InitBufferListNumBuffers = 128 with get, set
+    static member val InitBufferListNumBuffers = 8*1024*8 with get, set
     /// The initial number of buffers in the SocketAsyncEventArgs pool for recv and send
-    static member val InitNetworkSocketAsyncEventArgBuffers = 128
+    static member val InitNetworkSocketAsyncEventArgBuffers = 8*1024*8
+
+    // for regular case
+//    /// The buffer size used by SocketAsyncEventArgs
+//    static member val NetworkSocketAsyncEventArgBufferSize = 128000 with get, set
+//    /// The buffer size of buffers in shared memory pool used by BufferListStream
+//    static member val BufferListBufferSize = 64000 with get, set
+//    /// The initial number of buffers for shared memory pool used by BufferListStream
+//    static member val InitBufferListNumBuffers = 128 with get, set
+//    /// The initial number of buffers in the SocketAsyncEventArgs pool for recv and send
+//    static member val InitNetworkSocketAsyncEventArgBuffers = 128
 
     /// The size of network command queue for sending
     static member val NetworkCmdSendQSize = 100 with get, set
