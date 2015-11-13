@@ -99,7 +99,8 @@ type [<AbstractClass>] [<AllowNullLiteral>] ThreadBase(pool : ThreadPoolBase) =
         x.StopHandle.Set() |> ignore
 
     override x.Finalize() =
-        x.Terminate()
+        if (ThreadBase.BackgroundThreads = false) then
+            x.Terminate()
 
     interface IDisposable with
         override x.Dispose() =
@@ -155,13 +156,13 @@ and [<AbstractClass>] ThreadPoolBase() =
             nt.Start()
         inCreation <- false
 
-    override x.Finalize() =
-        x.Terminate()
-
-    interface IDisposable with
-        override x.Dispose() =
-            x.Finalize()
-            GC.SuppressFinalize(x)
+//    override x.Finalize() =
+//        x.Terminate()
+//
+//    interface IDisposable with
+//        override x.Dispose() =
+//            x.Finalize()
+//            GC.SuppressFinalize(x)
 
 // =====================================================================================
 
