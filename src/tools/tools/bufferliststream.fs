@@ -636,7 +636,7 @@ type internal StreamBaseRef<'T>() =
         x
 
 [<AllowNullLiteral>] 
-type internal StreamReader<'T>(_bls : StreamBase<'T>, _bufPos : int64, _maxLen : int64) =
+type StreamReader<'T>(_bls : StreamBase<'T>, _bufPos : int64, _maxLen : int64) =
     let bls = _bls
     let mutable elemPos = 0
     let mutable bufPos = _bufPos
