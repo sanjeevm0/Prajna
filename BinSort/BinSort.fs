@@ -463,7 +463,7 @@ let main orgargs =
 
         // add other dependencies
         let curJob = JobDependencies.setCurrentJob "SortGen"
-        JobDependencies.Current.Add([|"qsort.dll"|])
+        JobDependencies.Current.Add([|"nativesort.dll"|])
         let proc = Process.GetCurrentProcess()
         let dir = Path.GetDirectoryName(proc.MainModule.FileName)
         curJob.AddDataDirectory( dir ) |> ignore

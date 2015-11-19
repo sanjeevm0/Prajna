@@ -170,7 +170,7 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "SortBenchmark", "SortBenchm
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "BinSort", "BinSort", "{D4B009AD-7E60-4493-8954-1362D8B591DF}"
 EndProject
-Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "BinSort", "ConsoleApplication1\BinSort.fsproj", "{C427EEF9-2518-4FB0-9D03-DF7613FA4ED6}"
+Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "BinSort", "BinSort\BinSort.fsproj", "{C427EEF9-2518-4FB0-9D03-DF7613FA4ED6}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "NativeSort", "NativeSort\NativeSort.vcxproj", "{D851A169-82E7-44B7-A3E6-D784EAE0F57E}"
 EndProject
