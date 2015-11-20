@@ -53,7 +53,8 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
     // for file I/O
     let alignLen = (dim + 7)/8*8
     // make it multiple of numWriteRange
-    let cacheLenPerSegment = (1000000L/int64 numWriteRange*int64 numWriteRange) * int64(alignLen) / int64(dim)
+    //let cacheLenPerSegment = (1000000L/int64 numWriteRange*int64 numWriteRange) * int64(alignLen) / int64(dim)
+    let cacheLenPerSegment = ((1000000L/4L)/int64 numWriteRange*int64 numWriteRange) * int64(alignLen) / int64(dim)
 
     // properties
     member x.Dim with get() = dim
@@ -248,6 +249,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
         //while (!x.SemaphoreCount.[dirIndex] < maxWritePerDrive) do
         //    sw.SpinOnce()
         let segInPart = int(segIndex - (int64)parti*(int64)furtherPartition)
+        //Logger.LogF(LogLevel.Warning, fun _ -> sprintf "Obtain segment %d %d %d %d" parti segIndex dirIndex segInPart)
         let (rangeIndex, copyStart, boundary, canWrite) = x.WriteRange.[segIndex]
         let (segIndex, cnt, arr) = x.SubPartByte.[uint32 parti].[segInPart]
         canWrite.WaitOne() |> ignore
@@ -313,11 +315,12 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
         Remote.Current.FurtherPartitionCacheInRAMAndWrite(ms)
 
     member x.GetCacheMemSubPartByte(parti : int) : seq<_> =
-        if (x.SubPartitionN.ContainsKey(uint32 parti)) then
+        if (x.SubPartByte.ContainsKey(uint32 parti)) then
             seq {
                 for elem in x.SubPartByte.[uint32 parti] do
                     let (segIndex, cnt, arr) = elem
-                    yield (parti, segIndex, cnt)
+                    if (x.WriteRange.ContainsKey(segIndex)) then
+                        yield (parti, segIndex, cnt)
             }
         else
             Seq.empty
@@ -354,7 +357,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
             seq {
                 let instCnt = Interlocked.Increment(x.ReadCnt)
                 let dirIndex = instCnt % x.RawDataDir.Length // pick up directory in round-robin
-                let fh = File.Open(Path.Combine(x.RawDataDir.[dirIndex], "raw.bin"), FileMode.Open)
+                let fh = File.Open(Path.Combine(x.RawDataDir.[dirIndex], "raw.bin"), FileMode.Open, FileAccess.Read, FileShare.Read)
                 while !totalReadLen < perFileInLen do 
                     let toRead = int32 (Math.Min(int64 readBlockSize, perFileInLen - !totalReadLen))
                     if toRead > 0 then
@@ -446,6 +449,21 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
     static member RepartitionMemStream (buffer) =
         Remote.Current.RepartitionMemStream (buffer)
 
+    member x.DoSortFile (parti : int, segIndex : int64, cnt : int64 ref) =
+        x.FlushSegment(parti, segIndex)
+        let dirIndex = int(segIndex % int64 Remote.Current.PartDataDir.Length)
+        //let parti = segIndex / int64 Remote.Current.FurtherPartition
+        let fileName = Path.Combine(Remote.Current.PartDataDir.[dirIndex], sprintf "%d.bin" segIndex)
+        let sortFileName = Path.Combine(Remote.Current.SortDataDir.[dirIndex], sprintf "%d.bin" parti)
+        let vec = x.SortFile.[uint32 parti]
+        let err = NativeSort.Sort.SortFile(vec, alignLen>>>3, fileName, sortFileName)
+        if (err <> 0) then
+            failwith "Sort returns error"
+        cnt
+
+    static member DoSortFile (parti : int, segIndex : int64, cnt : int64 ref) =
+        Remote.Current.DoSortFile(parti, segIndex, cnt)
+
 // ====================================================
 
 module Interop =
@@ -465,18 +483,6 @@ let doSortN (alignLen : int) (segIndex : int64, cnt : int64 ref, buf : GCHandle,
     let num = int(!cnt/(int64 alignLen))
     NativeSort.Sort.AlignSort64(buf.AddrOfPinnedObject(), alignLen>>>3, num)
     (cnt, buf.AddrOfPinnedObject())
-
-let doSortFile (alignLen : int) (parti : int, segIndex : int64, cnt : int64 ref) =
-    Remote.Current.FlushSegment(parti, segIndex)
-    let dirIndex = int(segIndex % int64 Remote.Current.PartDataDir.Length)
-    //let parti = segIndex / int64 Remote.Current.FurtherPartition
-    let fileName = Path.Combine(Remote.Current.PartDataDir.[dirIndex], sprintf "%d.bin" segIndex)
-    let sortFileName = Path.Combine(Remote.Current.SortDataDir.[dirIndex], sprintf "%d.bin" parti)
-    let vec = Remote.Current.SortFile.[uint32 parti]
-    let err = NativeSort.Sort.SortFile(vec, alignLen>>>3, fileName, sortFileName)
-    if (err <> 0) then
-        failwith "Sort returns error"
-    cnt
 
 let aggrFn (cnt1 : int64) (cnt2 : int64) =
     cnt1 + cnt2
@@ -572,7 +578,7 @@ let fullSort(sort : Remote, remote : DSet<_>) =
     // count # of sorted vectors to verify result
     let dset6 = startRepart |> DSet.sourceI dset5.NumPartitions Remote.GetCacheMemSubPartByte
     let alignLen = (sort.Dim + 7)/8*8
-    let dset7 = dset6 |> DSet.map (doSortFile alignLen)
+    let dset7 = dset6 |> DSet.map Remote.DoSortFile
     let cnt = dset7 |> DSet.fold (cntLenByteArr alignLen) aggrFn 0L
     Logger.LogF(LogLevel.Info, fun _ -> sprintf "Creating remap + repartition stream + cache + sort takes: %f seconds num: %d rate per node: %f Gbps" watch.Elapsed.TotalSeconds cnt ((double cnt)*(double sort.Dim)*8.0/1.0e9/(double sort.NumNodes)/watch.Elapsed.TotalSeconds))
 
@@ -586,7 +592,8 @@ let main orgargs =
     let parse = ArgumentParser(args)
     let PrajnaClusterFile = parse.ParseString( "-cluster", "c:\onenet\cluster\onenet21-25.inf" )
     let nDim = parse.ParseInt( "-dim", 100 )
-    let recordsPerNode = parse.ParseInt64( "-records", 250000000L ) // records per node
+    //let recordsPerNode = parse.ParseInt64( "-records", 250000000L ) // records per node
+    let recordsPerNode = parse.ParseInt64("-records", 100000000L)
     let numInPartPerNode = parse.ParseInt( "-nfile", 8 ) // number of partitions (input)
     let numOutPartPerNode = parse.ParseInt( "-nump", 8 ) // number of partitions (output)
     let furtherPartition = parse.ParseInt("-fnump", 2500) // further binning for improved sort performance

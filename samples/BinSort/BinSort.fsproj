@@ -82,6 +82,7 @@
     <Prefer32Bit>true</Prefer32Bit>
     <PlatformTarget>x64</PlatformTarget>
     <StartArguments>-cluster c:\onenet\cluster\onenet01-05.inf -log c:\onenet\log\b.log -con -verbose 4</StartArguments>
+    <EnableUnmanagedDebugging>true</EnableUnmanagedDebugging>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x64' ">
     <DebugType>pdbonly</DebugType>
