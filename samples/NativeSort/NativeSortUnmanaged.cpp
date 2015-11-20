@@ -1,6 +1,7 @@
 #include <stdlib.h>     
 #include <string.h>
 #include <math.h>
+#include <atlstr.h>
 
 // whole file has no CLR support, so no need to say unmanaged
 //#pragma unmanaged
@@ -38,4 +39,26 @@ int __cdecl compare64(void *context, const void *a, const void *b)
 //{
 //    qsort_s(buf, num, align * 8, compare64, &align);
 //}
+
+int sortFile(unsigned __int64 *buf, int bufSize, int align, LPTSTR inFile, LPTSTR outFile)
+{
+    FILE *fin = NULL;
+    int err = _tfopen_s(&fin, inFile, _T("rb"));
+    if (err != 0)
+        return err;
+    int amtRead = (int)fread(buf, (int)sizeof(__int64), bufSize, fin);
+    fclose(fin);
+
+    int num = amtRead / (align * 8);
+    qsort_s(buf, num, align * 8, compare64, &align);
+
+    FILE *fout = NULL;
+    err = _tfopen_s(&fout, outFile, _T("wb"));
+    if (err != 0)
+        return err;
+    int amtWrite = (int)fwrite(buf, sizeof(__int64), amtRead, fout);
+    fclose(fout);
+
+    return 0;
+}
 
