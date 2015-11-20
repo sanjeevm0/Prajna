@@ -107,7 +107,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
         minSegVal <- Array.init (int(totalOutPartitions)) (fun i -> int((65536L * (int64 i) + (totalOutPartitions - 1L))/totalOutPartitions))
         segBoundary <- Array.init maxValPartition (fun i -> (int)(((int64 i)*(int64 furtherPartition))/(int64 maxValPartition)))
 
-        // semaphore for write
+        // semaphore for write - control # of outstanding writes
         x.WriteSemaphore <- Array.init (x.PartDataDir.Length) (fun _ -> new Semaphore(maxWritePerDrive, maxWritePerDrive))
 
     member x.StopInstance() =
@@ -239,6 +239,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
                 let arr = Array.zeroCreate<byte>(int sizePerSegment)
                 (segIndex, ref 0L, arr)
         x.SortFile.[parti] <- Array.zeroCreate<uint64>(int((maxSubPartitionLen+7L)/8L))
+        x.ST.[parti] <- SingleThreadExec()
         Array.init<_> furtherPartition createArrFn
 
     member x.DoneWrite(ar : IAsyncResult) =
@@ -247,11 +248,32 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
         fh.Close()
         x.WriteSemaphore.[dirIndex].Release() |> ignore
 
+    member x.AddElement (segIndex : int64) (arr : byte[]) (dirIndex : int) (vec : byte[]) (copied : int64 ref) (finish : ManualResetEventSlim) () =
+        let (rangeIndex, copyStart, copyEnd, boundary, canWrite, canCopy) = x.WriteRange.[segIndex]
+        let endRange = Interlocked.Add(copyStart, int64 alignLen)
+        Buffer.BlockCopy(vec, 0, arr, int endRange - alignLen, alignLen) 
+        Interlocked.Add(copied, int64 alignLen) |> ignore
+        finish.Set() |> ignore
+        if (endRange = boundary) then
+            x.WriteSemaphore.[dirIndex].WaitOne() |> ignore
+            let fh = File.Open(Path.Combine(x.PartDataDir.[dirIndex], sprintf "%d.bin" segIndex), FileMode.Append)
+            let startRange = int64 rangeIndex*cacheLenPerSegment/(int64 numWriteRange)
+            fh.BeginWrite(arr, int startRange, int(boundary-startRange), AsyncCallback(x.DoneWrite), (fh, dirIndex)) |> ignore
+            let mutable nextRangeIndex = rangeIndex + 1
+            if (nextRangeIndex = numWriteRange) then
+                nextRangeIndex <- 0
+                copyStart := 0L
+                copyEnd := 0L
+            x.WriteRange.[segIndex] <- (nextRangeIndex, copyStart, copyEnd, cacheLenPerSegment*(int64 nextRangeIndex+1L)/(int64 numWriteRange), canWrite, canCopy)
+
     member x.FurtherPartitionCacheInRAMAndWrite(ms : StreamBase<byte>) =
         ms.Seek(0L, SeekOrigin.Begin) |> ignore
         let parti = ms.ReadUInt32()
         let partArr = x.SubPartByte.GetOrAdd(parti, x.AddSubPartitionByte cacheLenPerSegment)
         let vec = Array.zeroCreate<byte>(alignLen)
+        use finish = new ManualResetEventSlim(false)
+        let toCopy = ref 0L
+        let copied = ref 0L
         while (ms.Read(vec, 0, dim) = dim) do
             let index0 = ((int vec.[0]) <<< 8) ||| (int vec.[1])
             let index1 = ((index0 - minSegVal.[int parti]) <<< 8) ||| (int vec.[2])
@@ -262,28 +284,33 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
                 fh.Close()
                 (0, ref 0L, ref 0L, cacheLenPerSegment/(int64 numWriteRange), new ManualResetEvent(true), new ManualResetEvent(false))
             )
-            canWrite.WaitOne() |> ignore
             Interlocked.Add(cnt, int64 alignLen) |> ignore
-            let endRange = Interlocked.Add(copyStart, int64 alignLen)
-            Buffer.BlockCopy(vec, 0, arr, int endRange - alignLen, alignLen)
-            let endCopy = Interlocked.Add(copyEnd, int64 alignLen)
-            if (endCopy = boundary) then
-                canCopy.Set() |> ignore
-            if (endRange = boundary) then
-                canWrite.Reset() |> ignore
-                canCopy.WaitOne() |> ignore
-                x.WriteSemaphore.[dirIndex].WaitOne() |> ignore
-                let fh = File.Open(Path.Combine(x.PartDataDir.[dirIndex], sprintf "%d.bin" segIndex), FileMode.Append)
-                let startRange = int64 rangeIndex*cacheLenPerSegment/(int64 numWriteRange)
-                fh.BeginWrite(arr, int startRange, int(boundary-startRange), AsyncCallback(x.DoneWrite), (fh, dirIndex)) |> ignore
-                canCopy.Reset() |> ignore
-                canWrite.Set() |> ignore
-                let mutable nextRangeIndex = rangeIndex + 1
-                if (nextRangeIndex = numWriteRange) then
-                    nextRangeIndex <- 0
-                    copyStart := 0L
-                    copyEnd := 0L
-                x.WriteRange.[segIndex] <- (nextRangeIndex, copyStart, copyEnd, cacheLenPerSegment*(int64 nextRangeIndex+1L)/(int64 numWriteRange), canWrite, canCopy)
+            Interlocked.Add(toCopy, int64 alignLen) |> ignore
+            finish.Reset() |> ignore
+            x.ST.[parti].ExecQ(x.AddElement segIndex arr dirIndex vec copied finish)
+            finish.Wait() |> ignore
+//            canWrite.WaitOne() |> ignore
+//            Interlocked.Add(cnt, int64 alignLen) |> ignore
+//            let endRange = Interlocked.Add(copyStart, int64 alignLen)
+//            Buffer.BlockCopy(vec, 0, arr, int endRange - alignLen, alignLen)
+//            let endCopy = Interlocked.Add(copyEnd, int64 alignLen)
+//            if (endCopy = boundary) then
+//                canCopy.Set() |> ignore
+//            if (endRange = boundary) then
+//                canWrite.Reset() |> ignore
+//                canCopy.WaitOne() |> ignore
+//                x.WriteSemaphore.[dirIndex].WaitOne() |> ignore
+//                let fh = File.Open(Path.Combine(x.PartDataDir.[dirIndex], sprintf "%d.bin" segIndex), FileMode.Append)
+//                let startRange = int64 rangeIndex*cacheLenPerSegment/(int64 numWriteRange)
+//                fh.BeginWrite(arr, int startRange, int(boundary-startRange), AsyncCallback(x.DoneWrite), (fh, dirIndex)) |> ignore
+//                canCopy.Reset() |> ignore
+//                canWrite.Set() |> ignore
+//                let mutable nextRangeIndex = rangeIndex + 1
+//                if (nextRangeIndex = numWriteRange) then
+//                    nextRangeIndex <- 0
+//                    copyStart := 0L
+//                    copyEnd := 0L
+//                x.WriteRange.[segIndex] <- (nextRangeIndex, copyStart, copyEnd, cacheLenPerSegment*(int64 nextRangeIndex+1L)/(int64 numWriteRange), canWrite, canCopy)
         (ms :> IDisposable).Dispose()
 
     static member FurtherPartitionCacheInRAMAndWrite ms =
@@ -314,11 +341,12 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
         Remote.Current.ClearCacheMemSubPartByte(parti)  
 
     // ================================================================================
-    member val ReadCnt = ref -1 with get
-    member val RawDataDir : string[] = [|@"c:\sort\raw"; @"d:\sort\raw"; @"e:\sort\raw"; @"f:\sort\raw"|] with get, set
+    member val private ReadCnt = ref -1 with get
+    member val private RawDataDir : string[] = [|@"c:\sort\raw"; @"d:\sort\raw"; @"e:\sort\raw"; @"f:\sort\raw"|] with get, set
     member val PartDataDir : string[] = [|@"c:\sort\part"; @"d:\sort\part"; @"e:\sort\part"; @"f:\sort\part"|] with get, set
     member val SortDataDir : string[] = [|@"c:\sort\sort"; @"d:\sort\sort"; @"e:\sort\sort"; @"f:\sort\sort"|] with get, set
-    member val WriteSemaphore : Semaphore[] = null with get, set
+    member val private WriteSemaphore : Semaphore[] = null with get, set
+    member val private ST : ConcurrentDictionary<uint32, SingleThreadExec> = ConcurrentDictionary<uint32, SingleThreadExec>() with get
 
     member x.ReadFilesToMemStream dim parti =
         let readBlockSize = readBlockRecords * dim
