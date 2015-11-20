@@ -72,7 +72,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
     // for disk
     member val AllocCacheByte : ConcurrentQueue<_> = ConcurrentQueue<byte[]>() with get
     member val SubPartByte = ConcurrentDictionary<uint32, (int64*int64 ref*byte[])[]>() with get
-    member val WriteRange = ConcurrentDictionary<int64, int*int64 ref*int64 ref*int64*ManualResetEvent*ManualResetEvent>() with get
+    member val WriteRange = ConcurrentDictionary<int64, int*int64 ref*int64*ManualResetEvent>() with get
     member val SortFile = ConcurrentDictionary<uint32, uint64[]>() with get
 
     // init and start of remote instance ===================   
@@ -141,9 +141,8 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
                         let (segIndex, cnt, arrHandle, arr) = e
                         arrHandle.Free()
                 for r in x.WriteRange do
-                    let (a,b,c,d,e1,e2) = r.Value
+                    let (a,b,d,e1) = r.Value
                     e1.Dispose()
-                    e2.Dispose()
                 if (Utils.IsNotNull x.WriteSemaphore) then
                     for s in x.WriteSemaphore do
                         s.Dispose()
@@ -249,7 +248,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
         //while (!x.SemaphoreCount.[dirIndex] < maxWritePerDrive) do
         //    sw.SpinOnce()
         let segInPart = int(segIndex - (int64)parti*(int64)furtherPartition)
-        let (rangeIndex, copyStart, copyEnd, boundary, canWrite, canCopy) = x.WriteRange.[segIndex]
+        let (rangeIndex, copyStart, boundary, canWrite) = x.WriteRange.[segIndex]
         let (segIndex, cnt, arr) = x.SubPartByte.[uint32 parti].[segInPart]
         canWrite.WaitOne() |> ignore
         let fh = File.Open(Path.Combine(x.PartDataDir.[dirIndex], sprintf "%d.bin" segIndex), FileMode.Append)
@@ -266,7 +265,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
         Interlocked.Increment(x.SemaphoreCount.[dirIndex]) |> ignore
 
     member x.AddElement (segIndex : int64) (arr : byte[]) (dirIndex : int) (vec : byte[]) (copied : int64 ref) (finish : ManualResetEventSlim) () =
-        let (rangeIndex, copyStart, copyEnd, boundary, canWrite, canCopy) = x.WriteRange.[segIndex]
+        let (rangeIndex, copyStart, boundary, canWrite) = x.WriteRange.[segIndex]
         let endRange = Interlocked.Add(copyStart, int64 alignLen)
         Buffer.BlockCopy(vec, 0, arr, int endRange - alignLen, alignLen) 
         Interlocked.Add(copied, int64 alignLen) |> ignore
@@ -283,8 +282,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
             if (nextRangeIndex = numWriteRange) then
                 nextRangeIndex <- 0
                 copyStart := 0L
-                copyEnd := 0L
-            x.WriteRange.[segIndex] <- (nextRangeIndex, copyStart, copyEnd, cacheLenPerSegment*(int64 nextRangeIndex+1L)/(int64 numWriteRange), canWrite, canCopy)
+            x.WriteRange.[segIndex] <- (nextRangeIndex, copyStart, cacheLenPerSegment*(int64 nextRangeIndex+1L)/(int64 numWriteRange), canWrite)
 
     member x.FurtherPartitionCacheInRAMAndWrite(ms : StreamBase<byte>) =
         ms.Seek(0L, SeekOrigin.Begin) |> ignore
@@ -299,38 +297,16 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
             let index1 = ((index0 - minSegVal.[int parti]) <<< 8) ||| (int vec.[2])
             let (segIndex, cnt, arr) = partArr.[segBoundary.[index1]]
             let dirIndex = int(segIndex % int64 x.PartDataDir.Length)
-            let (rangeIndex, copyStart, copyEnd, boundary, canWrite, canCopy) = x.WriteRange.GetOrAdd(segIndex, fun _ ->
+            let (rangeIndex, copyStart, boundary, canWrite) = x.WriteRange.GetOrAdd(segIndex, fun _ ->
                 let fh = File.Open(Path.Combine(x.PartDataDir.[dirIndex], sprintf "%d.bin" segIndex), FileMode.Create)
                 fh.Close()
-                (0, ref 0L, ref 0L, cacheLenPerSegment/(int64 numWriteRange), new ManualResetEvent(true), new ManualResetEvent(false))
+                (0, ref 0L, cacheLenPerSegment/(int64 numWriteRange), new ManualResetEvent(true))
             )
             Interlocked.Add(cnt, int64 alignLen) |> ignore
             Interlocked.Add(toCopy, int64 alignLen) |> ignore
             finish.Reset() |> ignore
             x.ST.[parti].ExecQ(x.AddElement segIndex arr dirIndex vec copied finish)
             finish.Wait() |> ignore
-//            canWrite.WaitOne() |> ignore
-//            Interlocked.Add(cnt, int64 alignLen) |> ignore
-//            let endRange = Interlocked.Add(copyStart, int64 alignLen)
-//            Buffer.BlockCopy(vec, 0, arr, int endRange - alignLen, alignLen)
-//            let endCopy = Interlocked.Add(copyEnd, int64 alignLen)
-//            if (endCopy = boundary) then
-//                canCopy.Set() |> ignore
-//            if (endRange = boundary) then
-//                canWrite.Reset() |> ignore
-//                canCopy.WaitOne() |> ignore
-//                x.WriteSemaphore.[dirIndex].WaitOne() |> ignore
-//                let fh = File.Open(Path.Combine(x.PartDataDir.[dirIndex], sprintf "%d.bin" segIndex), FileMode.Append)
-//                let startRange = int64 rangeIndex*cacheLenPerSegment/(int64 numWriteRange)
-//                fh.BeginWrite(arr, int startRange, int(boundary-startRange), AsyncCallback(x.DoneWrite), (fh, dirIndex)) |> ignore
-//                canCopy.Reset() |> ignore
-//                canWrite.Set() |> ignore
-//                let mutable nextRangeIndex = rangeIndex + 1
-//                if (nextRangeIndex = numWriteRange) then
-//                    nextRangeIndex <- 0
-//                    copyStart := 0L
-//                    copyEnd := 0L
-//                x.WriteRange.[segIndex] <- (nextRangeIndex, copyStart, copyEnd, cacheLenPerSegment*(int64 nextRangeIndex+1L)/(int64 numWriteRange), canWrite, canCopy)
         (ms :> IDisposable).Dispose()
 
     static member FurtherPartitionCacheInRAMAndWrite ms =
