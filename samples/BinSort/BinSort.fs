@@ -191,8 +191,8 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
                // throw away, not enough space in cache
                 Logger.LogF(LogLevel.Error, fun _ -> "Error: Max Length exceeded")
             else
-                Marshal.Copy(vec, 0, IntPtr.Add(arr.Ptr, int start), alignLen)
-                //Buffer.BlockCopy(vec, 0, arr.Arr, arr.Offset + int start, alignLen)
+                //Marshal.Copy(vec, 0, IntPtr.Add(arr.Ptr, int start), alignLen)
+                Buffer.BlockCopy(vec, 0, arr.Arr, arr.Offset + int start, alignLen)
         (ms :> IDisposable).Dispose()
 
     static member FurtherPartitionCacheInRAMAndDisposeN ms =
