@@ -66,39 +66,30 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
 
     static member val Current : Remote = Unchecked.defaultof<Remote> with get, set
 
-    // for in-memory
-    member val AllocCache : ConcurrentQueue<_> = ConcurrentQueue<GCHandle*uint64[]>() with get
-    member val SubPartitionN = ConcurrentDictionary<uint32, (int64*int64 ref*GCHandle*uint64[])[]>() with get
+    member val AllocCache : ConcurrentQueue<_> = ConcurrentQueue<ByteArrAlign>() with get
+    member val SubPartitionN = ConcurrentDictionary<uint32, (int64*int64 ref*ByteArrAlign)[]>() with get
 
-    // for disk
-    member val AllocCacheByte : ConcurrentQueue<_> = ConcurrentQueue<byte[]>() with get
-    member val SubPartByte = ConcurrentDictionary<uint32, (int64*int64 ref*byte[])[]>() with get
+    // only for disk
     member val WriteRange = ConcurrentDictionary<int64, int*int64 ref*int64*ManualResetEvent>() with get
-    member val SortFile = ConcurrentDictionary<uint32, uint64[]>() with get
+    member val SortFile = ConcurrentDictionary<uint32, ByteArrAlign>() with get
 
     // init and start of remote instance ===================   
     member x.InitInstance(inMemory : bool) =
-        if (inMemory) then
-            let allocLen = (int maxSubPartitionLen + sizeof<uint64> - 1) / sizeof<uint64>
-            let rnd = Random()
-            let buf = Array.zeroCreate<byte>(allocLen*sizeof<uint64>)
-            rnd.NextBytes(buf)
-            for i = 0 to int(outSegmentsPerNode)-1 do
-                let arr = Array.zeroCreate<uint64>(allocLen)
-                let handle = GCHandle.Alloc(arr, GCHandleType.Pinned)
-                // write something to array
-                Buffer.BlockCopy(buf, 0, arr, 0, buf.Length)
-                // enqueue
-                x.AllocCache.Enqueue((handle, arr))
-        else
-            let allocLen = int cacheLenPerSegment
-            let rnd = Random()
-            let buf = Array.zeroCreate<byte>(allocLen)
-            rnd.NextBytes(buf)
-            for i = 0 to int(outSegmentsPerNode)-1 do
-                let arr = Array.zeroCreate<byte>(allocLen)
-                Buffer.BlockCopy(buf, 0, arr, 0, buf.Length)
-                x.AllocCacheByte.Enqueue(arr)
+        let allocLen =
+            if (inMemory) then
+                ByteArrAlign.AlignSize(int maxSubPartitionLen, sizeof<uint64>)
+            else
+                ByteArrAlign.AlignSize(int cacheLenPerSegment, sizeof<uint64>)
+
+        let rnd = Random()
+        let buf = Array.zeroCreate<byte>(allocLen)
+        rnd.NextBytes(buf)
+        for i = 0 to int(outSegmentsPerNode)-1 do
+            let arr = new ByteArrAlign(int maxSubPartitionLen, sizeof<uint64>)
+            // write something to array
+            Buffer.BlockCopy(buf, 0, arr.Arr, arr.Offset, buf.Length)
+            // enqueue
+            x.AllocCache.Enqueue(arr)
 
         // boundaries for repartitioning (Shuffling)
         partBoundary <- Array.init 65536 (fun i -> Math.Min(int(totalOutPartitions)-1,(int)(((int64 i)*(int64 totalOutPartitions))/65536L)))
@@ -132,15 +123,17 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
             // unmanaged stuff always release
             if bDisposing then
                 // managed stuff only release if disposing
-                let mutable elem = Unchecked.defaultof<GCHandle*uint64[]>
+                let mutable elem = Unchecked.defaultof<ByteArrAlign>
                 while (x.AllocCache.Count > 0) do
                     let ret = x.AllocCache.TryDequeue(&elem)
                     if (ret) then
-                        (fst elem).Free()
+                        (elem :> IDisposable).Dispose()
                 for s in x.SubPartitionN do
                     for e in s.Value do
-                        let (segIndex, cnt, arrHandle, arr) = e
-                        arrHandle.Free()
+                        let (segIndex, cnt, arr) = e
+                        (arr :> IDisposable).Dispose()
+                for s in x.SortFile do
+                    (s.Value :> IDisposable).Dispose()
                 for r in x.WriteRange do
                     let (a,b,d,e1) = r.Value
                     e1.Dispose()
@@ -175,13 +168,11 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
             let segIndex = int64(parti)*int64(furtherPartition) + int64(i)
             let (ret, arrHandle) = x.AllocCache.TryDequeue()
             if (ret) then
-                (segIndex, ref 0L, fst arrHandle, snd arrHandle)
+                (segIndex, ref 0L, arrHandle)
             else
                 Logger.LogF(LogLevel.Error, fun _ -> "Preallocted cache is finished, creating new one")
-                let allocLen = (int sizePerSegment + sizeof<uint64> - 1)/ sizeof<uint64>
-                let arr = Array.zeroCreate<uint64>(allocLen)
-                let handle = GCHandle.Alloc(arr, GCHandleType.Pinned)
-                (segIndex, ref 0L, handle, arr)
+                let arr = new ByteArrAlign(int sizePerSegment, sizeof<uint64>)
+                (segIndex, ref 0L, arr)
         Array.init<_> furtherPartition createArrFn
 
     member x.FurtherPartitionCacheInRAMAndDisposeN(ms : StreamBase<byte>) =
@@ -193,16 +184,15 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
         while (ms.Read(vec, 0, dim) = dim) do
             let index0 = ((int vec.[0]) <<< 8) ||| (int vec.[1])
             let index1 = ((index0 - minSegVal.[int parti]) <<< 8) ||| (int vec.[2])
-            let (segIndex, cnt, arrHandle, arr) = partArr.[segBoundary.[index1]]
-            let arrPtr = arrHandle.AddrOfPinnedObject()
+            let (segIndex, cnt, arr) = partArr.[segBoundary.[index1]]
             let start = Interlocked.Add(cnt, int64 alignLen) - (int64 alignLen)
             if (start + (int64 alignLen) > maxSubPartitionLen) then
                 Interlocked.Add(cnt, int64 -alignLen) |> ignore
                // throw away, not enough space in cache
                 Logger.LogF(LogLevel.Error, fun _ -> "Error: Max Length exceeded")
             else
-                Marshal.Copy(vec, 0, IntPtr.Add(arrPtr, int start), alignLen)
-                //Buffer.BlockCopy(vec, 0, arr, int(start>>>3), alignLen)
+                Marshal.Copy(vec, 0, IntPtr.Add(arr.Ptr, int start), alignLen)
+                //Buffer.BlockCopy(vec, 0, arr.Arr, arr.Offset + int start, alignLen)
         (ms :> IDisposable).Dispose()
 
     static member FurtherPartitionCacheInRAMAndDisposeN ms =
@@ -221,7 +211,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
         if (x.SubPartitionN.ContainsKey(parti)) then 
             if (Utils.IsNotNull x.SubPartitionN.[parti]) then
                 for elem in x.SubPartitionN.[parti] do
-                    let (segIndex, cnt, arrHandle, arr) = elem
+                    let (segIndex, cnt, arr) = elem
                     cnt := 0L
 
     static member ClearCacheMemSubPartN parti =
@@ -232,14 +222,14 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
     member private x.AddSubPartitionByte (sizePerSegment : int64) (parti : uint32) =
         let createArrFn (i : int) =
             let segIndex = int64(parti)*int64(furtherPartition) + int64(i)
-            let (ret, arr) = x.AllocCacheByte.TryDequeue()
+            let (ret, arr) = x.AllocCache.TryDequeue()
             if (ret) then
                 (segIndex, ref 0L, arr)
             else
                 Logger.LogF(LogLevel.Error, fun _ -> "Preallocted cache is finished, creating new one")
-                let arr = Array.zeroCreate<byte>(int sizePerSegment)
+                let arr = new ByteArrAlign(int sizePerSegment, sizeof<uint64>)
                 (segIndex, ref 0L, arr)
-        x.SortFile.[parti] <- Array.zeroCreate<uint64>(int((maxSubPartitionLen+7L)/8L))
+        x.SortFile.[parti] <- new ByteArrAlign(int maxSubPartitionLen, sizeof<uint64>)
         x.ST.[parti] <- SingleThreadExec()
         Array.init<_> furtherPartition createArrFn
 
@@ -251,11 +241,11 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
         let segInPart = int(segIndex - (int64)parti*(int64)furtherPartition)
         //Logger.LogF(LogLevel.Warning, fun _ -> sprintf "Obtain segment %d %d %d %d" parti segIndex dirIndex segInPart)
         let (rangeIndex, copyStart, boundary, canWrite) = x.WriteRange.[segIndex]
-        let (segIndex, cnt, arr) = x.SubPartByte.[uint32 parti].[segInPart]
+        let (segIndex, cnt, arr) = x.SubPartitionN.[uint32 parti].[segInPart]
         canWrite.WaitOne() |> ignore
         let fh = File.Open(Path.Combine(x.PartDataDir.[dirIndex], sprintf "%d.bin" segIndex), FileMode.Append)
         let startRange = int64 rangeIndex*cacheLenPerSegment/(int64 numWriteRange)
-        fh.Write(arr, int startRange, int(!copyStart-startRange))
+        fh.Write(arr.Arr, arr.Offset + int startRange, int(!copyStart-startRange))
         fh.Close()
 
     member x.DoneWrite(ar : IAsyncResult) =
@@ -266,10 +256,10 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
         x.WriteSemaphore.[dirIndex].Release() |> ignore
         Interlocked.Increment(x.SemaphoreCount.[dirIndex]) |> ignore
 
-    member x.AddElement (segIndex : int64) (arr : byte[]) (dirIndex : int) (vec : byte[]) (copied : int64 ref) (finish : ManualResetEventSlim) () =
+    member x.AddElement (segIndex : int64) (arr : ByteArrAlign) (dirIndex : int) (vec : byte[]) (copied : int64 ref) (finish : ManualResetEventSlim) () =
         let (rangeIndex, copyStart, boundary, canWrite) = x.WriteRange.[segIndex]
         let endRange = Interlocked.Add(copyStart, int64 alignLen)
-        Buffer.BlockCopy(vec, 0, arr, int endRange - alignLen, alignLen) 
+        Buffer.BlockCopy(vec, 0, arr.Arr, arr.Offset + int endRange - alignLen, alignLen) 
         Interlocked.Add(copied, int64 alignLen) |> ignore
         finish.Set() |> ignore
         if (endRange = boundary) then
@@ -279,7 +269,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
             let startRange = int64 rangeIndex*cacheLenPerSegment/(int64 numWriteRange)
             Interlocked.Decrement(x.SemaphoreCount.[dirIndex]) |> ignore // outstanding write pending
             canWrite.Reset() |> ignore
-            fh.BeginWrite(arr, int startRange, int(boundary-startRange), AsyncCallback(x.DoneWrite), (fh, dirIndex, canWrite)) |> ignore
+            fh.BeginWrite(arr.Arr, arr.Offset + int startRange, int(boundary-startRange), AsyncCallback(x.DoneWrite), (fh, dirIndex, canWrite)) |> ignore
             let mutable nextRangeIndex = rangeIndex + 1
             if (nextRangeIndex = numWriteRange) then
                 nextRangeIndex <- 0
@@ -289,7 +279,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
     member x.FurtherPartitionCacheInRAMAndWrite(ms : StreamBase<byte>) =
         ms.Seek(0L, SeekOrigin.Begin) |> ignore
         let parti = ms.ReadUInt32()
-        let partArr = x.SubPartByte.GetOrAdd(parti, x.AddSubPartitionByte cacheLenPerSegment)
+        let partArr = x.SubPartitionN.GetOrAdd(parti, x.AddSubPartitionByte cacheLenPerSegment)
         let vec = Array.zeroCreate<byte>(alignLen)
         use finish = new ManualResetEventSlim(false)
         let toCopy = ref 0L
@@ -315,9 +305,9 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
         Remote.Current.FurtherPartitionCacheInRAMAndWrite(ms)
 
     member x.GetCacheMemSubPartByte(parti : int) : seq<_> =
-        if (x.SubPartByte.ContainsKey(uint32 parti)) then
+        if (x.SubPartitionN.ContainsKey(uint32 parti)) then
             seq {
-                for elem in x.SubPartByte.[uint32 parti] do
+                for elem in x.SubPartitionN.[uint32 parti] do
                     let (segIndex, cnt, arr) = elem
                     if (x.WriteRange.ContainsKey(segIndex)) then
                         yield (parti, segIndex, cnt)
@@ -329,9 +319,9 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
         Remote.Current.GetCacheMemSubPartByte(parti)
 
     member x.ClearCacheMemSubPartByte(parti : uint32) =
-        if (x.SubPartByte.ContainsKey(parti)) then 
-            if (Utils.IsNotNull x.SubPartByte.[parti]) then
-                for elem in x.SubPartByte.[parti] do
+        if (x.SubPartitionN.ContainsKey(parti)) then 
+            if (Utils.IsNotNull x.SubPartitionN.[parti]) then
+                for elem in x.SubPartitionN.[parti] do
                     let (segIndex, cnt, arr) = elem
                     cnt := 0L
                     x.WriteRange.TryRemove(segIndex) |> ignore
@@ -456,7 +446,8 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
         let fileName = Path.Combine(Remote.Current.PartDataDir.[dirIndex], sprintf "%d.bin" segIndex)
         let sortFileName = Path.Combine(Remote.Current.SortDataDir.[dirIndex], sprintf "%d.bin" parti)
         let vec = x.SortFile.[uint32 parti]
-        let err = NativeSort.Sort.SortFile(vec, alignLen>>>3, fileName, sortFileName)
+        //let err = NativeSort.Sort.SortFile(vec.Arr, vec.Offset, (alignLen>>>3), fileName, sortFileName)
+        let err = NativeSort.Sort.SortFile(vec.Ptr, vec.Size, (alignLen>>>3), fileName, sortFileName)
         if (err <> 0) then
             failwith "Sort returns error"
         cnt
@@ -479,10 +470,10 @@ let repartitionFn (ms : StreamBase<byte>) =
     let index = ms.ReadUInt32()
     int index
 
-let doSortN (alignLen : int) (segIndex : int64, cnt : int64 ref, buf : GCHandle, bufArr : uint64[]) : int64 ref*IntPtr =
+let doSortN (alignLen : int) (segIndex : int64, cnt : int64 ref, buf : ByteArrAlign) : int64 ref*IntPtr =
     let num = int(!cnt/(int64 alignLen))
-    NativeSort.Sort.AlignSort64(buf.AddrOfPinnedObject(), alignLen>>>3, num)
-    (cnt, buf.AddrOfPinnedObject())
+    NativeSort.Sort.AlignSort64(buf.Ptr, alignLen>>>3, num)
+    (cnt, buf.Ptr)
 
 let aggrFn (cnt1 : int64) (cnt2 : int64) =
     cnt1 + cnt2

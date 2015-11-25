@@ -35,13 +35,20 @@ namespace NativeSort {
             alignsort64((unsigned __int64 *)buf.ToPointer(), align, num);
         }
 
-        static int SortFile(array<UInt64>^ tempSpace, int align, String^ inFile, String^ outFile)
+        static int SortFile(array<Byte>^ tempSpace, int offset, int align, String^ inFile, String^ outFile)
         {
-            pin_ptr<UInt64> p = &tempSpace[0];
+            pin_ptr<Byte> p = &tempSpace[0] + offset;
             int bufSize = tempSpace->Length;
             CString in(inFile);
             CString out(outFile);
-            return sortFile(p, bufSize, align, in.GetBuffer(), out.GetBuffer());
+            return sortFile((unsigned __int64*)p, bufSize, align, in.GetBuffer(), out.GetBuffer());
+        }
+
+        static int SortFile(IntPtr buf, int bufSize, int align, String^ inFile, String^ outFile)
+        {
+            CString in(inFile);
+            CString out(outFile);
+            return sortFile((unsigned __int64 *)buf.ToPointer(), bufSize, align, in.GetBuffer(), out.GetBuffer());
         }
 
         Sort() {}

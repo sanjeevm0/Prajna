@@ -58,6 +58,7 @@
     <Compile Include="genericnetwork.fs" />
     <Compile Include="crypt.fs" />
     <Compile Include="configuration.fs" />
+    <Compile Include="disk.fs" />
   </ItemGroup>
   <PropertyGroup>
     <MinimumVisualStudioVersion Condition="'$(MinimumVisualStudioVersion)' == ''">11</MinimumVisualStudioVersion>
