@@ -24,17 +24,20 @@ open System.IO
 open System.Threading
 open Prajna.Tools.Queue
 open System.Collections.Concurrent
+open System.Runtime.CompilerServices
 
-type internal StrmReq<'T> =
+type internal StrmReq<'TIn,'T> =
     struct
+        val mutable input : 'TIn
         val mutable index : 'T
         val mutable strm : Stream
         val mutable cb : Option<Stream*byte[]*int*int*int->unit>
-        val mutable oper : 'T*Stream*byte[]*int*int*Option<Stream*byte[]*int*int*int->unit>->unit
+        val mutable oper : 'TIn*'T*Stream*byte[]*int*int*Option<Stream*byte[]*int*int*int->unit>->unit
         val mutable buf : byte[]
         val mutable offset : int
         val mutable cnt : int
-        internal new (_index, _strm, _cb, _oper, _buf, _offset, _cnt) = {
+        internal new (_input, _index, _strm, _cb, _oper, _buf, _offset, _cnt) = {
+            input = _input
             index = _index
             strm = _strm
             cb = _cb
@@ -45,8 +48,26 @@ type internal StrmReq<'T> =
         }
     end
 
+type BufIOEvent =
+    struct
+        val mutable buf : byte[]
+        val mutable offset : int
+        val mutable cnt : int
+        val mutable amt : int ref
+        val mutable event : ManualResetEvent
+        new(_buf, _offset, _cnt) = {
+            buf = _buf
+            offset = _offset
+            cnt = _cnt
+            amt = ref 0
+            event = new ManualResetEvent(false)
+        }
+    end
+
 type StrmIOReq<'TIn,'T> internal () =
-    let q = ConcurrentDictionary<'T, ConcurrentQueue<StrmReq<'T>>*Semaphore*int ref*int>()
+    let q = ConcurrentDictionary<'T, ConcurrentQueue<StrmReq<'TIn,'T>>*Semaphore*int ref*int>()
+    let strmsRead = ConcurrentDictionary<'TIn, Stream>()
+    let strmsWrite = ConcurrentDictionary<'TIn, Stream>()
     let mutable getIndex : 'TIn->'T = (fun _ -> Unchecked.defaultof<'T>)
     let disposed = ref 0
 
@@ -56,13 +77,23 @@ type StrmIOReq<'TIn,'T> internal () =
                 for e in q do
                     let (a,s,b,c) = e.Value
                     s.Dispose()
+                for s in strmsRead do
+                    s.Value.Close()
+                for s in strmsWrite do
+                    s.Value.Close()
 
     member x.Init(input : ('TIn*int)[], mapper : 'TIn->'T) =
         getIndex <- mapper
         for i = 0 to input.Length-1 do
             let (inStr, max) = input.[i]
             let index = getIndex(inStr)
-            q.[index] <- (ConcurrentQueue<StrmReq<'T>>(), new Semaphore(max, max), ref 0, max)
+            q.[index] <- (ConcurrentQueue<StrmReq<'TIn,'T>>(), new Semaphore(max, max), ref 0, max)
+
+    member x.OpenStrms(inputRead : 'TIn[], inputWrite : 'TIn[]) =
+        for i in inputRead do
+            strmsRead.[i] <- x.OpenStreamForRead(i)
+        for i in inputWrite do
+            strmsWrite.[i] <- x.OpenStreamForWrite(i)
 
     member private x.OperLoop(index : 'T) =
         let (q, s, outstanding, max) = q.[index]
@@ -72,7 +103,7 @@ type StrmIOReq<'TIn,'T> internal () =
                 let (ret, elem) = q.TryDequeue()
                 if (ret) then
                     s.WaitOne() |> ignore
-                    elem.oper(index, elem.strm, elem.buf, elem.offset, elem.cnt, elem.cb)
+                    elem.oper(elem.input, index, elem.strm, elem.buf, elem.offset, elem.cnt, elem.cb)
                 else
                     Interlocked.Decrement(outstanding) |> ignore
             else
@@ -90,125 +121,170 @@ type StrmIOReq<'TIn,'T> internal () =
         amtReadRef := amtRead
         event.Set() |> ignore
 
-    // Read operations
-    member private x.ReadCb(ar : IAsyncResult) =
-        let (index, strm, buf, offset, cnt, outstanding, s, furtherCb) = ar.AsyncState :?> ('T*Stream*byte[]*int*int*int ref*Semaphore*Option<Stream*byte[]*int*int*int->unit>)
-        let amtRead = strm.EndRead(ar)
+    member inline private x.FinishOper(index, outstanding : int ref, s : Semaphore, furtherCb, strm : Stream, buf, offset, cnt, amt, bClose) =
         Interlocked.Decrement(outstanding) |> ignore
         s.Release() |> ignore
         match furtherCb with
             | None -> ()
-            | Some(cb) -> cb(strm, buf, offset, cnt, amtRead)
+            | Some(cb) -> cb(strm, buf, offset, cnt, amt)
+        if (bClose) then
+            strm.Close()
         ThreadPool.QueueUserWorkItem(WaitCallback(x.OperLoopExec), index) |> ignore 
 
-    member private x.ReadInternal(index : 'T, strm : Stream, buf : byte[], offset : int, cnt : int, outstanding : int ref, s : Semaphore, furtherCb : Option<Stream*byte[]*int*int*int->unit>) =
-        strm.BeginRead(buf, offset, cnt, AsyncCallback(x.ReadCb), (index, strm, buf, offset, cnt, outstanding, s, furtherCb)) |> ignore
+    member val OpenStreamForRead : 'TIn->Stream = (fun _ -> null) with get, set
+    member val OpenStreamForWrite : 'TIn->Stream = (fun _ -> null) with get, set
 
-    member x.TryRead(index : 'T, strm : Stream, buf : byte[], offset : int, cnt : int, furtherCb) =
+    // Read operations
+    member private x.ReadCb(ar : IAsyncResult) =
+        let (index, strm, buf, offset, cnt, outstanding, s, furtherCb, bClose) = ar.AsyncState :?> ('T*Stream*byte[]*int*int*int ref*Semaphore*Option<Stream*byte[]*int*int*int->unit>*bool)
+        let amtRead = strm.EndRead(ar)
+        x.FinishOper(index, outstanding, s, furtherCb, strm, buf, offset, cnt, amtRead, bClose)
+
+    member private x.ReadInternal(input : 'TIn, index : 'T, strm : Stream, buf : byte[], offset : int, cnt : int, outstanding : int ref, s : Semaphore, furtherCb : Option<Stream*byte[]*int*int*int->unit>) =
+        try
+            let (strm, bClose) =
+                if (Utils.IsNull strm) then
+                    if (strmsRead.ContainsKey(input)) then
+                        (strmsRead.[input], false)
+                    else
+                        (x.OpenStreamForRead(input), true)
+                else
+                    (strm, false)  
+            strm.BeginRead(buf, offset, cnt, AsyncCallback(x.ReadCb), (index, strm, buf, offset, cnt, outstanding, s, furtherCb, bClose)) |> ignore
+        with e ->
+            s.Release() |> ignore
+            Interlocked.Decrement(outstanding) |> ignore
+            reraise()
+
+    member x.TryRead(input : 'TIn, index : 'T, strm : Stream, buf : byte[], offset : int, cnt : int, furtherCb) =
         let (q, s, outstanding, max) = q.[index]
-        if (Interlocked.Increment(outstanding) <= max) then
-            s.WaitOne() |> ignore
-            x.ReadInternal(index, strm, buf, offset, cnt, outstanding, s, furtherCb)
+        if (s.WaitOne(0)) then
+            Interlocked.Increment(outstanding) |> ignore
+            x.ReadInternal(input, index, strm, buf, offset, cnt, outstanding, s, furtherCb)
             true
         else
-            Interlocked.Decrement(outstanding) |> ignore
             false
 
     member x.TryReadIn(input : 'TIn, strm : Stream, buf : byte[], offset : int, cnt : int, furtherCb) =
-        x.TryRead(getIndex(input), strm, buf, offset, cnt, furtherCb)
+        x.TryRead(input, getIndex(input), strm, buf, offset, cnt, furtherCb)
 
-    member private x.DoRead(index : 'T, strm : Stream, buf : byte[], offset : int, cnt : int, furtherCb) =
+    member private x.DoRead(input : 'TIn, index : 'T, strm : Stream, buf : byte[], offset : int, cnt : int, furtherCb) =
         let (q, s, outstanding, max) = q.[index]
-        x.ReadInternal(index, strm, buf, offset, cnt, outstanding, s, furtherCb)
+        x.ReadInternal(input, index, strm, buf, offset, cnt, outstanding, s, furtherCb)
 
     member x.AddReadReq(input  : 'TIn, strm : Stream, buf : byte[], offset : int, cnt : int, furtherCb) =
         let index = getIndex(input)
         let (q, s, outstanding, max) = q.[index]
-        let bDone = x.TryRead(index, strm, buf, offset, cnt, furtherCb)
+        let bDone = x.TryRead(input, index, strm, buf, offset, cnt, furtherCb)
         if not bDone then
-            q.Enqueue(new StrmReq<'T>(index, strm, furtherCb, x.DoRead, buf, offset, cnt))
+            q.Enqueue(new StrmReq<'TIn,'T>(input, index, strm, furtherCb, x.DoRead, buf, offset, cnt))
 
     member x.AddReadReq(input  : 'TIn, strm : Stream, buf : byte[], offset : int, cnt : int, event : EventWaitHandle, amtReadRef : int ref) =
         let index = getIndex(input)
         let (q, s, outstanding, max) = q.[index]
         let furtherCb = Some(x.FireEventCb (event, amtReadRef))
         event.Reset() |> ignore
-        let bDone = x.TryRead(index, strm, buf, offset, cnt, furtherCb)
+        let bDone = x.TryRead(input, index, strm, buf, offset, cnt, furtherCb)
         if not bDone then
-            q.Enqueue(new StrmReq<'T>(index, strm, furtherCb, x.DoRead, buf, offset, cnt))
+            q.Enqueue(new StrmReq<'TIn,'T>(input, index, strm, furtherCb, x.DoRead, buf, offset, cnt))
+
+    member x.AddReadReq(input : 'TIn, strm : Stream, bufIO : BufIOEvent) =
+        x.AddReadReq(input, strm, bufIO.buf, bufIO.offset, bufIO.cnt, bufIO.event, bufIO.amt)
 
     member x.SyncRead(input : 'TIn, strm : Stream, buf : byte[], offset : int, cnt : int) : int =
         let index = getIndex(input)
         let (q, s, outstanding, max) = q.[index]
         let amtReadRef = ref 0
         let furtherCb = Some(x.SetLen amtReadRef)
-        let mutable bDone = x.TryRead(index, strm, buf, offset, cnt, furtherCb)
-        while not bDone do
-            s.WaitOne() |> ignore
-            if (Interlocked.Increment(outstanding) <= max) then
-                x.ReadInternal(index, strm, buf, offset, cnt, outstanding, s, furtherCb)
-                bDone <- true
-            else
-                Interlocked.Decrement(outstanding) |> ignore
-                s.Release() |> ignore
+        s.WaitOne() |> ignore
+        Interlocked.Increment(outstanding) |> ignore
+        x.ReadInternal(input, index, strm, buf, offset, cnt, outstanding, s, furtherCb)
         !amtReadRef
 
     // Write operations
     member private x.WriteCb(ar : IAsyncResult) =
-        let (index, strm, buf, offset, cnt, outstanding, s, furtherCb) = ar.AsyncState :?> ('T*Stream*byte[]*int*int*int ref*Semaphore*Option<Stream*byte[]*int*int*int->unit>)
+        let (index, strm, buf, offset, cnt, outstanding, s, furtherCb, bClose) = ar.AsyncState :?> ('T*Stream*byte[]*int*int*int ref*Semaphore*Option<Stream*byte[]*int*int*int->unit>*bool)
         strm.EndWrite(ar)
-        Interlocked.Decrement(outstanding) |> ignore
-        s.Release() |> ignore
-        match furtherCb with
-            | None -> ()
-            | Some(cb) -> cb(strm, buf, offset, cnt, 0)
-        ThreadPool.QueueUserWorkItem(WaitCallback(x.OperLoopExec), index) |> ignore 
+        x.FinishOper(index, outstanding, s, furtherCb, strm, buf, offset, cnt, 0, bClose)
 
-    member private x.WriteInternal(index : 'T, strm : Stream, buf : byte[], offset : int, cnt : int, outstanding : int ref, s : Semaphore, furtherCb : Option<Stream*byte[]*int*int*int->unit>) =
-        strm.BeginWrite(buf, offset, cnt, AsyncCallback(x.WriteCb), (index, strm, buf, offset, cnt, outstanding, s, furtherCb)) |> ignore
+    member private x.WriteInternal(input : 'TIn, index : 'T, strm : Stream, buf : byte[], offset : int, cnt : int, outstanding : int ref, s : Semaphore, furtherCb : Option<Stream*byte[]*int*int*int->unit>) =
+        try
+            let (strm, bClose) =
+                if (Utils.IsNull strm) then
+                    if (strmsWrite.ContainsKey(input)) then
+                        (strmsWrite.[input], false)
+                    else
+                        (x.OpenStreamForWrite(input), true)
+                else
+                    (strm, false)
+            strm.BeginWrite(buf, offset, cnt, AsyncCallback(x.WriteCb), (index, strm, buf, offset, cnt, outstanding, s, furtherCb, bClose)) |> ignore
+        with e ->
+            s.Release() |> ignore
+            Interlocked.Decrement(outstanding) |> ignore
+            reraise()
 
-    member x.TryWrite(index : 'T, strm : Stream, buf : byte[], offset : int, cnt : int, furtherCb) =
+    member x.TryWrite(input : 'TIn, index : 'T, strm : Stream, buf : byte[], offset : int, cnt : int, furtherCb) =
         let (q, s, outstanding, max) = q.[index]
-        if (Interlocked.Increment(outstanding) <= max) then
-            s.WaitOne() |> ignore
-            x.WriteInternal(index, strm, buf, offset, cnt, outstanding, s, furtherCb)
+        if (s.WaitOne(0)) then
+            Interlocked.Increment(outstanding) |> ignore
+            x.WriteInternal(input, index, strm, buf, offset, cnt, outstanding, s, furtherCb)
             true
         else
-            Interlocked.Decrement(outstanding) |> ignore
             false
 
     member x.TryWriteIn(input : 'TIn, strm : Stream, buf : byte[], offset : int, cnt : int, furtherCb) =
-        x.TryWrite(getIndex(input), strm, buf, offset, cnt, furtherCb)
+        x.TryWrite(input, getIndex(input), strm, buf, offset, cnt, furtherCb)
 
-    member private x.DoWrite(index : 'T, strm : Stream, buf : byte[], offset : int, cnt : int, furtherCb) =
+    member private x.DoWrite(input : 'TIn, index : 'T, strm : Stream, buf : byte[], offset : int, cnt : int, furtherCb) =
         let (q, s, outstanding, max) = q.[index]
-        x.WriteInternal(index, strm, buf, offset, cnt, outstanding, s, furtherCb)
+        x.WriteInternal(input, index, strm, buf, offset, cnt, outstanding, s, furtherCb)
 
     member x.AddWriteReq(input  : 'TIn, strm : Stream, buf : byte[], offset : int, cnt : int, furtherCb) =
         let index = getIndex(input)
         let (q, s, outstanding, max) = q.[index]
-        let bDone = x.TryWrite(index, strm, buf, offset, cnt, furtherCb)
+        let bDone = x.TryWrite(input, index, strm, buf, offset, cnt, furtherCb)
         if not bDone then
-            q.Enqueue(new StrmReq<'T>(index, strm, furtherCb, x.DoWrite, buf, offset, cnt))
+            q.Enqueue(new StrmReq<'TIn,'T>(input, index, strm, furtherCb, x.DoWrite, buf, offset, cnt))
 
-    member x.AddWriteReq(input  : 'TIn, strm : Stream, buf : byte[], offset : int, cnt : int, event : EventWaitHandle, amtWriteRef : int ref) =
+    member x.AddWriteReq(input  : 'TIn, strm : Stream, buf : byte[], offset : int, cnt : int, event : EventWaitHandle) =
         let index = getIndex(input)
         let (q, s, outstanding, max) = q.[index]
-        let furtherCb = Some(x.FireEventCb (event, amtWriteRef))
+        let furtherCb = Some(x.FireEventCb (event, ref 0))
         event.Reset() |> ignore
-        let bDone = x.TryWrite(index, strm, buf, offset, cnt, furtherCb)
+        let bDone = x.TryWrite(input, index, strm, buf, offset, cnt, furtherCb)
         if not bDone then
-            q.Enqueue(new StrmReq<'T>(index, strm, furtherCb, x.DoWrite, buf, offset, cnt))
+            q.Enqueue(new StrmReq<'TIn,'T>(input, index, strm, furtherCb, x.DoWrite, buf, offset, cnt))
 
     member x.SyncWrite(input : 'TIn, strm : Stream, buf : byte[], offset : int, cnt : int) =
         let index = getIndex(input)
         let (q, s, outstanding, max) = q.[index]
-        let mutable bDone = x.TryWrite(index, strm, buf, offset, cnt, None)
-        while not bDone do
-            s.WaitOne() |> ignore
-            if (Interlocked.Increment(outstanding) <= max) then
-                x.WriteInternal(index, strm, buf, offset, cnt, outstanding, s, None)
-                bDone <- true
-            else
-                Interlocked.Decrement(outstanding) |> ignore
-                s.Release() |> ignore    
+        s.WaitOne() |> ignore
+        Interlocked.Increment(outstanding) |> ignore
+        x.WriteInternal(input, index, strm, buf, offset, cnt, outstanding, s, None)
+
+[<Extension>]
+type IOReq() =
+    static member DiskMap(disk : string) =
+        disk.[0]
+
+    static member NewDiskIO(writeLoc : (string*int)[]) =
+        let x = new StrmIOReq<string, char>()
+        x.Init(writeLoc, IOReq.DiskMap)
+        x
+
+    [<Extension>]
+    static member AddReadReq(ioReq : StrmIOReq<'TIn,'T>, input : 'TIn, buf : byte[], offset : int, cnt : int, event : EventWaitHandle, amt : int ref) =
+        ioReq.AddReadReq(input, null, buf, offset, cnt, event, amt)
+
+    [<Extension>]
+    static member AddReadReq(ioReq : StrmIOReq<'TIn,'T>, input : 'TIn, buf : BufIOEvent) =
+        ioReq.AddReadReq(input, null, buf)
+
+    [<Extension>]
+    static member SyncWrite(ioReq : StrmIOReq<'TIn,'T>, input : 'TIn, buf : byte[], offset : int, cnt : int) =
+        ioReq.SyncWrite(input, null, buf, offset, cnt)
+
+//module A =
+//    let v() =
+//        let ioReq = IOReq.NewDiskIO([||])
+//        ioReq.AddReadReq("", Array.zeroCreate<byte>(5), 0, 5, null, ref 0)
