@@ -65,7 +65,7 @@ type BytesCompare =
                 hash
 
 // a byte array which maintains alignment in memory (for use by native code)
-type ByteArrAlign(size : int, align : int) =
+type [<AllowNullLiteral>] ByteArrAlign(size : int, align : int) =
     let alignSize = (size + align - 1)/align*align
     let mutable arr = Array.zeroCreate<byte>(alignSize + align - 1)
     let handle = GCHandle.Alloc(arr, GCHandleType.Pinned)

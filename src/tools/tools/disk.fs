@@ -73,7 +73,8 @@ type StrmIOReq<'TIn,'T> internal () =
     let q = ConcurrentDictionary<'T, ConcurrentQueue<StrmReq<'TIn,'T>>*Semaphore*int ref*int>()
     let strmsRead = ConcurrentDictionary<'TIn, Stream>()
     let strmsWrite = ConcurrentDictionary<'TIn, Stream>()
-    let mutable getIndex : 'TIn->'T = (fun _ -> Unchecked.defaultof<'T>)
+    let mutable getIndexWrite : 'TIn->'T = (fun _ -> Unchecked.defaultof<'T>)
+    let mutable getIndexRead : 'TIn->'T = (fun _ -> Unchecked.defaultof<'T>)
     let disposed = ref 0
 
     interface IDisposable with
@@ -87,15 +88,9 @@ type StrmIOReq<'TIn,'T> internal () =
                 for s in strmsWrite do
                     s.Value.Close()
 
-    member x.Init(input : ('TIn*int)[], mapper : 'TIn->'T) =
-        getIndex <- mapper
-        for i = 0 to input.Length-1 do
-            let (inStr, max) = input.[i]
-            let index = getIndex(inStr)
-            q.[index] <- (ConcurrentQueue<StrmReq<'TIn,'T>>(), new Semaphore(max, max), ref 0, max)
-
-    member x.Init(input : ('T*int)[], mapper : 'TIn->'T) =
-        getIndex <- mapper
+    member x.Init(input : ('T*int)[], mapperWrite : 'TIn->'T, mapperRead : 'TIn->'T) =
+        getIndexWrite <- mapperWrite
+        getIndexRead <- mapperRead
         for i = 0 to input.Length-1 do
             let (index, max) = input.[i]
             q.[index] <- (ConcurrentQueue<StrmReq<'TIn,'T>>(), new Semaphore(max, max), ref 0, max)            
@@ -178,21 +173,21 @@ type StrmIOReq<'TIn,'T> internal () =
             false
 
     member x.TryReadIn(input : 'TIn, strm : Stream, buf : byte[], offset : int, cnt : int, furtherCb) =
-        x.TryRead(input, getIndex(input), strm, buf, offset, cnt, furtherCb)
+        x.TryRead(input, getIndexRead(input), strm, buf, offset, cnt, furtherCb)
 
     member private x.DoRead(input : 'TIn, index : 'T, strm : Stream, buf : byte[], offset : int, cnt : int, furtherCb) =
         let (q, s, outstanding, max) = q.[index]
         x.ReadInternal(input, index, strm, buf, offset, cnt, outstanding, s, furtherCb)
 
     member x.AddReadReq(input  : 'TIn, strm : Stream, buf : byte[], offset : int, cnt : int, furtherCb) =
-        let index = getIndex(input)
+        let index = getIndexRead(input)
         let (q, s, outstanding, max) = q.[index]
         let bDone = x.TryRead(input, index, strm, buf, offset, cnt, furtherCb)
         if not bDone then
             q.Enqueue(new StrmReq<'TIn,'T>(input, index, strm, furtherCb, x.DoRead, buf, offset, cnt))
 
-    member x.AddReadReq(input  : 'TIn, strm : Stream, buf : byte[], offset : int, cnt : int, event : EventWaitHandle, amtReadRef : int ref) =
-        let index = getIndex(input)
+    member x.AddReadReq(input  : 'TIn, strm : Stream, buf : byte[], offset : int, cnt : int, event, amtReadRef : int ref) =
+        let index = getIndexRead(input)
         let (q, s, outstanding, max) = q.[index]
         let furtherCb = Some(x.FireEventCb (event, amtReadRef))
         event.Reset() |> ignore
@@ -204,7 +199,7 @@ type StrmIOReq<'TIn,'T> internal () =
         x.AddReadReq(input, strm, bufIO.buf, bufIO.offset, bufIO.cnt, bufIO.event, bufIO.amt)
 
     member x.SyncRead(input : 'TIn, strm : Stream, buf : byte[], offset : int, cnt : int) : int =
-        let index = getIndex(input)
+        let index = getIndexRead(input)
         let (q, s, outstanding, max) = q.[index]
         let amtReadRef = ref 0
         let furtherCb = Some(x.SetLen amtReadRef)
@@ -245,21 +240,21 @@ type StrmIOReq<'TIn,'T> internal () =
             false
 
     member x.TryWriteIn(input : 'TIn, strm : Stream, buf : byte[], offset : int, cnt : int, furtherCb) =
-        x.TryWrite(input, getIndex(input), strm, buf, offset, cnt, furtherCb)
+        x.TryWrite(input, getIndexWrite(input), strm, buf, offset, cnt, furtherCb)
 
     member private x.DoWrite(input : 'TIn, index : 'T, strm : Stream, buf : byte[], offset : int, cnt : int, furtherCb) =
         let (q, s, outstanding, max) = q.[index]
         x.WriteInternal(input, index, strm, buf, offset, cnt, outstanding, s, furtherCb)
 
     member x.AddWriteReq(input  : 'TIn, strm : Stream, buf : byte[], offset : int, cnt : int, furtherCb) =
-        let index = getIndex(input)
+        let index = getIndexWrite(input)
         let (q, s, outstanding, max) = q.[index]
         let bDone = x.TryWrite(input, index, strm, buf, offset, cnt, furtherCb)
         if not bDone then
             q.Enqueue(new StrmReq<'TIn,'T>(input, index, strm, furtherCb, x.DoWrite, buf, offset, cnt))
 
-    member x.AddWriteReq(input  : 'TIn, strm : Stream, buf : byte[], offset : int, cnt : int, event : EventWaitHandle) =
-        let index = getIndex(input)
+    member x.AddWriteReq(input  : 'TIn, strm : Stream, buf : byte[], offset : int, cnt : int, event) =
+        let index = getIndexWrite(input)
         let (q, s, outstanding, max) = q.[index]
         let furtherCb = Some(x.FireEventCb (event, ref 0))
         event.Reset() |> ignore
@@ -271,7 +266,7 @@ type StrmIOReq<'TIn,'T> internal () =
         x.AddWriteReq(input, strm, bufIO.buf, bufIO.offset, bufIO.cnt, bufIO.event)
 
     member x.SyncWrite(input : 'TIn, strm : Stream, buf : byte[], offset : int, cnt : int) =
-        let index = getIndex(input)
+        let index = getIndexWrite(input)
         let (q, s, outstanding, max) = q.[index]
         s.WaitOne() |> ignore
         Interlocked.Increment(outstanding) |> ignore
@@ -282,15 +277,15 @@ type IOReq() =
     static member DiskMap(disk : string) =
         disk.[0]
 
-    static member NewDiskIO(writeLoc : (string*int)[]) =
+    static member NewDiskIO(writeLoc : (char*int)[]) =
         let x = new StrmIOReq<string, char>()
-        x.Init(writeLoc, IOReq.DiskMap)
+        x.Init(writeLoc, IOReq.DiskMap, IOReq.DiskMap)
         x.OpenStreamForWrite <- (fun name -> File.Open(name, FileMode.Append, FileAccess.Write) :> Stream)
         x.OpenStreamForRead <- (fun name -> File.Open(name, FileMode.Open, FileAccess.Read) :> Stream)
         x
 
     [<Extension>]
-    static member AddReadReq(ioReq : StrmIOReq<'TIn,'T>, input : 'TIn, buf : byte[], offset : int, cnt : int, event : EventWaitHandle, amt : int ref) =
+    static member AddReadReq(ioReq : StrmIOReq<'TIn,'T>, input : 'TIn, buf : byte[], offset : int, cnt : int, event, amt : int ref) =
         ioReq.AddReadReq(input, null, buf, offset, cnt, event, amt)
 
     [<Extension>]
@@ -327,15 +322,25 @@ type internal FileCache private () =
         then
             x.Init(buf, initOffset, len)
 
+    static member CreateAlign(size : int, align : int) =
+        let x = new FileCache()
+        x.Align <- new ByteArrAlign(size, align)
+        x.Init(x.Align.Arr, x.Align.Offset, x.Align.Size)
+        x
+
+    member val Align : ByteArrAlign = null with get, set
     member val Buf : byte[] = null with get, set
     member val InitOffset : int = 0 with get, set
     member val Offset : int = 0 with get, set
+    member val Finished : int ref = ref 0 with get
     member val Len : int = 0 with get, set
-    member val CanWrite : ManualResetEvent = new ManualResetEvent(false) with get
+    member val CanWriteToMem : ManualResetEventSlim = new ManualResetEventSlim(true) with get
 
     interface IDisposable with
         override x.Dispose() =
-            x.CanWrite.Dispose()
+            if (Utils.IsNotNull x.Align) then
+                (x.Align :> IDisposable).Dispose()
+            x.CanWriteToMem.Dispose()
 
     member x.Init(buf, initOffset, len) =
         x.Buf <- buf
@@ -346,58 +351,100 @@ type internal FileCache private () =
 type DiskIO<'K when 'K:equality>(writeLoc : (char*int)[]) as x =
     inherit StrmIOReq<'K, char>()
 
-    let writeCache = Dictionary<'K,string*int*FileCache[]>()
-    let readCache = Dictionary<'K,string*int*FileCache[]>()
-    let map (key : 'K) : char =
-        let (name,_,_) = writeCache.[key]
+    let mutable writeBufferSize = 0
+    let mutable readBufferSize = 0
+    let writeCache = Dictionary<'K,string*int*Stream*FileCache[]>()
+    let readCache = Dictionary<'K,string*int*Stream*FileCache[]>()
+    let mapWrite (key : 'K) : char =
+        let (name,_,_,_) = writeCache.[key]
+        name.[0]
+    let mapRead (key : 'K) : char =
+        let (name,_,_,_) = readCache.[key]
         name.[0]
 
     do
-        x.Init(writeLoc, map)
+        x.Init(writeLoc, mapWrite, mapRead)
         x.OpenStreamForWrite <- (fun key -> 
-            let (name,_,_) = writeCache.[key]
+            let mutable (name,_,_,_) = writeCache.[key]
             File.Open(name, FileMode.Append, FileAccess.Write) :> Stream
         )
         x.OpenStreamForRead <- (fun key ->
-            let (name,_,_) = readCache.[key]
+            let (name,_,_,_) = readCache.[key]
             File.Open(name, FileMode.Open, FileAccess.Read) :> Stream
         )
 
-    let createCacheElem (segmentSize : int) (i : int) =
+    let createCacheElem (segmentSize : int) (index : int) =
         let arr = Array.zeroCreate<byte>(segmentSize)
         new FileCache(arr, 0, segmentSize)
 
-    let furtherWriteCb (cache : FileCache) (a) =
-        cache.Offset <- 0
-        cache.CanWrite.Set() |> ignore
+    let finishWrite (e : ManualResetEventSlim) (o) =
+        e.Set() |> ignore
+
+    interface IDisposable with
+        override x.Dispose() =
+            for w in writeCache do
+                let (_,_,s,arr) = w.Value
+                if (Utils.IsNotNull s) then
+                    s.Close()
+                for a in arr do
+                    (a :> IDisposable).Dispose()
+            for r in readCache do
+                let (_,_,s,arr) = r.Value
+                if (Utils.IsNotNull s) then
+                    s.Close()
+                for a in arr do
+                    (a :> IDisposable).Dispose()
+            GC.SuppressFinalize(x)
         
-    member x.InitWriteCache(key : 'K, name : string, segmentSize : int, numSegments : int) =
+    member x.InitWriteCache(key : 'K, name : string, segmentSize : int, numSegments : int, bOpenFile : bool) =
         lock (writeCache) (fun () ->
-            writeCache.[key] <- (name, 0, Array.init numSegments (createCacheElem segmentSize))
+            let strm = 
+                if (bOpenFile) then
+                    let mutable fOpt = FileOptions.Asynchronous ||| FileOptions.SequentialScan
+                    if writeBufferSize = 0 then
+                        fOpt <- fOpt ||| FileOptions.WriteThrough
+                    new FileStream(name, FileMode.Create, FileAccess.Write, FileShare.Read, writeBufferSize, fOpt)
+                else
+                    null
+            writeCache.[key] <- (name, 0, strm :> Stream, Array.init numSegments (createCacheElem segmentSize))
         )
 
-    member x.InitReadCache(key : 'K, name : string, segmentSize : int, numSegments : int) =
+    member x.InitReadCache(key : 'K, name : string, segmentSize : int, numSegments : int, bOpenFile : bool) =
         lock (readCache) (fun () ->
-            readCache.[key] <- (name, 0, Array.init numSegments (createCacheElem segmentSize))
+            let strm = 
+                if (bOpenFile) then
+                    let mutable fOpt = FileOptions.Asynchronous ||| FileOptions.SequentialScan
+                    let strm = new FileStream(name, FileMode.Create, FileAccess.Write, FileShare.Read, writeBufferSize, fOpt)
+                    // prefill cache
+
+                    strm
+                else
+                    null
+            readCache.[key] <- (name, 0, strm :> Stream, Array.init numSegments (createCacheElem segmentSize))
         )
 
     member x.Write(key : 'K, buf : byte[], offset : int, cnt : int) =
-        let mutable copyStart : int ref = Unchecked.defaultof<int ref>
+        let copyIndex : int ref = ref 0
+        let copyStart : int ref = ref 0
         lock (writeCache) (fun () ->
-            let mutable (name, index, cache) = writeCache.[key]
+            let mutable (name, index, strm, cache) = writeCache.[key]
             if (cache.[index].Offset + cnt > cache.[index].Len) then
-                cache.[index].CanWrite.Reset() |> ignore
-                x.AddWriteReq(key, null, buf, offset, cnt, Some(furtherWriteCb (cache.[index])))
+                // wait for finish
+                let sw = SpinWait()
+                while (!cache.[index].Finished < cache.[index].Offset) do
+                    sw.SpinOnce()
+                cache.[index].CanWriteToMem.Reset() |> ignore
+                x.AddWriteReq(key, strm, cache.[index].Buf, cache.[index].InitOffset, cache.[index].Offset, Some(finishWrite cache.[index].CanWriteToMem))
                 index <- index + 1
-            copyStart <- ref cache.[index].Offset
+                cache.[index].Offset <- 0
+                cache.[index].Finished := 0
+            cache.[index].CanWriteToMem.Wait() |> ignore
+            copyIndex := index
+            copyStart := cache.[index].Offset
+            cache.[index].Offset <- cache.[index].Offset + cnt
         )
+        let (_,_,_,cache) = writeCache.[key]
+        Buffer.BlockCopy(buf, offset, cache.[!copyIndex].Buf, cache.[!copyIndex].InitOffset + !copyStart, cnt)
+        Interlocked.Add(cache.[!copyIndex].Finished, cnt) |> ignore
 
-
-        
-
-        arr.[index] <- arr.[index] + amt
-        if (arr.[index] > max) then
-            arr.[index] <- 0
-            index <- index + 1
-            if (index >= num) then
-                index <- 0
+    member x.Read(key : 'K, buf : byte[])
