@@ -127,8 +127,6 @@ let main orgargs =
         else
             Cluster.StartCluster( PrajnaClusterFile )
         let cluster = Cluster.GetCurrent()
-        let remote = DSet<_>(Name = "remoteExec")
-        remote.Execute(fun () -> ())
         if true then
             if bExe then 
                 JobDependencies.DefaultTypeOfJobMask <- JobTaskKind.ApplicationMask
