@@ -44,6 +44,7 @@
  ---------------------------------------------------------------------------*)
 namespace Prajna.Service
 open System
+open System.Threading
 open System.IO
 open System.Net
 open System.Collections.Generic
@@ -972,6 +973,7 @@ type internal ContractServerType =
     | TrafficManager of string*int
     | SingleServer of string*int
     | ServerCluster of string*int64*byte[]
+    | Daemon
 
 /// Specify servers to be used to launch services, import and export contract
 [<AllowNullLiteral; Serializable>]
@@ -1009,6 +1011,10 @@ type ContractServersInfo() =
             let oneCluster = ContractServerType.ServerCluster( cl.Name, cl.Version.Ticks, ms.GetBuffer() )
             x.ServerCollection.Enqueue( oneCluster )
             x.NewID()
+    /// Add Daemon
+    member x.AddDaemon() = 
+        x.ServerCollection.Enqueue( ContractServerType.Daemon )
+        x.NewID()
 //    /// Get all clusters in the serversinfo
 //    member x.GetClusters() = 
 //        x.ServerCollection |> Seq.choose ( fun serverType -> match serverType with 
@@ -1034,6 +1040,8 @@ type ContractServersInfo() =
                                                 Some ( sprintf "Server %s:%d" serverName port )
                                             | ServerCluster( clusterName, clusterVersion, clusterInfo ) -> 
                                                 Some (sprintf "Cluster %s" clusterName )
+                                            | Daemon ->
+                                                Some "Daemon"
                                         )
                             |> String.concat ","
     interface IEquatable<ContractServersInfo> with
@@ -1075,13 +1083,54 @@ type ContractServersInfo() =
 type [<AllowNullLiteral>]
     ContractServerInfoLocal internal () = 
     inherit ContractServersInfo()
-    /// A list of to be resolved server
+    /// A list of to be resolved server ContractServerType is equal
+    static member internal IsEqualContractServerType( a: ContractServerType, b:ContractServerType ) = 
+        match a with 
+        | TrafficManager ( serverNameA, portA) ->
+            match b with 
+            | TrafficManager ( serverNameB, portB) -> 
+                String.Compare( serverNameA, serverNameB, StringComparison.OrdinalIgnoreCase )=0 && portA=portB
+            | _ -> 
+                false
+        | SingleServer ( serverNameA, portA ) ->
+            match b with 
+            | SingleServer ( serverNameB, portB) -> 
+                String.Compare( serverNameA, serverNameB, StringComparison.OrdinalIgnoreCase )=0 && portA=portB
+            | _ -> 
+                false
+        | ServerCluster ( clusterNameA, clusterVerA, clusterInfoA ) -> 
+            match b with 
+            | ServerCluster ( clusterNameB, clusterVerB, clusterInfoB) -> 
+                String.Compare( clusterNameA, clusterNameB, StringComparison.OrdinalIgnoreCase )=0 && clusterVerA=clusterVerB
+            | _ -> 
+                false
+            
+        | Daemon -> 
+            match b with 
+            | Daemon -> 
+                true
+            | _ -> 
+                false
+    /// Register Functions ( a set of functions to be called once per queue connected ) 
+    member val internal OnConnectOperation = ExecuteEveryTrigger<int64>(LogLevel.MildVerbose) with get
+    /// The action will be called once a queue has been connected
+    member x.OnConnectAction( act:Action<int64>, infoFunc:Func<string> ) = 
+        x.OnConnectOperation.Add( act, infoFunc.Invoke )
+    /// The action will be called once a queue has been connected
+    member x.OnConnect( act:int64 -> unit, infoFunc:unit -> string ) = 
+        x.OnConnectOperation.Add( Action<_>(act), infoFunc )
     member val internal ToBeResolvedServerCollection = ConcurrentQueue<_>() with get
+    /// Function that compare if two 
     /// Instantiate a new set of Contract server information from local server. 
     private new ( info: ContractServersInfo ) as x = 
         ContractServerInfoLocal() 
         then 
-            for oneServer in info.ServerCollection do 
+            x.Add( info )
+    /// Add an additional set of Contract server
+    member x.Add( info: ContractServersInfo) =
+        for oneServer in info.ServerCollection do 
+            let bExist = x.ServerCollection |> Seq.exists ( fun v -> ContractServerInfoLocal.IsEqualContractServerType( v, oneServer)) 
+            if not bExist then 
                 x.ServerCollection.Enqueue( oneServer )
                 x.ToBeResolvedServerCollection.Enqueue( oneServer )
     static member val private ContractServerInfoLocalCollection = ConcurrentDictionary<Guid, ContractServerInfoLocal>() with get
@@ -1093,9 +1142,14 @@ type [<AllowNullLiteral>]
         else 
             ContractServerInfoLocal.ContractServerInfoLocalCollection.GetOrAdd( serversInfo.ID, fun _ -> ContractServerInfoLocal(serversInfo) )
     member val internal ResolvedNameCollection = ConcurrentDictionary<_, IPHostEntry >( StringComparer.OrdinalIgnoreCase) with get
-    /// A list of resolved server
+    /// A list of resolved server, ip address to server name 
     member val internal ResolvedServerCollection = ConcurrentDictionary<int64, string >( ) with get
-    member val internal EVDNSResolveProcess = new ManualResetEvent(true) with get 
+    /// A list of resolved server, name to ip addresses
+    /// server name is case insensitive
+    member val internal ResolvedServerNameToIP = ConcurrentDictionary<string, int64 >( StringComparer.OrdinalIgnoreCase ) with get
+    /// A list of connected server 
+    member val internal ConnectedServerCollection = ConcurrentDictionary<int64, bool >( ) with get
+    member val internal CTS = SafeCTSWrapper() with get 
     /// Servers whose information is as part of the cluster
     member val internal ServerInCluster = ConcurrentDictionary<_, bool >( StringComparer.Ordinal) with get
     /// Return each server as a single entry in the cluster. 
@@ -1117,16 +1171,39 @@ type [<AllowNullLiteral>]
                     cl 
                 let cluster = ClusterFactory.GetOrAddCluster( clusterName, clusterVersion, addFunc )
                 lstCluster.Add( cluster )
+            | Daemon -> 
+                ()
         lstCluster.ToArray()
     /// Return all resolved servers as a ConcurrentDictionary<int64, string >, where 
     /// the key is int64 which can parse to the IP Address & port of the server, 
     /// and the value is the host name of the server. 
     member x.GetServerCollection() = 
         x.ResolvedServerCollection
+    /// Disconnect a certain channel 
+    member x.DisconnectChannel( sig64: int64 ) = 
+        let bExist, _ = x.ConnectedServerCollection.TryRemove( sig64 )
+        if bExist then 
+            Logger.LogF( LogLevel.MildVerbose, fun _ -> sprintf "ContractServerInfoLocal:Disconnect of channel %A" (LocalDNS.GetHostInfoInt64(sig64)) )
+    /// Add a connected channel. 
+    member x.AddConnectedChannel( ch: NetworkCommandQueue, funcInfo ) = 
+        let sig64 = ch.RemoteEndPointSignature
+        /// We always use signature, to avoid holding reference to NetworkCommandQueue object
+        x.ConnectedServerCollection.GetOrAdd( sig64, true ) |> ignore 
+        x.OnConnectOperation.Trigger( sig64, funcInfo )
+        ch.OnDisconnect.Add( fun _ -> x.DisconnectChannel( sig64 ) )
+    /// Cancel all pending DNS resolve operation
+    member x.Cancel() = 
+        x.CTS.Cancel()
+    /// <summary> 
     /// Resolve: all Single server, 
     /// Resolve: traffic manager once. 
     /// This process is a long running process and may contain blocking operation (DNS resolve), and is recommend to run on its separate thread. 
-    member x.DNSResolveOnce( ) = 
+    /// </summary> 
+    /// <param name="bAutoConnect"> true, automatically connect to the server that is resolved. 
+    ///                             false, no action is done. </param>
+    member x.DNSResolveOnce( bAutoConnect ) = 
+      use token = x.CTS.Token
+      if Utils.IsNotNull token then
         let mutable bResovleAgain = false
         let mutable nTrafficManager = 0 
         let lstServers = List<_>()
@@ -1134,7 +1211,7 @@ type [<AllowNullLiteral>]
         let mutable bEncounterOneTrafficManager = false
         let mutable bEncounterSingleServer = false
         let mutable cnt = x.ToBeResolvedServerCollection.Count
-        while cnt > 0 && x.ToBeResolvedServerCollection.TryDequeue( refValue ) do 
+        while cnt > 0 && x.ToBeResolvedServerCollection.TryDequeue( refValue ) && not token.IsCancellationRequested do 
             cnt <- cnt - 1
             match !refValue with 
             | TrafficManager ( serverName, port ) -> 
@@ -1158,7 +1235,14 @@ type [<AllowNullLiteral>]
                     lstServers.Add( node.MachineName, node.MachinePort)
                     x.ServerInCluster.GetOrAdd( node.MachineName, true ) |> ignore 
                 bEncounterSingleServer <- true
+            | Daemon -> 
+                if RemoteExecutionEnvironment.IsContainer() then 
+                    let channels = NetworkConnections.Current.GetLoopbackChannels()
+                    if bAutoConnect then 
+                        for ch in channels do 
+                            x.AddConnectedChannel( ch, fun _ -> sprintf "ContractServerInfoLocal:Loopback to %A" (LocalDNS.GetShowInfo(ch.RemoteEndPoint)) )
         for tuple in lstServers do 
+          if not token.IsCancellationRequested then 
             let servername, port = tuple
             try 
                 let entry = 
@@ -1180,10 +1264,11 @@ type [<AllowNullLiteral>]
                     x.ResolvedNameCollection.GetOrAdd( entry.HostName, entry ) |> ignore 
                 if nEntry > 0 then 
                     // The server has been resolved successfully.
-                    let ipv4Addr = entry.AddressList |> Array.choose ( fun ipAddress -> if ipAddress.AddressFamily = Sockets.AddressFamily.InterNetwork then 
-                                                                                            Some (ipAddress.GetAddressBytes())
+                    let addrList = entry.AddressList |> Array.choose ( fun ipAddress -> if ipAddress.AddressFamily = Sockets.AddressFamily.InterNetwork then 
+                                                                                            Some ipAddress
                                                                                         else 
                                                                                             None ) 
+                    let ipv4Addr = addrList |> Array.map ( fun ipAddress -> ipAddress.GetAddressBytes())
                     nEntry <- ipv4Addr.Length
                     if nEntry > 0 then 
                         LocalDNS.AddEntry( entry.HostName, ipv4Addr )
@@ -1195,32 +1280,60 @@ type [<AllowNullLiteral>]
                             else
                                 x.ResolvedServerCollection.GetOrAdd( sig64, entry.HostName) |> ignore 
                                 Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "Dns name %s(%s) resovled to ipv4 addresses %A ... " servername entry.HostName (IPAddress(addr)) ))
+                    if nEntry > 0 && bAutoConnect then 
+                        let serverEntry = entry.HostName + ":" + port.ToString()
+                        let bExist, oldEntry = x.ResolvedServerNameToIP.TryGetValue( serverEntry )
+                        let bReconnect = 
+                            if not bExist then 
+                                true
+                            else
+                                let sigArray = addrList |> Array.map ( fun ipAddress -> LocalDNS.IPv4AddrToInt64( ipAddress, port) )
+                                not ( sigArray |> Array.exists (fun u -> u=oldEntry ) )
+                        if bExist && bReconnect then 
+                            // Old server entry is mapped to a new address, which doesn't correspond to the old address, the connection should be disconnected 
+                            let ch = NetworkConnections.Current.LookforConnectBySignature( oldEntry )
+                            if Utils.IsNotNull ch then 
+                                // Close the outdated queue
+                                ch.Terminate() 
+                            x.ResolvedServerNameToIP.TryRemove( serverEntry ) |> ignore 
+                        if bReconnect then 
+                            let sig64 = LocalDNS.IPv4AddrToInt64( addrList.[0], port)
+                            x.ResolvedServerNameToIP.Item( serverEntry ) <- sig64
+                            let ch = NetworkConnections.Current.AddConnect( addrList.[0], port )
+                            x.AddConnectedChannel( ch, fun _ -> sprintf "ContractServerInfoLocal to %s" entry.HostName )
                 if nEntry = 0 && not bEncounterTrafficManager then 
                     Logger.LogF( LogLevel.Info, ( fun _ -> sprintf "Dns name %s (%s) resovled to zerosyn ipv4 addresses ... " servername entry.HostName ))
             with
             | e -> 
                 Logger.LogF( LogLevel.Info, ( fun _ -> sprintf "!!! Exception !!! when try to resolve dns name %s ... %A " servername e ))
         if bResovleAgain then 
-            x.DNSResolveOnce()
+            x.DNSResolveOnce(bAutoConnect)
         else
-            if nTrafficManager >= 0 && not (x.EVDNSResolveProcess.WaitOne(0)) then 
-                let bStatus = x.EVDNSResolveProcess.WaitOne( x.InternalToResolveAllInMillisecond / nTrafficManager ) 
+            if nTrafficManager >= 0 && not (token.IsCancellationRequested) then 
+                let bStatus = token.WaitHandle.WaitOne( x.InternalToResolveAllInMillisecond / nTrafficManager ) 
                 if not bStatus then 
-                    x.DNSResolveOnce()
+                    x.DNSResolveOnce(bAutoConnect)
+
+
+/// ContractServerInfoLocalRepeatable is used to host remote servers that requires repeatable DNS resolution. 
+/// Such servers may be behind a traffic manager, in which new servers can be added for a single address, e.g., *.trafficmanager.net.
+type [<AllowNullLiteral>]
+    ContractServerInfoLocalRepeatable internal () = 
+    inherit ContractServerInfoLocal() 
     member val private RepeatedDNSResolveInProccess = ref 0 with get
     /// Start a continuous DNS resolve process, because DNS resolve has blocking operation, the process is placed on its own thread, rather than schedule on a timer or task 
-//    member x.RepeatedDNSResolve() = 
-//        if Interlocked.CompareExchange( x.RepeatedDNSResolveInProccess, 1, 0) = 0 then 
-//            if not (x.EVDNSResolveProcess.WaitOne(0)) then 
-//                // Remove all objects in the Concurrent Queue
-//                let refObj = ref Unchecked.defaultof<_>
-//                while ( x.ToBeResolvedServerCollection.TryDequeue( refObj ) ) do
-//                    ()
-//                for entry in x.ServerCollection do 
-//                    x.ToBeResolvedServerCollection.Enqueue( entry )
-//                x.EVDNSResolveProcess.Reset() |> ignore 
-//                let thread = ThreadTracking.StartThreadForFunctionWithCancelation( fun _ -> x.EVDNSResolveProcess.Set() |> ignore ) ( x.ToString ) x.DNSResolveOnce 
-//                ()
+    member x.RepeatedDNSResolve(bAutoConnect) = 
+        if Interlocked.CompareExchange( x.RepeatedDNSResolveInProccess, 1, 0) = 0 then 
+            use token = x.CTS.Token
+            if Utils.IsNotNull token then 
+                // Remove all objects in the Concurrent Queue
+                let refObj = ref Unchecked.defaultof<_>
+                while ( x.ToBeResolvedServerCollection.TryDequeue( refObj ) ) do
+                    ()
+                for entry in x.ServerCollection do 
+                    x.ToBeResolvedServerCollection.Enqueue( entry )
+                let thread = ThreadTracking.StartThreadForFunctionWithCancelation( fun _ -> x.CTS.Cancel() ) ( x.ToString ) ( fun _ -> x.DNSResolveOnce(bAutoConnect) )
+                ()
 
 /// Specify additional contract servers to be used. 
 type [<AllowNullLiteral>]
@@ -1239,7 +1352,7 @@ type [<AllowNullLiteral>]
         for peeri = 0 to cluster.NumNodes - 1 do 
             let queue = cluster.QueueForWrite( peeri )
             x.AddQueue( queue ) 
-    static member ParseServers( serversInfo: ContractServersInfo ) = 
+    static member ParseServers( serversInfo:ContractServersInfo ) = 
         if Utils.IsNull serversInfo then 
             null 
         else 
@@ -1284,7 +1397,7 @@ type [<AllowNullLiteral>]
 
 /// <summary>
 /// ContractStoreAtProgram contains wrapped up contract and deserialization code for other program/service to access the contract. The class is to be used by Prajna 
-/// core programmers.  
+/// core programmers. 
 /// </summary>
 type internal ContractStoreAtProgram() = 
     /// <summary>
@@ -1559,7 +1672,7 @@ type internal ContractStoreAtProgram() =
     member x.FunctionReturn<'TResult> ( holder: ContractRequestManagerForFunc<'TResult> ) = 
         if Utils.IsNull holder then 
             Func< 'TResult > ( fun _ -> Unchecked.defaultof<_> )
-        else    
+        else
             Func<'TResult>( fun _ -> 
                                     holder.EvWait.WaitOne() |> ignore 
                                     holder.Result )
@@ -2244,7 +2357,7 @@ type internal ContractStore () =
                 x.ExportInternal( name, func, true )
                 Func<_>( fun _ -> func.Invoke( ContractRequestManager.DefaultRequestTimeoutInMs ) )    
             else
-                Func<_>( fun _ -> Seq.empty )    
+                Func<_>( fun _ -> Seq.empty )
         else
             func
 
