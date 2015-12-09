@@ -698,7 +698,7 @@ and [<AllowNullLiteral; Serializable>]
                     if Utils.IsNotNull parent.TargetDSet then 
                         dset.SetUpstreamCanCloseEvents( [| parent.TargetDSet.CanCloseDownstreamEvent; streamParent.TargetStream.CanCloseDownstreamEvent |] )
             | CorrelatedMixFrom parents 
-            | UnionFrom parents ->
+            | MergeFrom parents ->
                 let events = List<_>(parents.Count )
                 for parent in parents do 
                     x.ResolveDependentDSet( parent) |> ignore
@@ -730,7 +730,7 @@ and [<AllowNullLiteral; Serializable>]
                 // Nothing to further resolve
                 ()
             | CorrelatedMixTo child
-            | UnionTo child
+            | MergeTo child
             | MixTo child
             | Passforward child 
             | HashJoinTo child 
