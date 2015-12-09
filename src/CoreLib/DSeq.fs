@@ -975,6 +975,7 @@ and [<AllowNullLiteral>]
         /// SourceStream: the current DStream doesn't depend on other DSet, it is a source 
         | SinkStream ->
             x.SyncPreWrite jbInfo parti meta streamObject
+            (streamObject :> IDisposable).Dispose()
     /// Push down operation
     member private x.SyncExecuteDownstreamImpl jbInfo parti meta o = 
         match x.DependencyDownstream with 
@@ -995,11 +996,12 @@ and [<AllowNullLiteral>]
                     // Async network queue is used 
                     if not bClusterReplicate then
                             x.SyncSendPeer jbInfo parti meta o peeri 
-                            match o with
-                            | :? StreamBase<byte> as ms -> (ms :> IDisposable).Dispose()
-                            | _ -> ()
-                        // We don't flush network queue (as the network queue are multiplexed), the execution queue will be flushed at close stream. 
-                        // x.SendPeer jbInfo parti meta o peeri 
+//                            match o with
+//                            | :? StreamBase<byte> as ms -> (ms :> IDisposable).Dispose()
+//                            | _ -> ()
+            match o with
+            | :? StreamBase<byte> as ms -> (ms :> IDisposable).Dispose()
+            | _ -> ()
         | PassTo childS
         | SendToNetwork childS -> 
             let childStream = childS.TargetStream
@@ -1057,7 +1059,7 @@ and [<AllowNullLiteral>]
             msPrefix.WriteInt64( meta.Serial )
             msPrefix.WriteVInt32( meta.NumElems ) 
             ms.InsertBefore(msPrefix) |> ignore
-            (ms :> IDisposable).Dispose()
+            //(ms :> IDisposable).Dispose() // still needed
             let msCombine = msPrefix
             let writeMeta = x.CountFunc.GetMetadataForPartition( meta, parti, meta.NumElems )
             x.SyncWriteChunk jbInfo parti writeMeta msCombine
