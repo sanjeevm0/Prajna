@@ -334,7 +334,9 @@ type internal FileCache private () =
     member val Offset : int = 0 with get, set
     member val Finished : int ref = ref 0 with get
     member val Len : int = 0 with get, set
+    member val LenRead : int = 0 with get, set
     member val CanWriteToMem : ManualResetEventSlim = new ManualResetEventSlim(true) with get
+    member val CanRead : ManualResetEventSlim = new ManualResetEventSlim(false) with get
 
     interface IDisposable with
         override x.Dispose() =
@@ -346,6 +348,7 @@ type internal FileCache private () =
         x.Buf <- buf
         x.InitOffset <- initOffset
         x.Len <- len
+        x.LenRead <- 0
         x.Offset <- 0
         
 type DiskIO<'K when 'K:equality>(writeLoc : (char*int)[]) as x =
@@ -353,11 +356,16 @@ type DiskIO<'K when 'K:equality>(writeLoc : (char*int)[]) as x =
 
     let mutable writeBufferSize = 0
     let mutable readBufferSize = 0
+
     let writeCache = Dictionary<'K,string*int*Stream*FileCache[]>()
     let readCache = Dictionary<'K,string*int*Stream*FileCache[]>()
+    let mutable sharedCacheIndex = 0
+    let mutable sharedCache : FileCache[] = null
+
     let mapWrite (key : 'K) : char =
         let (name,_,_,_) = writeCache.[key]
         name.[0]
+
     let mapRead (key : 'K) : char =
         let (name,_,_,_) = readCache.[key]
         name.[0]
@@ -373,12 +381,21 @@ type DiskIO<'K when 'K:equality>(writeLoc : (char*int)[]) as x =
             File.Open(name, FileMode.Open, FileAccess.Read) :> Stream
         )
 
-    let createCacheElem (segmentSize : int) (index : int) =
-        let arr = Array.zeroCreate<byte>(segmentSize)
-        new FileCache(arr, 0, segmentSize)
+    let createCacheElem (segmentSize : int, align : int) (index : int) =
+        //let arr = Array.zeroCreate<byte>(segmentSize)
+        //new FileCache(arr, 0, segmentSize)
+        FileCache.CreateAlign(segmentSize, align)
 
     let finishWrite (e : ManualResetEventSlim) (o) =
         e.Set() |> ignore
+
+    let finishRead (cache : FileCache) (o) =
+        let (strm, buf, offset, cnt, amt) = o
+        cache.Offset <- 0
+        cache.LenRead <- amt
+        cache.CanRead.Set() |> ignore
+
+    let mutable bFirstCacheRead = true
 
     interface IDisposable with
         override x.Dispose() =
@@ -396,7 +413,8 @@ type DiskIO<'K when 'K:equality>(writeLoc : (char*int)[]) as x =
                     (a :> IDisposable).Dispose()
             GC.SuppressFinalize(x)
         
-    member x.InitWriteCache(key : 'K, name : string, segmentSize : int, numSegments : int, bOpenFile : bool) =
+    member x.InitWriteCache(key : 'K, name : string, segmentSize : int, numSegments : int, bOpenFile : bool, ?align : int) =
+        let align = defaultArg align 1
         lock (writeCache) (fun () ->
             let strm = 
                 if (bOpenFile) then
@@ -406,28 +424,37 @@ type DiskIO<'K when 'K:equality>(writeLoc : (char*int)[]) as x =
                     new FileStream(name, FileMode.Create, FileAccess.Write, FileShare.Read, writeBufferSize, fOpt)
                 else
                     null
-            writeCache.[key] <- (name, 0, strm :> Stream, Array.init numSegments (createCacheElem segmentSize))
+            writeCache.[key] <- (name, 0, strm :> Stream, Array.init numSegments (createCacheElem (segmentSize, align)))
         )
 
-    member x.InitReadCache(key : 'K, name : string, segmentSize : int, numSegments : int, bOpenFile : bool) =
-        lock (readCache) (fun () ->
-            let strm = 
-                if (bOpenFile) then
-                    let mutable fOpt = FileOptions.Asynchronous ||| FileOptions.SequentialScan
-                    let strm = new FileStream(name, FileMode.Create, FileAccess.Write, FileShare.Read, writeBufferSize, fOpt)
-                    // prefill cache
+    member x.InitSharedCache(segmentSize : int, numSegments : int, ?align : int) =
+        let align = defaultArg align 1
+        sharedCacheIndex <- 0
+        sharedCache <- Array.init numSegments (createCacheElem (segmentSize, align))
 
-                    strm
-                else
-                    null
-            readCache.[key] <- (name, 0, strm :> Stream, Array.init numSegments (createCacheElem segmentSize))
-        )
+    member x.InitReadCache(key : 'K, name : string, segmentSize : int, numSegments : int, ?align : int) =
+        let align = defaultArg align 1
+        let mutable fOpt = FileOptions.Asynchronous ||| FileOptions.SequentialScan
+        let strm = new FileStream(name, FileMode.Open, FileAccess.Read, FileShare.Read, readBufferSize, fOpt)
+        // prefill cache
+        let arr = Array.zeroCreate<FileCache>(numSegments)
+        let mutable bDone = false
+        let mutable i = 0
+        while (not bDone) do
+            arr.[i] <- createCacheElem(segmentSize, align)(i)
+            arr.[i].LenRead <- strm.Read(arr.[i].Buf, arr.[i].InitOffset, arr.[i].Len)
+            arr.[i].CanRead.Set() |> ignore
+            i <- i + 1
+            if (arr.[i].LenRead < arr.[i].Len || i = numSegments) then
+                bDone <- true
+        readCache.[key] <- (name, 0, strm :> Stream, arr)
 
     member x.Write(key : 'K, buf : byte[], offset : int, cnt : int) =
         let copyIndex : int ref = ref 0
         let copyStart : int ref = ref 0
-        lock (writeCache) (fun () ->
-            let mutable (name, index, strm, cache) = writeCache.[key]
+        let (name, index, strm, cache) = writeCache.[key]
+        lock (cache) (fun () ->
+            let mutable index = index
             if (cache.[index].Offset + cnt > cache.[index].Len) then
                 // wait for finish
                 let sw = SpinWait()
@@ -436,15 +463,65 @@ type DiskIO<'K when 'K:equality>(writeLoc : (char*int)[]) as x =
                 cache.[index].CanWriteToMem.Reset() |> ignore
                 x.AddWriteReq(key, strm, cache.[index].Buf, cache.[index].InitOffset, cache.[index].Offset, Some(finishWrite cache.[index].CanWriteToMem))
                 index <- index + 1
+                if (index = cache.Length) then
+                    index <- 0
                 cache.[index].Offset <- 0
                 cache.[index].Finished := 0
+                writeCache.[key] <- (name, index, strm, cache)
             cache.[index].CanWriteToMem.Wait() |> ignore
             copyIndex := index
             copyStart := cache.[index].Offset
             cache.[index].Offset <- cache.[index].Offset + cnt
         )
-        let (_,_,_,cache) = writeCache.[key]
         Buffer.BlockCopy(buf, offset, cache.[!copyIndex].Buf, cache.[!copyIndex].InitOffset + !copyStart, cnt)
         Interlocked.Add(cache.[!copyIndex].Finished, cnt) |> ignore
 
-    member x.Read(key : 'K, buf : byte[])
+    member x.Read(key : 'K, buf : byte[], offset : int, cnt : int) =
+        let copyIndex : int ref = ref 0
+        let copyStart : int ref = ref 0
+        let mutable (name, index, strm, cache) = readCache.[key]
+        let mutable rem = cnt
+        let mutable curOffset = offset
+        while (rem > 0) do
+            cache.[index].CanRead.Wait() |> ignore
+            let toCopy = Math.Min(rem, cache.[index].LenRead - cache.[index].Offset)
+            if (toCopy > 0) then
+                Buffer.BlockCopy(cache.[index].Buf, cache.[index].InitOffset + cache.[index].Offset, buf, curOffset, toCopy)
+                cache.[index].Offset <- cache.[index].Offset + toCopy
+                curOffset <- curOffset + toCopy
+                rem <- rem - toCopy
+            if (cache.[index].Offset = cache.[index].LenRead) then
+                // read new for curIndex
+                cache.[index].CanRead.Reset() |> ignore
+                // make sure previous request is finished
+                if (cache.Length > 1) then
+                    cache.[(index-1)%cache.Length].CanRead.Wait() |> ignore
+                x.AddReadReq(key, strm, cache.[index].Buf, cache.[index].InitOffset, cache.[index].Len, Some(finishRead cache.[index]))
+                index <- index + 1
+                if (index = cache.Length) then
+                    index <- 0
+                readCache.[key] <- (name, index, strm, cache)
+
+    // a request to read next block into cache means previous block finished, issue a new read request for previous block
+    member x.ReadCache(key : 'K) : byte[]*int*int =
+        let mutable (name, index, strm, cache) = readCache.[key]
+        // start a request to reread index-1 provided         
+        if (not bFirstCacheRead) then
+            let prevIndex = (index-1) % cache.Length
+            cache.[prevIndex].CanRead.Reset() |> ignore
+            if (cache.Length > 1) then
+                cache.[(prevIndex-1) % cache.Length].CanRead.Wait() |> ignore
+            x.AddReadReq(key, strm, cache.[prevIndex].Buf, cache.[prevIndex].InitOffset, cache.[prevIndex].Len, Some(finishRead cache.[prevIndex]))
+        else
+            bFirstCacheRead <- false
+        cache.[index].CanRead.Wait() |> ignore
+        let indexRead = index
+        index <- index + 1
+        if (index = cache.Length) then
+            index <- 0
+        (cache.[indexRead].Buf, cache.[indexRead].InitOffset, cache.[indexRead].LenRead)
+
+    member val private ReadQ = ConcurrentQueue<string*EventWaitHandle>() with get
+
+    member x.BeginFileReadUsingSharedMemory(name : string, event : EventWaitHandle) =
+        x.ReadQ.A
