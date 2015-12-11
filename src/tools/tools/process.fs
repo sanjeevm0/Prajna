@@ -476,6 +476,24 @@ type internal ConcurrentArray<'T>() =
 type internal SingleThreadExec() =
     let counter = ref 0
     let q = ConcurrentQueue<unit->unit>()
+    let mutable wc : WaitCallback = null
+
+    member private x.WC with get() = wc and set(v) = wc <- v
+
+    static member ThreadPoolExec() =
+        let x = new SingleThreadExec()
+        x.WC <- new WaitCallback(x.ExecDo)
+        x
+
+    static member ThreadPoolExecOnce() =
+        let x = new SingleThreadExec()
+        x.WC <- new WaitCallback(x.ExecOnceDo)
+        x
+
+    static member ThreadPoolExecQ() =
+        let x = new SingleThreadExec()
+        x.WC <- new WaitCallback(x.ExecQDo)
+        x
 
     // execute function only on one thread - "counter" number of times
     member x.Exec(f : unit->unit) =
@@ -484,6 +502,15 @@ type internal SingleThreadExec() =
             while (not bDone) do
                 f()
                 bDone <- (Interlocked.Decrement(counter) = 0)
+    member private x.ExecDo(o : obj) =
+        let f = o :?> unit->unit
+        let mutable bDone = false
+        while (not bDone) do
+            f()
+            bDone <- (Interlocked.Decrement(counter) = 0)
+    member x.ExecTP(f : unit->unit) =
+        if (Interlocked.Increment(counter) = 1) then
+            ThreadPool.QueueUserWorkItem(wc, f) |> ignore
 
     // execute function only on one thread - but at least one time after call
     member x.ExecOnce(f : unit->unit) =
@@ -494,6 +521,17 @@ type internal SingleThreadExec() =
                 let curCount = !counter
                 f()
                 bDone <- (Interlocked.Add(counter, -curCount) = 0)
+    member private x.ExecOnceDo(o : obj) =
+        let f = o :?> unit->unit
+        let mutable bDone = false
+        while (not bDone) do
+            // get count prior to executing
+            let curCount = !counter
+            f()
+            bDone <- (Interlocked.Add(counter, -curCount) = 0)
+    member x.ExecOnceTP(f : unit->unit) =
+        if (Interlocked.Increment(counter) = 1) then
+            ThreadPool.QueueUserWorkItem(wc, f) |> ignore
 
     member x.ExecQ(f : unit->unit) =
         q.Enqueue(f)
@@ -505,6 +543,19 @@ type internal SingleThreadExec() =
                 if (ret) then
                     (!fn)()
                     bDone <- (Interlocked.Decrement(counter) = 0)
+    member x.ExecQDo(o : obj) =
+        if (Interlocked.Increment(counter) = 1) then
+            let mutable bDone = false
+            let fn = ref (fun () -> ())
+            while (not bDone) do
+                let ret = q.TryDequeue(fn)
+                if (ret) then
+                    (!fn)()
+                    bDone <- (Interlocked.Decrement(counter) = 0)
+    member x.ExecQTP(f : unit->unit) =
+        q.Enqueue(f)
+        if (Interlocked.Increment(counter) = 1) then
+            ThreadPool.QueueUserWorkItem(wc) |> ignore       
 
 // ===========================================================
 

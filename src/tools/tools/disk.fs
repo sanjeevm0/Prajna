@@ -76,6 +76,7 @@ type StrmIOReq<'TIn,'T> internal () =
     let mutable getIndexWrite : 'TIn->'T = (fun _ -> Unchecked.defaultof<'T>)
     let mutable getIndexRead : 'TIn->'T = (fun _ -> Unchecked.defaultof<'T>)
     let disposed = ref 0
+    let nullInput = Unchecked.defaultof<'TIn>
 
     interface IDisposable with
         override x.Dispose() =
@@ -186,6 +187,13 @@ type StrmIOReq<'TIn,'T> internal () =
         if not bDone then
             q.Enqueue(new StrmReq<'TIn,'T>(input, index, strm, furtherCb, x.DoRead, buf, offset, cnt))
 
+    // !!only can use if strm is not null
+    member x.AddDirectReadReq(index : 'T, strm : Stream, buf : byte[], offset : int, cnt : int, furtherCb) =
+        let (q, s, outstanding, max) = q.[index]
+        let bDone = x.TryRead(nullInput, index, strm, buf, offset, cnt, furtherCb)
+        if not bDone then
+            q.Enqueue(new StrmReq<'TIn,'T>(nullInput, index, strm, furtherCb, x.DoRead, buf, offset, cnt))
+
     member x.AddReadReq(input  : 'TIn, strm : Stream, buf : byte[], offset : int, cnt : int, event, amtReadRef : int ref) =
         let index = getIndexRead(input)
         let (q, s, outstanding, max) = q.[index]
@@ -252,6 +260,12 @@ type StrmIOReq<'TIn,'T> internal () =
         let bDone = x.TryWrite(input, index, strm, buf, offset, cnt, furtherCb)
         if not bDone then
             q.Enqueue(new StrmReq<'TIn,'T>(input, index, strm, furtherCb, x.DoWrite, buf, offset, cnt))
+
+    member x.AddDirectWriteReq(index : 'T, strm : Stream, buf : byte[], offset : int, cnt : int, furtherCb) =
+        let (q, s, outstanding, max) = q.[index]
+        let bDone = x.TryWrite(nullInput, index, strm, buf, offset, cnt, furtherCb)
+        if not bDone then
+            q.Enqueue(new StrmReq<'TIn,'T>(nullInput, index, strm, furtherCb, x.DoWrite, buf, offset, cnt))
 
     member x.AddWriteReq(input  : 'TIn, strm : Stream, buf : byte[], offset : int, cnt : int, event) =
         let index = getIndexWrite(input)
@@ -350,8 +364,54 @@ type internal FileCache private () =
         x.Len <- len
         x.LenRead <- 0
         x.Offset <- 0
+
+type SharedCache<'K when 'K:equality>(cacheArr : (int ref*FileCache)[], readBufferSize : int, writeBufferSize : int, diskIO : DiskIO<'K>) =
+    let st = SingleThreadExec.ThreadPoolExecOnce()
+    let eAvail = new ManualResetEvent(true)
+    let numAvail = ref 0
+    let segments : (int ref*FileCache)[] = cacheArr
+    let readQ = ConcurrentQueue<string*EventWaitHandle*Option<unit->unit>>()
+    let mutable curWorkElem : Option<string*Stream*int64*List<int>*EventWaitHandle*Option<unit->unit>> = None
+    let readQCnt = ref 0
+
+    member x.TryRead() =
+        let mutable bDone = false
+        while (!readQCnt > 0 && not bDone) do
+            if (Interlocked.Decrement(numAvail) >= 0) then
+                let mutable bFound = false
+                let mutable i = 0
+                let mutable index = 0
+                while (not bFound && i < cacheArr.Length) do
+                    let (used, cache) = cacheArr.[i]
+                    if (Interlocked.CompareExchange(used, 1, 0) = 0) then
+                        bFound <- true
+                        index <- i
+                    i <- i + 1               
+                if (bFound) then
+                    match curWorkElem with
+                        | None ->
+                            let (ret, res) = readQ.TryDequeue()
+                            let (name, event, cb) = res
+                            if (ret) then
+                                let fOpt = FileOptions.Asynchronous ||| FileOptions.SequentialScan
+                                let strm = new FileStream(name, FileMode.Open, FileAccess.Read, FileShare.Read, readBufferSize, fOpt)
+                                curWorkElem <- Some(name, strm :> Stream, strm.Length, List(), event, cb)
+                            else
+                                bDone <- true
+                        | Some(x) -> ()
+                    if (not bDone) then
+                        let (name, strm, rem, retList, event, cb) = curWorkElem.Value
+                        let (used, cache) = cacheArr.[index]
+                        let toRead = Math.Min(rem, int64 cache.Len)
+
+                        diskIO.AddDirectReadReq(name.[0], strm, cache.Buf, cache.InitOffset, cache.Len, None)
+                else
+                    bDone <- true
+            else
+                Interlocked.Increment(numAvail) |> ignore
+                bDone <- true
         
-type DiskIO<'K when 'K:equality>(writeLoc : (char*int)[]) as x =
+and DiskIO<'K when 'K:equality>(writeLoc : (char*int)[]) as x =
     inherit StrmIOReq<'K, char>()
 
     let mutable writeBufferSize = 0
@@ -359,8 +419,10 @@ type DiskIO<'K when 'K:equality>(writeLoc : (char*int)[]) as x =
 
     let writeCache = Dictionary<'K,string*int*Stream*FileCache[]>()
     let readCache = Dictionary<'K,string*int*Stream*FileCache[]>()
-    let mutable sharedCacheIndex = 0
-    let mutable sharedCache : FileCache[] = null
+    let sharedCache : Dictionary<_,_> = Dictionary<char, SharedCache<'K>>()
+
+    let mutable sharedReadWC : WaitCallback = null
+    let st = SingleThreadExec.ThreadPoolExecOnce()
 
     let mapWrite (key : 'K) : char =
         let (name,_,_,_) = writeCache.[key]
@@ -413,6 +475,13 @@ type DiskIO<'K when 'K:equality>(writeLoc : (char*int)[]) as x =
                     (a :> IDisposable).Dispose()
             GC.SuppressFinalize(x)
         
+    member x.InitSharedCache(segmentSize : int, numSegments : int, ?align : int) =
+        let align = defaultArg align 1
+        for w in writeLoc do
+            let (key, max) = w
+            let cacheArr = Array.init numSegments (fun _ -> ref 0, createCacheElem (segmentSize, align) (0))
+            sharedCache.[key] <- new SharedCache<'K>(cacheArr, readBufferSize, writeBufferSize, x)
+
     member x.InitWriteCache(key : 'K, name : string, segmentSize : int, numSegments : int, bOpenFile : bool, ?align : int) =
         let align = defaultArg align 1
         lock (writeCache) (fun () ->
@@ -426,11 +495,6 @@ type DiskIO<'K when 'K:equality>(writeLoc : (char*int)[]) as x =
                     null
             writeCache.[key] <- (name, 0, strm :> Stream, Array.init numSegments (createCacheElem (segmentSize, align)))
         )
-
-    member x.InitSharedCache(segmentSize : int, numSegments : int, ?align : int) =
-        let align = defaultArg align 1
-        sharedCacheIndex <- 0
-        sharedCache <- Array.init numSegments (createCacheElem (segmentSize, align))
 
     member x.InitReadCache(key : 'K, name : string, segmentSize : int, numSegments : int, ?align : int) =
         let align = defaultArg align 1
@@ -496,6 +560,7 @@ type DiskIO<'K when 'K:equality>(writeLoc : (char*int)[]) as x =
                 // make sure previous request is finished
                 if (cache.Length > 1) then
                     cache.[(index-1)%cache.Length].CanRead.Wait() |> ignore
+                cache.[index].CanRead.Reset() |> ignore
                 x.AddReadReq(key, strm, cache.[index].Buf, cache.[index].InitOffset, cache.[index].Len, Some(finishRead cache.[index]))
                 index <- index + 1
                 if (index = cache.Length) then
@@ -511,6 +576,7 @@ type DiskIO<'K when 'K:equality>(writeLoc : (char*int)[]) as x =
             cache.[prevIndex].CanRead.Reset() |> ignore
             if (cache.Length > 1) then
                 cache.[(prevIndex-1) % cache.Length].CanRead.Wait() |> ignore
+            cache.[index].CanRead.Reset() |> ignore
             x.AddReadReq(key, strm, cache.[prevIndex].Buf, cache.[prevIndex].InitOffset, cache.[prevIndex].Len, Some(finishRead cache.[prevIndex]))
         else
             bFirstCacheRead <- false
@@ -521,7 +587,13 @@ type DiskIO<'K when 'K:equality>(writeLoc : (char*int)[]) as x =
             index <- 0
         (cache.[indexRead].Buf, cache.[indexRead].InitOffset, cache.[indexRead].LenRead)
 
-    member val private ReadQ = ConcurrentQueue<string*EventWaitHandle>() with get
 
-    member x.BeginFileReadUsingSharedMemory(name : string, event : EventWaitHandle) =
-        x.ReadQ.A
+
+    member x.TryRead() =
+
+
+    member x.BeginFileReadUsingSharedMemory(name : string, event : EventWaitHandle, ?callback : unit->unit) =
+        x.ReadQ.Enqueue((name, event, callback))
+        Interlocked.Increment(ReadQCnt) |> ignore
+        st.ExecOnceTP(x.TryRead)
+

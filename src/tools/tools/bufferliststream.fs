@@ -997,6 +997,21 @@ type BufferListStream<'T>(bufSize : int, doNotUseDefault : bool) =
             dstLen <- dstLen - numDst
         (numSrc, numDst)
 
+    static member internal SrcDstBlkNoCopy<'T1,'T2,'T1Elem,'T2Elem when 'T1 :> Array and 'T2 :>Array>
+        (src : 'T1, srcOffset : int byref, srcLen : int byref,
+         dst : 'T2, dstOffset : int byref, dstLen : int byref) =
+        let toCopy = Math.Min(srcLen*sizeof<'T1Elem>, dstLen*sizeof<'T2Elem>) // in units of bytes
+        let numSrc = toCopy / sizeof<'T1Elem>
+        let numDst = toCopy / sizeof<'T2Elem>
+        if (toCopy > 0) then
+            srcOffset <- srcOffset + numSrc
+            srcLen <- srcLen - numSrc
+            dstOffset <- dstOffset + numDst
+            dstLen <- dstLen - numDst
+            (src, srcOffset-numSrc, dst, dstOffset-numDst, toCopy, numSrc, numDst)
+        else
+            (src, srcOffset, dst, dstOffset, 0, numSrc, numDst)
+
     // return is in units of bytes - only copy sufficient so that dst alignment is "align"
     // that is after copy (total length of dst - alignOffset) should be divisible by align (in units of bytes)
     static member internal SrcDstBlkCopyAlign<'T1,'T2,'T1Elem,'T2Elem when 'T1 :> Array and 'T2 :>Array>
@@ -1306,6 +1321,17 @@ type BufferListStream<'T>(bufSize : int, doNotUseDefault : bool) =
     member x.SealAndGetNextWriteBuffer() =
         x.SealWriteBuffer()
         x.GetWriteBuffer()
+
+    member x.WriteArrConcurrent<'TS>(buf : 'TS[], offset : int, count : int) =
+        let mutable bOffset = offset
+        let mutable bCount = count
+        while (bCount > 0) do
+            x.MoveToNextBuffer(true, bufRemWrite) |> ignore
+            let (srcCopy, dstCopy) = BufferListStream<'T>.SrcDstBlkCopy<'TS[],'T[],'TS,'T>(buf, &bOffset, &bCount, rbuf.Buffer, &bufPos, &bufRemWrite)
+            bufRem <- Math.Max(0, bufRem - dstCopy)
+            rbufPart.Count <- Math.Max(rbufPart.Count, bufPos - bufBeginPos)
+            position <- position + int64 dstCopy
+            length <- Math.Max(length, position)
 
     member x.WriteArr<'TS>(buf : 'TS[], offset : int, count : int) =
         let mutable bOffset = offset
