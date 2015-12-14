@@ -365,14 +365,159 @@ type internal FileCache private () =
         x.LenRead <- 0
         x.Offset <- 0
 
+    member x.Reset() =
+        x.Len <- 0
+        x.LenRead <- 0
+        x.Offset <- 0
+
+type internal CacheReq private () =
+    static member ReadReq(partial, name, event, cb) =
+        let x = new CacheReq()
+        x.bAllowPartial <- partial
+        x.reqSize <- 0L
+        x.name <- name
+        x.strm <- null
+        x.amtRem <- 0L
+        x.eventKey <- event
+        x.cb <- cb
+        x
+
+    static member GetReq(size, event, cb) =
+        let x = new CacheReq()
+        x.bAllowPartial <- false
+        x.reqSize <- size
+        x.name <- ""
+        x.strm <- null
+        x.amtRem <- 0L
+        x.eventKey <- event
+        x.cb <-  cb
+        x
+
+    member x.TransferName(name : string) =
+        x.ReleaseStream()
+        x.name <- name
+        x.ReleasedStream := 0
+
+    member val private ReleasedStream = ref 0 with get
+    member x.ReleaseStream() =
+        if (Interlocked.CompareExchange(x.ReleasedStream, 1, 0) = 0) then
+            if (Utils.IsNotNull x.strm) then
+                x.strm.Close()
+                x.strm <- null
+
+    interface IDisposable with
+        override x.Dispose() =
+            x.ReleaseStream()
+            GC.SuppressFinalize(x)
+
+    [<DefaultValue>] val mutable bAllowPartial : bool
+    [<DefaultValue>] val mutable reqSize : int64
+    [<DefaultValue>] val mutable name : string
+    [<DefaultValue>] val mutable strm : Stream
+    [<DefaultValue>] val mutable amtRem : int64
+    [<DefaultValue>] val mutable eventKey : EventWaitHandle
+    [<DefaultValue>] val mutable cb : Option<unit->unit>
+
+    member val CacheIndex : List<int> = List<int>()
+    member val Wait : List<WaitHandle> = List<WaitHandle>()
+
 type SharedCache<'K when 'K:equality>(cacheArr : (int ref*FileCache)[], readBufferSize : int, writeBufferSize : int, diskIO : DiskIO<'K>) =
     let st = SingleThreadExec.ThreadPoolExecOnce()
     let eAvail = new ManualResetEvent(true)
     let numAvail = ref 0
     let segments : (int ref*FileCache)[] = cacheArr
-    let readQ = ConcurrentQueue<string*EventWaitHandle*Option<unit->unit>>()
-    let mutable curWorkElem : Option<string*Stream*int64*List<int>*EventWaitHandle*Option<unit->unit>> = None
+    let readQ = ConcurrentQueue<CacheReq>()
+    let outstandingList = ConcurrentDictionary<EventWaitHandle, CacheReq>()
+    let mutable curRem = 0L
+    let mutable reqId = -1L
+    let mutable reqEvent : EventWaitHandle = null
     let readQCnt = ref 0
+
+    let finishRead (cacheIndex : int, id : EventWaitHandle, bDone : bool) (strm : Stream, buf : byte[], offset : int, cnt : int, amtRead : int) =
+        let req = outstandingList.[id]
+        let (used, cache) = segments.[cacheIndex]
+        cache.CanRead.Set() |> ignore
+        cache.LenRead <- amtRead
+        req.CacheIndex.Add(cacheIndex)
+        if (bDone) then
+            WaitHandle.WaitAll(req.Wait.ToArray()) |> ignore
+            req.ReleaseStream()
+            req.eventKey.Set() |> ignore
+            match req.cb with
+                | None -> ()
+                | Some(cb) -> cb()
+        else if (req.bAllowPartial) then
+            req.eventKey.Set() |> ignore
+
+    let finishGet (cacheIndex : int, id : EventWaitHandle, bDone : bool) =
+        let req = outstandingList.[id]
+        let (used, cache) = segments.[cacheIndex]
+        cache.CanRead.Set() |> ignore
+        req.CacheIndex.Add(cacheIndex)
+        if (bDone) then
+            req.eventKey.Set() |> ignore
+            match req.cb with
+                | None -> ()
+                | Some(cb) -> cb()
+        else if (req.bAllowPartial) then
+            req.eventKey.Set() |> ignore
+
+    interface IDisposable with
+        override x.Dispose() =
+            eAvail.Dispose()
+            for s in segments do
+                let (a, cache) = s
+                (cache :> IDisposable).Dispose()
+            let r = ref Unchecked.defaultof<CacheReq>
+            while (readQ.TryDequeue(r)) do
+                (!r :> IDisposable).Dispose()
+            for e in outstandingList do
+                (e.Value :> IDisposable).Dispose()
+            GC.SuppressFinalize(x)
+
+    member x.AddRead(name, event : EventWaitHandle, callback) =
+        event.Reset() |> ignore
+        readQ.Enqueue(CacheReq.ReadReq(false, name, event, callback))
+        Interlocked.Increment(readQCnt) |> ignore
+        st.ExecOnceTP(x.TryRead)
+
+    member x.GetCache(size : int64, event : EventWaitHandle, callback) =
+        if (size > 0L) then
+            event.Reset() |> ignore
+            readQ.Enqueue(CacheReq.GetReq(size, event, callback))
+            Interlocked.Increment(readQCnt) |> ignore
+            st.ExecOnceTP(x.TryRead)
+
+    member x.WaitAndGet(event : EventWaitHandle) : List<int> =
+        event.WaitOne() |> ignore
+        outstandingList.[event].CacheIndex
+
+    member x.GetItem(l : List<int>, index : int) =
+        let (used, cache) = segments.[l.[index]]
+        (cache.Buf, cache.Offset, cache.Len, cache.LenRead)
+
+    member x.Clear(event : EventWaitHandle) =
+        let (ret, req) = outstandingList.TryRemove(event)
+        if (ret) then
+            req.ReleaseStream()
+            for lElem in req.CacheIndex do
+                let (used, cache) = segments.[lElem]
+                used := 0
+                cache.Reset()
+                Interlocked.Increment(numAvail) |> ignore
+
+    member x.SetName(event : EventWaitHandle, name : string) =
+        if (outstandingList.ContainsKey(event)) then
+            outstandingList.[event].TransferName(name)
+            
+    member x.WriteAndClear(l : List<int>, index : int) =
+        let (ret, e) = outstandingList.TryRemove(event)
+        if (ret) then
+            let (size, n, strm, l, handle, cb) = e
+            let strmWrite = new File
+            for lElem in l do
+                let (used, cache) = segments.[lElem]
+
 
     member x.TryRead() =
         let mutable bDone = false
@@ -386,25 +531,37 @@ type SharedCache<'K when 'K:equality>(cacheArr : (int ref*FileCache)[], readBuff
                     if (Interlocked.CompareExchange(used, 1, 0) = 0) then
                         bFound <- true
                         index <- i
+                        cache.Reset()
                     i <- i + 1               
                 if (bFound) then
-                    match curWorkElem with
-                        | None ->
-                            let (ret, res) = readQ.TryDequeue()
-                            let (name, event, cb) = res
-                            if (ret) then
-                                let fOpt = FileOptions.Asynchronous ||| FileOptions.SequentialScan
-                                let strm = new FileStream(name, FileMode.Open, FileAccess.Read, FileShare.Read, readBufferSize, fOpt)
-                                curWorkElem <- Some(name, strm :> Stream, strm.Length, List(), event, cb)
-                            else
-                                bDone <- true
-                        | Some(x) -> ()
+                    if (0L = curRem) then
+                        let (ret, res) = readQ.TryDequeue()
+                        if (ret) then
+                            if (0L = res.amtRem) then
+                                reqId <- reqId + 1L
+                                reqEvent <- res.eventKey
+                                if (res.reqSize > 0L) then
+                                    res.amtRem <- curRem
+                                    outstandingList.[reqEvent] <- res
+                                else
+                                    let fOpt = FileOptions.Asynchronous ||| FileOptions.SequentialScan
+                                    let strm = new FileStream(res.name, FileMode.Open, FileAccess.Read, FileShare.Read, readBufferSize, fOpt)
+                                    res.amtRem <- curRem
+                                    res.strm <- strm
+                                    outstandingList.[reqEvent] <- res
+                            curRem <- res.amtRem
+                        else
+                            bDone <- true
                     if (not bDone) then
-                        let (name, strm, rem, retList, event, cb) = curWorkElem.Value
+                        let req = outstandingList.[reqEvent]
                         let (used, cache) = cacheArr.[index]
-                        let toRead = Math.Min(rem, int64 cache.Len)
-
-                        diskIO.AddDirectReadReq(name.[0], strm, cache.Buf, cache.InitOffset, cache.Len, None)
+                        let toRead = Math.Min(curRem, int64 cache.Len)
+                        curRem <- curRem - toRead
+                        cache.CanRead.Reset()
+                        if (req.reqSize > 0L) then
+                            finishGet(index, reqEvent, 0L=curRem)
+                        else
+                            diskIO.AddDirectReadReq(req.name.[0], req.strm, cache.Buf, cache.InitOffset, cache.Len, Some(finishRead(index, reqEvent, 0L=curRem)))
                 else
                     bDone <- true
             else
@@ -586,11 +743,6 @@ and DiskIO<'K when 'K:equality>(writeLoc : (char*int)[]) as x =
         if (index = cache.Length) then
             index <- 0
         (cache.[indexRead].Buf, cache.[indexRead].InitOffset, cache.[indexRead].LenRead)
-
-
-
-    member x.TryRead() =
-
 
     member x.BeginFileReadUsingSharedMemory(name : string, event : EventWaitHandle, ?callback : unit->unit) =
         x.ReadQ.Enqueue((name, event, callback))
