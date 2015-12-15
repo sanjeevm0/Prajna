@@ -23,6 +23,7 @@ open System
 open System.IO
 open System.Threading
 open Prajna.Tools.Queue
+open Prajna.Tools.Network
 open System.Collections.Generic
 open System.Collections.Concurrent
 open System.Runtime.CompilerServices
@@ -351,12 +352,15 @@ type internal FileCache private () =
     member val LenRead : int = 0 with get, set
     member val CanWriteToMem : ManualResetEventSlim = new ManualResetEventSlim(true) with get
     member val CanRead : ManualResetEventSlim = new ManualResetEventSlim(false) with get
+    member val Finish : ManualResetEvent = new ManualResetEvent(true) with get
 
     interface IDisposable with
         override x.Dispose() =
             if (Utils.IsNotNull x.Align) then
                 (x.Align :> IDisposable).Dispose()
             x.CanWriteToMem.Dispose()
+            x.CanRead.Dispose()
+            x.Finish.Dispose()
 
     member x.Init(buf, initOffset, len) =
         x.Buf <- buf
@@ -369,6 +373,9 @@ type internal FileCache private () =
         x.Len <- 0
         x.LenRead <- 0
         x.Offset <- 0
+        x.CanRead.Reset() |> ignore
+        x.CanWriteToMem.Set() |> ignore
+        x.Finish.Reset() |> ignore
 
 type internal CacheReq private () =
     static member ReadReq(partial, name, event, cb) =
@@ -396,14 +403,17 @@ type internal CacheReq private () =
     member x.TransferName(name : string) =
         x.ReleaseStream()
         x.name <- name
-        x.ReleasedStream := 0
+        x.ReleasedStream <- 0
 
-    member val private ReleasedStream = ref 0 with get
+    member val private ReleasedStream = 0 with get, set
     member x.ReleaseStream() =
-        if (Interlocked.CompareExchange(x.ReleasedStream, 1, 0) = 0) then
-            if (Utils.IsNotNull x.strm) then
-                x.strm.Close()
-                x.strm <- null
+        if (x.ReleasedStream = 0) then
+            lock (x) (fun () ->
+                if (x.ReleasedStream = 0) then
+                    if (Utils.IsNotNull x.strm) then
+                        x.strm.Close()
+                        x.strm <- null
+            )
 
     interface IDisposable with
         override x.Dispose() =
@@ -437,8 +447,8 @@ type SharedCache<'K when 'K:equality>(cacheArr : (int ref*FileCache)[], readBuff
         let req = outstandingList.[id]
         let (used, cache) = segments.[cacheIndex]
         cache.CanRead.Set() |> ignore
+        cache.Finish.Set() |> ignore
         cache.LenRead <- amtRead
-        req.CacheIndex.Add(cacheIndex)
         if (bDone) then
             WaitHandle.WaitAll(req.Wait.ToArray()) |> ignore
             req.ReleaseStream()
@@ -453,7 +463,7 @@ type SharedCache<'K when 'K:equality>(cacheArr : (int ref*FileCache)[], readBuff
         let req = outstandingList.[id]
         let (used, cache) = segments.[cacheIndex]
         cache.CanRead.Set() |> ignore
-        req.CacheIndex.Add(cacheIndex)
+        cache.Finish.Set() |> ignore
         if (bDone) then
             req.eventKey.Set() |> ignore
             match req.cb with
@@ -558,10 +568,19 @@ type SharedCache<'K when 'K:equality>(cacheArr : (int ref*FileCache)[], readBuff
                         let toRead = Math.Min(curRem, int64 cache.Len)
                         curRem <- curRem - toRead
                         cache.CanRead.Reset()
+                        req.CacheIndex.Add(index)
+                        req.Wait.Add(cache.Finish)
                         if (req.reqSize > 0L) then
                             finishGet(index, reqEvent, 0L=curRem)
                         else
-                            diskIO.AddDirectReadReq(req.name.[0], req.strm, cache.Buf, cache.InitOffset, cache.Len, Some(finishRead(index, reqEvent, 0L=curRem)))
+                            let lock =
+                                if (req.CacheIndex.Count <= 1) then
+                                    null
+                                else
+                                    (snd cacheArr.[req.CacheIndex.[req.CacheIndex.Count-2]]).Finish
+                            Component<_>.WaitAndExecOnSystemTP(lock, -1) ((fun _ _ ->                                
+                                diskIO.AddDirectReadReq(req.name.[0], req.strm, cache.Buf, cache.InitOffset, cache.Len, Some(finishRead(index, reqEvent, 0L=curRem)))
+                            ), null)
                 else
                     bDone <- true
             else
@@ -601,8 +620,6 @@ and DiskIO<'K when 'K:equality>(writeLoc : (char*int)[]) as x =
         )
 
     let createCacheElem (segmentSize : int, align : int) (index : int) =
-        //let arr = Array.zeroCreate<byte>(segmentSize)
-        //new FileCache(arr, 0, segmentSize)
         FileCache.CreateAlign(segmentSize, align)
 
     let finishWrite (e : ManualResetEventSlim) (o) =
