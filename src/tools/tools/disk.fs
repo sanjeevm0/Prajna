@@ -377,6 +377,12 @@ type internal FileCache private () =
         x.CanWriteToMem.Set() |> ignore
         x.Finish.Reset() |> ignore
 
+    member x.SetToWrite() =
+        x.Offset <- x.LenRead
+        x.CanRead.Reset() |> ignore
+        x.CanWriteToMem.Set() |> ignore
+        x.Finish.Reset() |> ignore
+
 type internal CacheReq private () =
     static member ReadReq(partial, name, event, cb) =
         let x = new CacheReq()
@@ -431,7 +437,7 @@ type internal CacheReq private () =
     member val CacheIndex : List<int> = List<int>()
     member val Wait : List<WaitHandle> = List<WaitHandle>()
 
-type SharedCache<'K when 'K:equality>(cacheArr : (int ref*FileCache)[], readBufferSize : int, writeBufferSize : int, diskIO : DiskIO<'K>) =
+type internal SharedCache<'K when 'K:equality>(cacheArr : (int ref*FileCache)[], readBufferSize : int, writeBufferSize : int, diskIO : DiskIO<'K>) =
     let st = SingleThreadExec.ThreadPoolExecOnce()
     let eAvail = new ManualResetEvent(true)
     let numAvail = ref 0
@@ -515,19 +521,35 @@ type SharedCache<'K when 'K:equality>(cacheArr : (int ref*FileCache)[], readBuff
                 used := 0
                 cache.Reset()
                 Interlocked.Increment(numAvail) |> ignore
+            (req :> IDisposable).Dispose()
 
-    member x.SetName(event : EventWaitHandle, name : string) =
+    member x.SetToWrite(event : EventWaitHandle, name : string) =
         if (outstandingList.ContainsKey(event)) then
             outstandingList.[event].TransferName(name)
-            
-    member x.WriteAndClear(l : List<int>, index : int) =
-        let (ret, e) = outstandingList.TryRemove(event)
-        if (ret) then
-            let (size, n, strm, l, handle, cb) = e
-            let strmWrite = new File
-            for lElem in l do
-                let (used, cache) = segments.[lElem]
+            for l in outstandingList.[event].CacheIndex do
+                (snd segments.[l]).SetToWrite()
 
+    member private x.FinishWrite(req : CacheReq, listIndex : int) (a) =
+        let (used, cache) = segments.[req.CacheIndex.[listIndex]]
+        used := 0
+        cache.Reset()
+        Interlocked.Increment(numAvail) |> ignore
+        let newIndex = listIndex + 1
+        if (req.CacheIndex.Count > newIndex) then
+            let (used, cache) = segments.[req.CacheIndex.[newIndex]]
+            diskIO.AddDirectWriteReq(req.name.[0], req.strm, cache.Buf, cache.InitOffset, cache.Offset, Some(x.FinishWrite (req, newIndex)))
+        else
+            req.ReleaseStream()
+            (req :> IDisposable).Dispose()
+            
+    member x.WriteAndClear(event : EventWaitHandle) =
+        let (ret, req) = outstandingList.TryRemove(event)
+        if (ret && req.CacheIndex.Count > 0) then
+            let fOpt = FileOptions.Asynchronous ||| FileOptions.WriteThrough
+            let strmWrite = new FileStream(req.name, FileMode.Create, FileAccess.Write, FileShare.Read, writeBufferSize, fOpt)
+            req.strm <- strmWrite
+            let (used, cache) = segments.[req.CacheIndex.[0]]
+            diskIO.AddDirectWriteReq(req.name.[0], strmWrite, cache.Buf, cache.InitOffset, cache.Offset, Some(x.FinishWrite (req, 0)))
 
     member x.TryRead() =
         let mutable bDone = false
@@ -578,8 +600,9 @@ type SharedCache<'K when 'K:equality>(cacheArr : (int ref*FileCache)[], readBuff
                                     null
                                 else
                                     (snd cacheArr.[req.CacheIndex.[req.CacheIndex.Count-2]]).Finish
+                            let indexUse = index
                             Component<_>.WaitAndExecOnSystemTP(lock, -1) ((fun _ _ ->                                
-                                diskIO.AddDirectReadReq(req.name.[0], req.strm, cache.Buf, cache.InitOffset, cache.Len, Some(finishRead(index, reqEvent, 0L=curRem)))
+                                diskIO.AddDirectReadReq(req.name.[0], req.strm, cache.Buf, cache.InitOffset, cache.Len, Some(finishRead(indexUse, reqEvent, 0L=curRem)))
                             ), null)
                 else
                     bDone <- true
@@ -762,7 +785,17 @@ and DiskIO<'K when 'K:equality>(writeLoc : (char*int)[]) as x =
         (cache.[indexRead].Buf, cache.[indexRead].InitOffset, cache.[indexRead].LenRead)
 
     member x.BeginFileReadUsingSharedMemory(name : string, event : EventWaitHandle, ?callback : unit->unit) =
-        x.ReadQ.Enqueue((name, event, callback))
-        Interlocked.Increment(ReadQCnt) |> ignore
-        st.ExecOnceTP(x.TryRead)
+        let key = name.[0]
+        sharedCache.[key].AddRead(name, event, callback)
+
+    member x.SetToWrite(name : string, event : EventWaitHandle) =
+        let key = name.[0]
+        sharedCache.[key].SetToWrite(event, name)
+
+    member x.GetMemory(key : char, size : int64, event : EventWaitHandle, ?callback : unit->unit) =
+        sharedCache.[key].GetCache(size, event, callback)
+
+    member x.BeginFileWrite(name : string, event : EventWaitHandle) =
+        let key = name.[0]
+        sharedCache.[key].WriteAndClear(event)
 
