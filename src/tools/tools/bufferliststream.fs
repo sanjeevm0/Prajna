@@ -798,7 +798,7 @@ type RefCntList<'T,'TBase when 'T :> SafeRefCnt<'TBase> and 'TBase:null and 'TBa
 // essentially a generic list of buffers of type 'T
 // use AddRef/Release to acquire / release resource
 [<AllowNullLiteral>] 
-type BufferListStream<'T>(bufSize : int, doNotUseDefault : bool) =
+type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
     inherit StreamBase<'T>()
 
     static let streamsInUse = ConcurrentDictionary<int64, BufferListStream<'T>>()

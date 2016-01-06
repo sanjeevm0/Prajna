@@ -799,3 +799,15 @@ and DiskIO<'K when 'K:equality>(writeLoc : (char*int)[]) as x =
         let key = name.[0]
         sharedCache.[key].WriteAndClear(event)
 
+//type [<AllowNullLiteral>] RefCntBufDisk() =
+//    let 
+//
+//    inherit RefCntBuf<byte>()
+//
+//    override x.Alloc(size : int) =
+//        base.Alloc(size)
+//
+//// 'CK is cache key
+//// 'RK is request key
+//type DiskIO2<'CK,'RK>() =
+//    let cache = new Dictionary<'CK,
