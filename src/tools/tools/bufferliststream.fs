@@ -32,10 +32,46 @@ open System.Collections.Generic
 open System.Collections.Concurrent
 open System.Runtime.Serialization
 open System.Threading
+open System.Runtime.InteropServices
 
 open Prajna.Tools
 open Prajna.Tools.Queue
 open Prajna.Tools.FSharp
+
+/// An array which maintains alignment in memory (for use by native code)
+/// <param name="size">The number of elements of type 'T</param>
+/// <param name="align">The alignment required as number of bytes</param>
+type [<AllowNullLiteral>] internal ArrAlign<'T>(size : int, alignBytes : int) =
+    let align = (alignBytes + sizeof<'T> - 1) / sizeof<'T>
+    let alignBytes = align * sizeof<'T>
+    let alignSize = (size + align - 1)/align*align
+    let mutable arr = Array.zeroCreate<'T>(alignSize + align - 1)
+    let handle = GCHandle.Alloc(arr, GCHandleType.Pinned)
+    let offsetBytes = handle.AddrOfPinnedObject().ToInt64() % (int64 alignBytes)
+    let offset = offsetBytes / int64(sizeof<'T>)
+    let mutable dispose = false
+
+    interface IDisposable with
+        override x.Dispose() =
+            if (not dispose) then
+                lock (x) (fun _ ->
+                    if (not dispose) then
+                        arr <- null
+                        handle.Free()
+                        GC.SuppressFinalize(x)
+                        dispose <- true
+                )
+
+    static member AlignSize(size : int, alignBytes : int) =
+        let align = (alignBytes + sizeof<'T> - 1) / sizeof<'T>
+        let alignBytes = align * sizeof<'T>
+        (size + align - 1)/align*align
+
+    member x.Arr with get() = arr
+    member x.Offset with get() = int offset
+    member x.GCHandle with get() = handle
+    member x.Ptr with get() = IntPtr.Add(handle.AddrOfPinnedObject(), int offsetBytes)
+    member x.Size with get() = alignSize
 
 // Helper classes for ref counted objects & shared memory pool
 // A basic refcounter interface

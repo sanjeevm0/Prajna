@@ -286,6 +286,10 @@ type [<AllowNullLiteral>] NetworkCommandQueue internal () as x =
 
     let eVerified = new ManualResetEventSlim(false)
 
+    let eAsyncSend = new ManualResetEventSlim(true)
+    let asyncSendFinished(o) =
+        eAsyncSend.Set()
+
     let mutable bLocalVerified = false
     let mutable bRemoteVerified = false
 
@@ -668,6 +672,8 @@ type [<AllowNullLiteral>] NetworkCommandQueue internal () as x =
 //        recvQ.IsFullDesiredCond <- isDesiredFull
 
     member private x.StartConnection() =
+        eAsyncSend.Wait() // wait for all outstanding async send calls to finish
+
         connectionStatus <- ConnectionStatus.Verified
         eVerified.Set() |> ignore
         Logger.LogF( LogLevel.WildVerbose, ( fun _ -> sprintf "Magic Num is Verified from socket %s, status:%A" (LocalDNS.GetShowInfo(x.Socket.RemoteEndPoint)) x.ConnectionStatus))
@@ -747,8 +753,11 @@ type [<AllowNullLiteral>] NetworkCommandQueue internal () as x =
 
     member private x.AsyncSendBufWSizeTryCatch(buf : byte[], bufferOffset : int, bufferSize : int) =
         try
-            xgBuf.AsyncSendBufWithSize(buf, bufferOffset, bufferSize)
+            eAsyncSend.Wait()
+            eAsyncSend.Reset()
+            xgBuf.AsyncSendBufWithSize(Some(asyncSendFinished), null, buf, bufferOffset, bufferSize)
         with e ->
+            eAsyncSend.Set()
             x.MarkFail()
 
     member private x.AsyncRecvBufWSizeTryCatch(callback : obj*byte[]*int*int->unit, state : obj, bufferOffset : int) =
