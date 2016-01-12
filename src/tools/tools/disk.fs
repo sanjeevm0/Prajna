@@ -339,11 +339,11 @@ type internal FileCache private () =
 
     static member CreateAlign(size : int, align : int) =
         let x = new FileCache()
-        x.Align <- new ByteArrAlign(size, align)
+        x.Align <- new ArrAlign<byte>(size, align)
         x.Init(x.Align.Arr, x.Align.Offset, x.Align.Size)
         x
 
-    member val Align : ByteArrAlign = null with get, set
+    member val Align : ArrAlign<byte> = null with get, set
     member val Buf : byte[] = null with get, set
     member val InitOffset : int = 0 with get, set
     member val Offset : int = 0 with get, set
