@@ -37,8 +37,6 @@ open System.Security.AccessControl
 open System.Collections.Generic
 open System.Text.RegularExpressions
 open System.Runtime.Serialization
-open System.Runtime.InteropServices
-open System.Threading
 
 /// <summary>
 /// Compare byte[], note that the default comparison of byte[] is Reference Equality 
@@ -63,30 +61,6 @@ type BytesCompare =
                 for v in x do 
                     hash <- ( hash * 31 ) ^^^ ( int v)
                 hash
-
-// a byte array which maintains alignment in memory (for use by native code)
-type [<AllowNullLiteral>] ByteArrAlign(size : int, align : int) =
-    let alignSize = (size + align - 1)/align*align
-    let mutable arr = Array.zeroCreate<byte>(alignSize + align - 1)
-    let handle = GCHandle.Alloc(arr, GCHandleType.Pinned)
-    let offset = handle.AddrOfPinnedObject().ToInt64() % (int64 align)
-    let dispose = ref 0
-
-    interface IDisposable with
-        override x.Dispose() =
-            if (Interlocked.CompareExchange(dispose, 1, 0) = 0) then
-                arr <- null
-                handle.Free()
-                GC.SuppressFinalize(x)
-
-    static member AlignSize(size : int, align : int) =
-        (size + align - 1)/align*align
-
-    member x.Arr with get() = arr
-    member x.Offset with get() = int offset
-    member x.GCHandle with get() = handle
-    member x.Ptr with get() = IntPtr.Add(handle.AddrOfPinnedObject(), int offset)
-    member x.Size with get() = alignSize
 
 /// <summary>
 /// A set of helper routine for byte[] operations

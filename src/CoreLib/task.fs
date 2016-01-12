@@ -352,8 +352,6 @@ and [<AllowNullLiteral>]
                             if (x.JobEnvVars.Count <> 0) then
                                 startInfo.UseShellExecute <- false
                             let proc = x.StartChildProcess(startInfo)
-                            if (DeploymentSettings.SleepAfterContainerLaunchMs > 0) then
-                                Thread.Sleep(DeploymentSettings.SleepAfterContainerLaunchMs)
                             if (Utils.IsNull proc) then
                                 Logger.LogF( LogLevel.Error, (fun _ -> sprintf "Unable to start process"))
                             x.MonStdError <- new StreamMonitor( ) 

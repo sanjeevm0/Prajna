@@ -337,8 +337,6 @@ type DeploymentSettings() =
     /// Various Timeout value
     /// --------------------------
     static member val internal TimeOutGetRemoteStorageInfo = 45. with get, set // in second
-    /// Sleep before container launch - for debugging
-    static member val internal SleepAfterContainerLaunchMs = 0 with get // in milliseconds
     /// Timeout when trying to setup a remote container (in seconds). The default value is 30 seconds. If the remote execution roster is particularly large, 
     /// e.g., including data files of multi-gigabyte in size, the program should enlarge this timeout value so that there is time to send the entire remote execution roster 
     /// to the remote node. 
