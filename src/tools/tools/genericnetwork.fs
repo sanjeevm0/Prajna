@@ -140,7 +140,7 @@ type [<AllowNullLiteral>] GenericNetwork(bStartSendPool, numNetThreads) =
             GC.SuppressFinalize(x)
 
     static member internal AllocBuf (cb : SocketAsyncEventArgs->unit) (rcbe : RefCntBufSA) =
-        rcbe.SA.Completed.Add(cb)
+        rcbe.SA.Completed.Add(cb) 
 
 /// A generic connection which processes SocketAsyncEventArgs
 and [<AllowNullLiteral>] GenericConn() as x =
