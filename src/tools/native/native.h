@@ -47,14 +47,14 @@ private:
         PVOID state,
         PVOID olp,
         ULONG ioResult,
-        ULONG_PTR bytesTransffered,
+        ULONG_PTR bytesTransferred,
         PTP_IO ptp)
     {
         IOCallback *x = (IOCallback*)state;
         if (NO_ERROR == ioResult)
         {
             x->m_inUse = 0;
-            (*x->m_pfn)(ioResult, x->m_pstate, x->m_pBuffer, bytesTransffered);
+            (*x->m_pfn)(ioResult, x->m_pstate, x->m_pBuffer, (int)bytesTransferred);
         }
         else
         {
@@ -183,7 +183,8 @@ namespace Tools {
             generic <class T>
                 static int SizeOf()
                 {
-                    return sizeof(T::typeid);
+                    //return sizeof(T::typeid);
+                    return sizeof(T);
                 }
         };
 
@@ -218,13 +219,14 @@ namespace Tools {
             public:
                 IOCallbackClass()
                 {
-                    Type^ t = NativeHelper::typeid;
-                    Object ^o = t->GetMethod("SizeOf", BindingFlags::Static | BindingFlags::NonPublic)
-                        ->GetGenericMethodDefinition()
-                        ->MakeGenericMethod(T::typeid)
-                        ->Invoke(nullptr, nullptr);
-                    m_managedTypeSize = *(safe_cast<int^>(o));
+                    //Type^ t = NativeHelper::typeid;
+                    //Object ^o = t->GetMethod("SizeOf", BindingFlags::Static | BindingFlags::NonPublic)
+                    //    ->GetGenericMethodDefinition()
+                    //    ->MakeGenericMethod(T::typeid)
+                    //    ->Invoke(nullptr, nullptr);
+                    //m_managedTypeSize = *(safe_cast<int^>(o));
                     //m_managedTypeSize = safe_cast<int>(o); // this will also work as unboxing is implicit in safe_cast
+                    m_managedTypeSize = sizeof(T);
 
                     NativeIOCallback ^ncb = gcnew NativeIOCallback(IOCallbackClass::Callback); // create delegate from function
                     m_handleCallback = GCHandle::Alloc(ncb); // GCHandle to prevent garbage collection
@@ -346,9 +348,8 @@ namespace Tools {
                 int ReadFileSync(array<T> ^pBuffer, int offset, int nNum)
                 {
                     Lock lock(m_ioLock);
-                    IOCallbackClass<T>^ cbFn = GetCbFn(pBuffer);
                     pin_ptr<T> pBuf = &pBuffer[0];
-                    return m_cb->ReadFileSync<byte>((byte*)pBuf, nNum*cbFn->TypeSize());
+                    return m_cb->ReadFileSync<byte>((byte*)pBuf, nNum*sizeof(T));
                 }
 
             generic <class T>
@@ -357,9 +358,9 @@ namespace Tools {
                     Lock lock(m_ioLock);
                     IOCallbackClass<T>^ cbFn = GetCbFn(pBuffer);
                     pin_ptr<T> pBuf = &pBuffer[0];
-                    return m_cb->WriteFileSync<byte>((byte*)pBuf, nNum*cbFn->TypeSize());
+                    return m_cb->WriteFileSync<byte>((byte*)pBuf, nNum*sizeof(T));
                 }
-		};
+        };
 	}
 }
 
