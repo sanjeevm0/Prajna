@@ -62,11 +62,32 @@ private:
         }
     }
 
+    static void WINAPI IOCompletedAdapter(
+        PTP_CALLBACK_INSTANCE instance,
+        PVOID context,
+        PVOID overlapped,
+        ULONG result,
+        ULONG_PTR bytesTransferred,
+        PTP_IO io)
+    {
+        printf("finished %lld", bytesTransferred);
+    }
+
 public:
     IOCallback(HANDLE hFile) :
         m_pfn(nullptr), m_pstate(nullptr), m_ptp(nullptr), m_hFile(hFile), 
         m_pBuffer(nullptr), m_inUse(0)
     {
+        if (nullptr == m_ptp)
+            m_ptp = CreateThreadpoolIo(m_hFile, IOCallback::Callback, this, NULL);
+        //HANDLE h = CreateFile(L"test2.bin", GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
+        //PTP_IO io_ = CreateThreadpoolIo(h, IOCompletedAdapter, this, nullptr);
+        //if (!io_)
+        //{
+        //    DWORD error = GetLastError();
+        //    //throw Win32Error("CreateThreadPoolIo failed.", error);
+        //}
+
     }
 
     ~IOCallback()
@@ -88,7 +109,11 @@ public:
             if (nullptr == m_ptp)
                 m_ptp = CreateThreadpoolIo(m_hFile, IOCallback::Callback, this, NULL);
             if (nullptr == m_ptp)
+            {
+                int e = GetLastError();
+                printf("Fail to initialize threadpool I/O error: %x", e);
                 return false;
+            }
             DWORD num;
             m_pfn = pfn;
             m_pstate = state;
@@ -163,6 +188,7 @@ using namespace System::Reflection;
 using namespace System::Threading;
 using namespace System::Collections::Generic;
 using namespace System::Runtime::InteropServices;
+using namespace Microsoft::Win32::SafeHandles;
 
 namespace Tools {
 	namespace Native {
@@ -194,7 +220,7 @@ namespace Tools {
             public delegate void IOCallbackDel(int ioResult, Object ^pState, array<T> ^pBuffer, int offset, int bytesTransferred);
 
         generic <class T>
-            public ref class IOCallbackClass
+            private ref class IOCallbackClass
             {
             private:
                 IOCallbackDel<T> ^m_cb;
@@ -265,12 +291,21 @@ namespace Tools {
                 __forceinline IntPtr SelfPtr() { return m_selfPtr;  }
             };
 
-        public ref class AsyncStreamIO
+        public ref class AsyncStreamIO : public IDisposable
 		{
         private:
             IOCallback *m_cb;
             Dictionary<Type^, Object^> ^m_cbFns;
             Object ^m_ioLock;
+
+            generic <class T>
+                IOCallbackClass<T>^ GetCbFn(array<T> ^pBuffer)
+                {
+                    Type ^t = T::typeid;
+                    if (!m_cbFns->ContainsKey(t))
+                        m_cbFns[t] = (Object^)(gcnew IOCallbackClass<T>());
+                    return (IOCallbackClass<T>^)m_cbFns[t];
+                }
 
         protected:
             void virtual Free(bool bDisposing)
@@ -292,6 +327,13 @@ namespace Tools {
                 m_ioLock = gcnew Object();
             }
 
+            AsyncStreamIO(HANDLE h) : m_cb(nullptr)
+            {
+                m_cb = new IOCallback(h);
+                m_cbFns = gcnew Dictionary<Type^, Object^>();
+                m_ioLock = gcnew Object();
+            }
+
             // destructor (e.g. dispose)
             ~AsyncStreamIO()
             {
@@ -303,14 +345,29 @@ namespace Tools {
                 Free(false);
             }
 
-            generic <class T>
-                IOCallbackClass<T>^ GetCbFn(array<T> ^pBuffer)
-                {
-                    Type ^t = T::typeid;
-                    if (! m_cbFns->ContainsKey(t))
-                        m_cbFns[t] = (Object^)(gcnew IOCallbackClass<T>());
-                    return (IOCallbackClass<T>^)m_cbFns[t];
-                }
+            static FileStream^ OpenFileAsyncWrite(String^ name)
+            {
+                array<wchar_t> ^nameArr = name->ToCharArray();
+                pin_ptr<wchar_t> namePtr = &nameArr[0];
+                LPCWSTR pName = (LPCWSTR)namePtr;
+                HANDLE h = CreateFile(pName, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_FLAG_OVERLAPPED | FILE_ATTRIBUTE_NORMAL, nullptr);
+                SafeFileHandle ^sh = gcnew SafeFileHandle(IntPtr(h), true);
+                FileStream ^fs = gcnew FileStream(sh, FileAccess::Write, 4096, true);
+                return fs;
+            }
+
+            static AsyncStreamIO^ OpenFileAsyncWrite(String^ name, FileStream^ %fsOut)
+            {
+                array<wchar_t> ^nameArr = name->ToCharArray();
+                pin_ptr<wchar_t> namePtr = &nameArr[0];
+                LPCWSTR pName = (LPCWSTR)namePtr;
+                HANDLE h = CreateFile(pName, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_FLAG_OVERLAPPED | FILE_FLAG_WRITE_THROUGH, nullptr);
+                AsyncStreamIO ^io = gcnew AsyncStreamIO(h);
+                SafeFileHandle ^sh = gcnew SafeFileHandle(IntPtr(h), true);
+                //FileStream ^fs = gcnew FileStream(sh, FileAccess::Write, 4096);
+                //fsOut = fs;
+                return io;
+            }
 
             generic <class T>
                 int ReadFile(array<T> ^pBuffer, int offset, int nNum, IOCallbackDel<T> ^cb, Object ^state)
@@ -356,7 +413,6 @@ namespace Tools {
                 int WriteFileSync(array<T> ^pBuffer, int offset, int nNum)
                 {
                     Lock lock(m_ioLock);
-                    IOCallbackClass<T>^ cbFn = GetCbFn(pBuffer);
                     pin_ptr<T> pBuf = &pBuffer[0];
                     return m_cb->WriteFileSync<byte>((byte*)pBuf, nNum*sizeof(T));
                 }
