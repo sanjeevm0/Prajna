@@ -41,6 +41,7 @@ private:
     HANDLE m_hFile;
     void *m_pBuffer;
     volatile unsigned int m_inUse;
+    CRITICAL_SECTION m_cs;
 
     static void CALLBACK Callback(
         PTP_CALLBACK_INSTANCE Instance,
@@ -51,26 +52,10 @@ private:
         PTP_IO ptp)
     {
         IOCallback *x = (IOCallback*)state;
-        if (NO_ERROR == ioResult)
-        {
-            x->m_inUse = 0;
-            (*x->m_pfn)(ioResult, x->m_pstate, x->m_pBuffer, (int)bytesTransferred);
-        }
-        else
-        {
-            (*x->m_pfn)(ioResult, x->m_pstate, x->m_pBuffer, 0);
-        }
-    }
-
-    static void WINAPI IOCompletedAdapter(
-        PTP_CALLBACK_INSTANCE instance,
-        PVOID context,
-        PVOID overlapped,
-        ULONG result,
-        ULONG_PTR bytesTransferred,
-        PTP_IO io)
-    {
-        printf("finished %lld", bytesTransferred);
+        if (NO_ERROR != ioResult)
+            bytesTransferred = 0LL;
+        x->m_inUse = 0;
+        (*x->m_pfn)(ioResult, x->m_pstate, x->m_pBuffer, (int)bytesTransferred);
     }
 
 public:
@@ -80,23 +65,21 @@ public:
     {
         if (nullptr == m_ptp)
             m_ptp = CreateThreadpoolIo(m_hFile, IOCallback::Callback, this, NULL);
-        //HANDLE h = CreateFile(L"test2.bin", GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
-        //PTP_IO io_ = CreateThreadpoolIo(h, IOCompletedAdapter, this, nullptr);
-        //if (!io_)
-        //{
-        //    DWORD error = GetLastError();
-        //    //throw Win32Error("CreateThreadPoolIo failed.", error);
-        //}
         memset(&m_olap, 0, sizeof(m_olap));
+        InitializeCriticalSection(&m_cs);
     }
 
     ~IOCallback()
     {
         if (m_ptp)
         {
+            WaitForThreadpoolIoCallbacks(m_ptp, TRUE);
             CloseThreadpoolIo(m_ptp);
             m_ptp = nullptr;
         }
+        Close(); // in case we didn't call close
+        DeleteCriticalSection(&m_cs);
+        printf("CritSec deleted\n");
     }
 
     // use enum as WriteFile and ReadFile have slightly differing signatures (LPVOID vs. LPCVOID)
@@ -209,11 +192,35 @@ public:
         return FlushFileBuffers(m_hFile);
     }
 
-    __forceinline __int64 FileSize()
+    __forceinline BOOL FileSize(__int64 *fsize)
     {
-        LARGE_INTEGER size;
-        GetFileSizeEx(m_hFile, &size);
-        return size.QuadPart;
+        if (!fsize)
+            return FALSE;
+        else
+        {
+            LARGE_INTEGER size;
+            BOOL ret = GetFileSizeEx(m_hFile, &size);
+            *fsize = size.QuadPart;
+            return ret;
+        }
+    }
+
+    __forceinline BOOL Close()
+    {
+        BOOL ret = TRUE;
+        printf("InClose - Close handle %llx\n", (__int64)m_hFile);
+        EnterCriticalSection(&m_cs);
+        printf("InClose - Enter\n");
+        if (m_hFile != NULL)
+        {
+            printf("Closing handle %llx\n", (__int64)m_hFile);
+            ret = CloseHandle(m_hFile);
+            printf("Handle %llx close\n", (__int64)m_hFile);
+            m_hFile = NULL;
+        }
+        LeaveCriticalSection(&m_cs);
+        printf("InClose - Leave\n");
+        return ret;
     }
 };
 
@@ -230,6 +237,81 @@ using namespace System::Runtime::InteropServices;
 using namespace Microsoft::Win32::SafeHandles;
 
 namespace Tools {
+    namespace Test {
+        // In case class does not have destructor, and it does not derive from base class which is IDisposable, then it is not IDisposable
+        // In case class has destructor or it derives from base class which is IDisposable, then it is IDisposable
+        // 1. In case it has dtor and does not derive from base class which is IDisposable, then
+        //    it implements IDisposable::Dispose automatically, and implements "virtual Dispose(bool disposing) method"
+        // 2. In case it has dtor and derives from base class which is IDisposable, then
+        //    it does not implement IDisposable::Dispose, it only implements "override Dispose(bool disposing) method" which automatically calls base.Dispose
+        public ref class TestDispose : public IDisposable
+        {
+        private:
+            int a;
+            byte *buf;
+        public:
+            TestDispose()
+            {
+                a = 4;
+                buf = new byte[100];
+            }
+            !TestDispose()
+            {
+                delete[] buf;
+            }
+            ~TestDispose()
+            {
+                delete[] buf;
+            }
+        };
+
+        // Any CLI class wtih destructor, dtor (i.e. ~ method) automatically becomes IDisposable
+        // Following code is then automatically generated
+        // [HandleProcessCorruptedStateExceptions]
+        //protected override void Dispose([MarshalAs(UnmanagedType.U1)] bool flag1)
+        //{
+        //    if (flag1)
+        //    {
+        //        try
+        //            this.~CppDispose();
+        //        finally
+        //            base.Dispose(true);
+        //            GC::SuppressFinalize(this);
+        //    }
+        //    else
+        //    {
+        //        try
+        //            this.!CppDispose();
+        //        finally
+        //            base.Dispose(false);
+        //    }
+        //}
+        //
+        //protected override void Finalize()
+        //{
+        //    this.Dispose(false);
+        //}
+        //
+        // In addition, if and only if there is no base class in the hierarchy which is IDisposable, the class implements IDisposable and following is added
+        //virtual void Dispose(array<byte> ^buf, int offset, int cnt) = IDisposable::Dispose
+        //{
+        //    this.Dispose(true);
+        //}
+        // Therefore for CLI
+        // 1. Never directly implement IDisposable
+        // 2. Instead do following - the created dispose method will automatically have suppressfinalize call
+        //    a) Create destructor to free managed resources
+        //    ~Class()
+        //    {
+        //        ... free managed resources ... (stuff that goes inside "if bDisposing" block)
+        //        ... call finalizer if it exists ...
+        //    }
+        //    !Class
+        //    {
+        //        ... free unmanaged resources ...
+        //    }
+    }
+
 	namespace Native {
         ref class Lock {
             Object^ m_pObject;
@@ -340,8 +422,8 @@ namespace Tools {
                 __forceinline IntPtr SelfPtr() { return m_selfPtr;  }
             };
 
-        public ref class AsyncStreamIO : public IDisposable, public IIO, public Stream
-		{
+        public ref class AsyncStreamIO : public IIO, public Stream
+        {
         private:
             IOCallback *m_cb;
             Dictionary<Type^, Object^> ^m_cbFns;
@@ -350,8 +432,8 @@ namespace Tools {
             bool m_canRead;
             bool m_canWrite;
             bool m_canSeek;
-            __int64 m_length;
-            __int64 m_position;
+            Int64 m_length;
+            Int64 m_position;
 
             generic <class T>
                 IOCallbackClass<T>^ GetCbFn(array<T> ^pBuffer)
@@ -363,11 +445,12 @@ namespace Tools {
                 }
 
         protected:
-            void virtual Free(bool bDisposing)
+            void virtual Free()
             {
                 Lock lock(this);
                 if (nullptr != m_cb)
                 {
+                    m_cb->Close();
                     delete m_cb;
                     m_cb = nullptr;
                 }
@@ -390,15 +473,43 @@ namespace Tools {
                 m_ioLock = gcnew Object();
             }
 
-            // destructor (e.g. dispose)
+            // destructor (e.g. Dispose with bDisposing = true), automatically adds suppressfinalize call
             ~AsyncStreamIO()
             {
-                Free(true);
+                m_cbFns->Clear();
+                this->!AsyncStreamIO();
             }
 
             !AsyncStreamIO()
             {
-                Free(false);
+                Free();
+            }
+
+            // Since Stream class implements IDisposable, it automatically calls close first prior to the virtual Dispose method, i.e. in Stream class
+            // IDisposable::Dispose()
+            // {
+            //     Close();
+            // }
+            // 
+            // void Dispose()
+            // {
+            //     Close();
+            // }
+            //
+            // virtual void Close()
+            // {
+            //     Dispose(true)
+            // }
+            //
+            // virtual void Dispose(bool bDisposing) {} -> gets overwritten by us in dtor
+            virtual void __clrcall Close() new = Stream::Close
+            {
+                // close the stream
+                Lock lock(this);
+                if (m_cb != nullptr)
+                    m_cb->Close();
+                // this will actually dispose stuff, so close stuff before
+                Stream::Close();
             }
 
             property bool CanRead
@@ -432,7 +543,7 @@ namespace Tools {
             }
             virtual __int64 __clrcall Seek(__int64 offset, SeekOrigin origin) override
             {
-                DWORD moveMethod = FILE_CURRENT;
+                Int32 moveMethod = FILE_CURRENT;
                 __int64 newPos;
                 switch (origin)
                 {
@@ -446,7 +557,7 @@ namespace Tools {
                     moveMethod = FILE_END;
                     break;
                 }
-                BOOL ret = m_cb->SeekFile(offset, moveMethod, &newPos);
+                int ret = m_cb->SeekFile(offset, moveMethod, &newPos);
                 if (FALSE == ret)
                     throw gcnew IOException("Unable to seek");
                 return newPos;
@@ -467,7 +578,7 @@ namespace Tools {
                     throw gcnew IOException("Unable to write to stream");
             }
 
-            virtual void UpdatePos(__int64 amt) = IIO::UpdatePos
+            virtual void UpdatePos(Int64 amt) = IIO::UpdatePos
             {
                 m_position += amt;
                 m_length = max(m_length, m_position);
@@ -487,28 +598,37 @@ namespace Tools {
 
             static AsyncStreamIO^ OpenFileAsyncWrite(String^ name, Stream^ %fsOut)
             {
-                array<wchar_t> ^nameArr = name->ToCharArray();
-                pin_ptr<wchar_t> namePtr = &nameArr[0];
-                LPCWSTR pName = (LPCWSTR)namePtr;
-                HANDLE h = CreateFile(pName, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_FLAG_OVERLAPPED | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_WRITE_THROUGH, nullptr);
-                AsyncStreamIO ^io = gcnew AsyncStreamIO(h);
-                SafeFileHandle ^sh = gcnew SafeFileHandle(IntPtr(h), true);
+                array<Char> ^nameArr = name->ToCharArray();
+                pin_ptr<Char> namePtr = &nameArr[0];
+                Char *pName = (Char*)namePtr;
+                IntPtr h = (IntPtr)CreateFile(pName, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_FLAG_OVERLAPPED | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_WRITE_THROUGH, nullptr);
+                AsyncStreamIO ^io = gcnew AsyncStreamIO((HANDLE)h);
+                SafeFileHandle ^sh = gcnew SafeFileHandle(h, true);
                 io->m_position = 0LL;
                 io->m_length = 0LL;
+                io->m_canRead = false;
+                io->m_canWrite = true;
+                io->m_canSeek = true;
                 fsOut = io;
                 return io;
             }
 
             static AsyncStreamIO^ OpenFileAsyncRead(String^ name, Stream^ %fsOut)
             {
-                array<wchar_t> ^nameArr = name->ToCharArray();
-                pin_ptr<wchar_t> namePtr = &nameArr[0];
-                LPCWSTR pName = (LPCWSTR)namePtr;
-                HANDLE h = CreateFile(pName, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED | FILE_FLAG_SEQUENTIAL_SCAN | FILE_FLAG_WRITE_THROUGH, nullptr);
-                AsyncStreamIO ^io = gcnew AsyncStreamIO(h);
-                SafeFileHandle ^sh = gcnew SafeFileHandle(IntPtr(h), true);
+                array<Char> ^nameArr = name->ToCharArray();
+                pin_ptr<Char> namePtr = &nameArr[0];
+                Char *pName = (Char*)namePtr;
+                IntPtr h = (IntPtr)CreateFile(pName, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED | FILE_FLAG_SEQUENTIAL_SCAN | FILE_FLAG_WRITE_THROUGH, nullptr);
+                AsyncStreamIO ^io = gcnew AsyncStreamIO((HANDLE)h);
+                SafeFileHandle ^sh = gcnew SafeFileHandle(h, true);
                 io->m_position = 0LL;
-                io->m_length = io->m_cb->FileSize();
+                pin_ptr<__int64> pLen = &io->m_length;
+                int ret = io->m_cb->FileSize((__int64*)pLen);
+                if (!ret)
+                    throw gcnew IOException("Unable to get file length");
+                io->m_canRead = true;
+                io->m_canWrite = false;
+                io->m_canSeek = true;
                 fsOut = io;
                 return io;
             }
