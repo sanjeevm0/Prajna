@@ -87,7 +87,7 @@ public:
         //    DWORD error = GetLastError();
         //    //throw Win32Error("CreateThreadPoolIo failed.", error);
         //}
-
+        memset(&m_olap, 0, sizeof(m_olap));
     }
 
     ~IOCallback()
@@ -102,7 +102,7 @@ public:
     // use enum as WriteFile and ReadFile have slightly differing signatures (LPVOID vs. LPCVOID)
     //template <class T, OperFn fn>
     template <class T, Oper oper>
-    BOOL OperFile(T *pBuffer, DWORD nNumberOfElems, CallbackFn *pfn, void *state)
+    int OperFile(T *pBuffer, DWORD nNumberOfElems, CallbackFn *pfn, void *state, __int64 pos)
     {
         if (0 == InterlockedCompareExchange(&m_inUse, 1, 0))
         {
@@ -112,35 +112,52 @@ public:
             {
                 int e = GetLastError();
                 printf("Fail to initialize threadpool I/O error: %x", e);
-                return false;
+                return -1;
             }
             DWORD num;
             m_pfn = pfn;
             m_pstate = state;
             m_pBuffer = pBuffer;
+            if (pos < 0)
+                pos = SetFilePointer(m_hFile, 0, 0, FILE_CURRENT); // won't work for files > 32-bit in length
+            m_olap.Offset = (DWORD)(pos & 0x00000000ffffffff);
+            m_olap.OffsetHigh = (DWORD)(pos >> 32);
             StartThreadpoolIo(m_ptp);
             //return fn(m_hFile, (void*)pBuffer, nNumberOfElems*sizeof(T), &num, &m_olap);
+            int ret = 0;
             switch (oper)
             {
             case ReadFileOper:
-                return ReadFile(m_hFile, pBuffer, nNumberOfElems*sizeof(T), &num, &m_olap);
+                ret = ReadFile(m_hFile, pBuffer, nNumberOfElems*sizeof(T), &num, &m_olap);
+                break;
             case WriteFileOper:
-                return WriteFile(m_hFile, pBuffer, nNumberOfElems*sizeof(T), &num, &m_olap);
+                ret = WriteFile(m_hFile, pBuffer, nNumberOfElems*sizeof(T), &num, &m_olap);
+                break;
             default:
                 assert(false);
-                return FALSE;
+                return -1;
             }
+            if (0 == ret)
+            {
+                int e = GetLastError();
+                if (ERROR_IO_PENDING == e)
+                    return 0;
+                else
+                    return -1; // some other error
+            }
+            else
+                return ret;
         }
         else
         {
-            return false;
+            return -1;
         }
     }
 
     template <class T>
-    __forceinline BOOL ReadFileAsync(T *pBuffer, DWORD nNum, CallbackFn *pfn, void *state)
+    __forceinline int ReadFileAsync(T *pBuffer, DWORD nNum, CallbackFn *pfn, void *state, __int64 pos=-1LL)
     {
-        return OperFile<T, ReadFileOper>(pBuffer, nNum, pfn, state);
+        return OperFile<T, ReadFileOper>(pBuffer, nNum, pfn, state, pos);
     }
 
     template <class T>
@@ -158,9 +175,9 @@ public:
     }
 
     template <class T>
-    __forceinline BOOL WriteFileAsync(T *pBuffer, DWORD nNum, CallbackFn *pfn, void *state)
+    __forceinline int WriteFileAsync(T *pBuffer, DWORD nNum, CallbackFn *pfn, void *state, __int64 pos=-1LL)
     {
-        return OperFile<T, WriteFileOper>(pBuffer, nNum, pfn, state);
+        return OperFile<T, WriteFileOper>(pBuffer, nNum, pfn, state, pos);
     }
 
     template <class T>
@@ -175,6 +192,28 @@ public:
         {
             return -1;
         }
+    }
+
+    __forceinline BOOL SeekFile(__int64 offset, DWORD moveMethod, __int64 *newPos)
+    {
+        LARGE_INTEGER liOffset;
+        LARGE_INTEGER newLiOffset;
+        liOffset.QuadPart = offset;
+        BOOL ret = SetFilePointerEx(m_hFile, liOffset, &newLiOffset, moveMethod);
+        *newPos = newLiOffset.QuadPart;
+        return ret;
+    }
+
+    __forceinline BOOL FlushFile()
+    {
+        return FlushFileBuffers(m_hFile);
+    }
+
+    __forceinline __int64 FileSize()
+    {
+        LARGE_INTEGER size;
+        GetFileSizeEx(m_hFile, &size);
+        return size.QuadPart;
     }
 };
 
@@ -219,10 +258,17 @@ namespace Tools {
         generic <class T>
             public delegate void IOCallbackDel(int ioResult, Object ^pState, array<T> ^pBuffer, int offset, int bytesTransferred);
 
+        private interface class IIO
+        {
+        public:
+            virtual void UpdatePos(__int64 amt);
+        };
+
         generic <class T>
             private ref class IOCallbackClass
             {
             private:
+                IIO ^m_parent;
                 IOCallbackDel<T> ^m_cb;
                 int m_managedTypeSize;
                 GCHandle ^m_handleBuffer;
@@ -239,12 +285,15 @@ namespace Tools {
                     GCHandle ^pStateHandle = GCHandle::FromIntPtr(static_cast<IntPtr>(pState));
                     IOCallbackClass ^x = safe_cast<IOCallbackClass^>(pStateHandle->Target);
                     x->m_handleBuffer->Free();
+                    x->m_parent->UpdatePos(bytesTransferred);
                     x->m_cb->Invoke(ioResult, x->m_pState, x->m_buffer, x->m_offset, bytesTransferred);
                 }
 
             public:
-                IOCallbackClass()
+                IOCallbackClass(IIO ^parent)
                 {
+                    this->m_parent = parent;
+
                     //Type^ t = NativeHelper::typeid;
                     //Object ^o = t->GetMethod("SizeOf", BindingFlags::Static | BindingFlags::NonPublic)
                     //    ->GetGenericMethodDefinition()
@@ -291,19 +340,25 @@ namespace Tools {
                 __forceinline IntPtr SelfPtr() { return m_selfPtr;  }
             };
 
-        public ref class AsyncStreamIO : public IDisposable
+        public ref class AsyncStreamIO : public IDisposable, public IIO, public Stream
 		{
         private:
             IOCallback *m_cb;
             Dictionary<Type^, Object^> ^m_cbFns;
             Object ^m_ioLock;
+            // Stream stuff
+            bool m_canRead;
+            bool m_canWrite;
+            bool m_canSeek;
+            __int64 m_length;
+            __int64 m_position;
 
             generic <class T>
                 IOCallbackClass<T>^ GetCbFn(array<T> ^pBuffer)
                 {
                     Type ^t = T::typeid;
                     if (!m_cbFns->ContainsKey(t))
-                        m_cbFns[t] = (Object^)(gcnew IOCallbackClass<T>());
+                        m_cbFns[t] = (Object^)(gcnew IOCallbackClass<T>(this));
                     return (IOCallbackClass<T>^)m_cbFns[t];
                 }
 
@@ -320,7 +375,8 @@ namespace Tools {
             }
 
         public:
-            AsyncStreamIO(FileStream ^strm) : m_cb(nullptr)
+            AsyncStreamIO(FileStream ^strm) : m_cb(nullptr), m_cbFns(nullptr), m_ioLock(nullptr),
+                m_canRead(false), m_canWrite(false), m_canSeek(false), m_length(0LL), m_position(0LL)
             {
                 m_cb = new IOCallback((void*)strm->SafeFileHandle->DangerousGetHandle());
                 m_cbFns = gcnew Dictionary<Type^, Object^>();
@@ -345,27 +401,115 @@ namespace Tools {
                 Free(false);
             }
 
-            static FileStream^ OpenFileAsyncWrite(String^ name)
+            property bool CanRead
             {
-                array<wchar_t> ^nameArr = name->ToCharArray();
-                pin_ptr<wchar_t> namePtr = &nameArr[0];
-                LPCWSTR pName = (LPCWSTR)namePtr;
-                HANDLE h = CreateFile(pName, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_FLAG_OVERLAPPED | FILE_ATTRIBUTE_NORMAL, nullptr);
-                SafeFileHandle ^sh = gcnew SafeFileHandle(IntPtr(h), true);
-                FileStream ^fs = gcnew FileStream(sh, FileAccess::Write, 4096, true);
-                return fs;
+                virtual bool __clrcall get() new = Stream::CanRead::get { return m_canRead; }
+            }
+            property bool CanWrite
+            {
+                virtual bool __clrcall get() override { return m_canWrite; }
+            }
+            property bool CanSeek
+            {
+                virtual bool __clrcall get() override { return m_canSeek; }
+            }
+            virtual property __int64 Length
+            {
+                __int64 __clrcall get() override { return m_length; }
+            }
+            virtual property __int64 Position
+            {
+                __int64 __clrcall get() override { return m_position; }
+                void __clrcall set(__int64 pos) override
+                {
+                    this->Seek(pos, SeekOrigin::Begin);
+                }
+            }
+            virtual void __clrcall Flush() override
+            {
+                if (FALSE == m_cb->FlushFile())
+                    throw gcnew IOException("Unable to flush file");
+            }
+            virtual __int64 __clrcall Seek(__int64 offset, SeekOrigin origin) override
+            {
+                DWORD moveMethod = FILE_CURRENT;
+                __int64 newPos;
+                switch (origin)
+                {
+                case SeekOrigin::Begin:
+                    moveMethod = FILE_BEGIN;
+                    break;
+                case SeekOrigin::Current:
+                    moveMethod = FILE_CURRENT;
+                    break;
+                case SeekOrigin::End:
+                    moveMethod = FILE_END;
+                    break;
+                }
+                BOOL ret = m_cb->SeekFile(offset, moveMethod, &newPos);
+                if (FALSE == ret)
+                    throw gcnew IOException("Unable to seek");
+                return newPos;
+            }
+            virtual void __clrcall SetLength(__int64 length) override
+            {
+                assert(false);
+                // not supported
+            }
+            virtual int __clrcall Read(array<byte> ^buf, int offset, int cnt) new = Stream::Read
+            {
+                return ReadFileSync(buf, offset, cnt);
+            }
+            virtual void __clrcall Write(array<byte> ^buf, int offset, int cnt) new = Stream::Write
+            {
+                int ret = WriteFileSync(buf, offset, cnt);
+                if (ret != cnt)
+                    throw gcnew IOException("Unable to write to stream");
             }
 
-            static AsyncStreamIO^ OpenFileAsyncWrite(String^ name, FileStream^ %fsOut)
+            virtual void UpdatePos(__int64 amt) = IIO::UpdatePos
+            {
+                m_position += amt;
+                m_length = max(m_length, m_position);
+            }
+
+            // not useful as both m_ptp and FileStream cannot both simultaneously exist!!
+            //static FileStream^ OpenFileAsyncWrite(String^ name)
+            //{
+            //    array<wchar_t> ^nameArr = name->ToCharArray();
+            //    pin_ptr<wchar_t> namePtr = &nameArr[0];
+            //    LPCWSTR pName = (LPCWSTR)namePtr;
+            //    HANDLE h = CreateFile(pName, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_FLAG_OVERLAPPED | FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+            //    SafeFileHandle ^sh = gcnew SafeFileHandle(IntPtr(h), true);
+            //    FileStream ^fs = gcnew FileStream(sh, FileAccess::Write, 4096, true);
+            //    return fs;
+            //}
+
+            static AsyncStreamIO^ OpenFileAsyncWrite(String^ name, Stream^ %fsOut)
             {
                 array<wchar_t> ^nameArr = name->ToCharArray();
                 pin_ptr<wchar_t> namePtr = &nameArr[0];
                 LPCWSTR pName = (LPCWSTR)namePtr;
-                HANDLE h = CreateFile(pName, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_FLAG_OVERLAPPED | FILE_FLAG_WRITE_THROUGH, nullptr);
+                HANDLE h = CreateFile(pName, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_FLAG_OVERLAPPED | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_WRITE_THROUGH, nullptr);
                 AsyncStreamIO ^io = gcnew AsyncStreamIO(h);
                 SafeFileHandle ^sh = gcnew SafeFileHandle(IntPtr(h), true);
-                //FileStream ^fs = gcnew FileStream(sh, FileAccess::Write, 4096);
-                //fsOut = fs;
+                io->m_position = 0LL;
+                io->m_length = 0LL;
+                fsOut = io;
+                return io;
+            }
+
+            static AsyncStreamIO^ OpenFileAsyncRead(String^ name, Stream^ %fsOut)
+            {
+                array<wchar_t> ^nameArr = name->ToCharArray();
+                pin_ptr<wchar_t> namePtr = &nameArr[0];
+                LPCWSTR pName = (LPCWSTR)namePtr;
+                HANDLE h = CreateFile(pName, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED | FILE_FLAG_SEQUENTIAL_SCAN | FILE_FLAG_WRITE_THROUGH, nullptr);
+                AsyncStreamIO ^io = gcnew AsyncStreamIO(h);
+                SafeFileHandle ^sh = gcnew SafeFileHandle(IntPtr(h), true);
+                io->m_position = 0LL;
+                io->m_length = io->m_cb->FileSize();
+                fsOut = io;
                 return io;
             }
 
@@ -375,14 +519,10 @@ namespace Tools {
                     Lock lock(m_ioLock);
                     IOCallbackClass<T>^ cbFn = GetCbFn(pBuffer);
                     IntPtr pBuf = cbFn->Set(state, pBuffer, offset, cb);
-                    int ret = m_cb->ReadFileAsync<byte>((byte*)pBuf.ToPointer(), nNum*cbFn->TypeSize(), cbFn->CbFn(), cbFn->SelfPtr().ToPointer());
-                    if (!ret)
-                    {
+                    int ret = m_cb->ReadFileAsync<byte>((byte*)pBuf.ToPointer(), nNum*cbFn->TypeSize(), cbFn->CbFn(), cbFn->SelfPtr().ToPointer(), m_position);
+                    if (-1 == ret || ret > 0) // > 0 not really an error, but finished sync, so no callback
                         cbFn->OnError();
-                        return -1;
-                    }
-                    else
-                        return ret;
+                    return ret;
                 }
 
             generic <class T>
@@ -391,14 +531,10 @@ namespace Tools {
                     Lock lock(m_ioLock);
                     IOCallbackClass<T>^ cbFn = GetCbFn(pBuffer);
                     IntPtr pBuf = cbFn->Set(state, pBuffer, offset, cb);
-                    int ret = m_cb->WriteFileAsync<byte>((byte*)pBuf.ToPointer(), nNum*cbFn->TypeSize(), cbFn->CbFn(), cbFn->SelfPtr().ToPointer());
-                    if (!ret)
-                    {
+                    int ret = m_cb->WriteFileAsync<byte>((byte*)pBuf.ToPointer(), nNum*cbFn->TypeSize(), cbFn->CbFn(), cbFn->SelfPtr().ToPointer(), m_position);
+                    if (-1 == ret || ret > 0) // > 0 not really an error, but finished sync, so no callback
                         cbFn->OnError();
-                        return -1;
-                    }
-                    else
-                        return ret;
+                    return ret;
                 }
 
             generic <class T>
