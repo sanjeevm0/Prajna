@@ -41,7 +41,7 @@ private:
     HANDLE m_hFile;
     void *m_pBuffer;
     volatile unsigned int m_inUse;
-    CRITICAL_SECTION m_cs;
+    CRITICAL_SECTION *m_cs;
 
     static void CALLBACK Callback(
         PTP_CALLBACK_INSTANCE Instance,
@@ -66,7 +66,8 @@ public:
         if (nullptr == m_ptp)
             m_ptp = CreateThreadpoolIo(m_hFile, IOCallback::Callback, this, NULL);
         memset(&m_olap, 0, sizeof(m_olap));
-        InitializeCriticalSection(&m_cs);
+        m_cs = new CRITICAL_SECTION;
+        InitializeCriticalSection(m_cs);
     }
 
     ~IOCallback()
@@ -78,8 +79,10 @@ public:
             m_ptp = nullptr;
         }
         Close(); // in case we didn't call close
-        DeleteCriticalSection(&m_cs);
-        printf("CritSec deleted\n");
+        DeleteCriticalSection(m_cs);
+        delete m_cs;
+        m_cs = NULL;
+        //printf("CritSec deleted\n");
     }
 
     // use enum as WriteFile and ReadFile have slightly differing signatures (LPVOID vs. LPCVOID)
@@ -208,18 +211,18 @@ public:
     __forceinline BOOL Close()
     {
         BOOL ret = TRUE;
-        printf("InClose - Close handle %llx\n", (__int64)m_hFile);
-        EnterCriticalSection(&m_cs);
-        printf("InClose - Enter\n");
+        //printf("InClose - Close handle %llx\n", (__int64)m_hFile);
+        EnterCriticalSection(m_cs);
+        //printf("InClose - Enter\n");
         if (m_hFile != NULL)
         {
-            printf("Closing handle %llx\n", (__int64)m_hFile);
+            //printf("Closing handle %llx\n", (__int64)m_hFile);
             ret = CloseHandle(m_hFile);
-            printf("Handle %llx close\n", (__int64)m_hFile);
+            //printf("Handle %llx close\n", (__int64)m_hFile);
             m_hFile = NULL;
         }
-        LeaveCriticalSection(&m_cs);
-        printf("InClose - Leave\n");
+        LeaveCriticalSection(m_cs);
+        //printf("InClose - Leave\n");
         return ret;
     }
 };
@@ -476,8 +479,10 @@ namespace Tools {
             // destructor (e.g. Dispose with bDisposing = true), automatically adds suppressfinalize call
             ~AsyncStreamIO()
             {
-                m_cbFns->Clear();
-                this->!AsyncStreamIO();
+                m_cbFns->Clear(); // managed resource
+                this->!AsyncStreamIO(); // finalizer - suppress finalize is already done
+                //GC::SuppressFinalize(this);
+                //Free();
             }
 
             !AsyncStreamIO()
@@ -488,7 +493,7 @@ namespace Tools {
             // Since Stream class implements IDisposable, it automatically calls close first prior to the virtual Dispose method, i.e. in Stream class
             // IDisposable::Dispose()
             // {
-            //     Close();
+            //     Dispose(); // calls publicly available Dispose() - for all classes in namespace System (then calls Close)
             // }
             // 
             // void Dispose()
