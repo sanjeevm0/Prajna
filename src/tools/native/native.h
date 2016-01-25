@@ -548,21 +548,8 @@ namespace Tools {
             }
             virtual __int64 __clrcall Seek(__int64 offset, SeekOrigin origin) override
             {
-                Int32 moveMethod = FILE_CURRENT;
                 __int64 newPos;
-                switch (origin)
-                {
-                case SeekOrigin::Begin:
-                    moveMethod = FILE_BEGIN;
-                    break;
-                case SeekOrigin::Current:
-                    moveMethod = FILE_CURRENT;
-                    break;
-                case SeekOrigin::End:
-                    moveMethod = FILE_END;
-                    break;
-                }
-                int ret = m_cb->SeekFile(offset, moveMethod, &newPos);
+                int ret = m_cb->SeekFile(offset, (int)origin, &newPos);
                 if (FALSE == ret)
                     throw gcnew IOException("Unable to seek");
                 return newPos;
@@ -596,19 +583,18 @@ namespace Tools {
             //    pin_ptr<wchar_t> namePtr = &nameArr[0];
             //    LPCWSTR pName = (LPCWSTR)namePtr;
             //    HANDLE h = CreateFile(pName, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_FLAG_OVERLAPPED | FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
-            //    SafeFileHandle ^sh = gcnew SafeFileHandle(IntPtr(h), true);
+            //    SafeFileHandle ^sh = gcnew SafeFileHandle(IntPtr(h), true); // cannot do with "true" as finalizer attempts to close the handle without checking
             //    FileStream ^fs = gcnew FileStream(sh, FileAccess::Write, 4096, true);
             //    return fs;
             //}
 
-            static AsyncStreamIO^ OpenFileAsyncWrite(String^ name, Stream^ %fsOut)
+            static AsyncStreamIO^ OpenFileWrite(String^ name, Stream^ %fsOut, FileOptions fOpt)
             {
                 array<Char> ^nameArr = name->ToCharArray();
                 pin_ptr<Char> namePtr = &nameArr[0];
                 Char *pName = (Char*)namePtr;
-                IntPtr h = (IntPtr)CreateFile(pName, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_FLAG_OVERLAPPED | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_WRITE_THROUGH, nullptr);
+                IntPtr h = (IntPtr)CreateFile(pName, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, (int)fOpt, nullptr);
                 AsyncStreamIO ^io = gcnew AsyncStreamIO((HANDLE)h);
-                //SafeFileHandle ^sh = gcnew SafeFileHandle(h, true);
                 io->m_position = 0LL;
                 io->m_length = 0LL;
                 io->m_canRead = false;
@@ -618,14 +604,13 @@ namespace Tools {
                 return io;
             }
 
-            static AsyncStreamIO^ OpenFileAsyncRead(String^ name, Stream^ %fsOut)
+            static AsyncStreamIO^ OpenFileRead(String^ name, Stream^ %fsOut, FileOptions fOpt)
             {
                 array<Char> ^nameArr = name->ToCharArray();
                 pin_ptr<Char> namePtr = &nameArr[0];
                 Char *pName = (Char*)namePtr;
-                IntPtr h = (IntPtr)CreateFile(pName, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED | FILE_FLAG_SEQUENTIAL_SCAN | FILE_FLAG_WRITE_THROUGH, nullptr);
+                IntPtr h = (IntPtr)CreateFile(pName, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, (int)fOpt, nullptr);
                 AsyncStreamIO ^io = gcnew AsyncStreamIO((HANDLE)h);
-                //SafeFileHandle ^sh = gcnew SafeFileHandle(h, true);
                 io->m_position = 0LL;
                 pin_ptr<__int64> pLen = &io->m_length;
                 int ret = io->m_cb->FileSize((__int64*)pLen);
@@ -667,7 +652,10 @@ namespace Tools {
                 {
                     Lock lock(m_ioLock);
                     pin_ptr<T> pBuf = &pBuffer[0];
-                    return m_cb->ReadFileSync<byte>((byte*)pBuf, nNum*sizeof(T));
+                    int amtRead = m_cb->ReadFileSync<byte>((byte*)pBuf, nNum*sizeof(T));
+                    if (amtRead >= 0)
+                        UpdatePos(amtRead);
+                    return amtRead;
                 }
 
             generic <class T>
@@ -675,7 +663,10 @@ namespace Tools {
                 {
                     Lock lock(m_ioLock);
                     pin_ptr<T> pBuf = &pBuffer[0];
-                    return m_cb->WriteFileSync<byte>((byte*)pBuf, nNum*sizeof(T));
+                    int amtWrite = m_cb->WriteFileSync<byte>((byte*)pBuf, nNum*sizeof(T));
+                    if (amtWrite >= 0)
+                        UpdatePos(amtWrite);
+                    return amtWrite;
                 }
         };
 	}
