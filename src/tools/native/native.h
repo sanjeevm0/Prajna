@@ -608,7 +608,7 @@ namespace Tools {
                 Char *pName = (Char*)namePtr;
                 IntPtr h = (IntPtr)CreateFile(pName, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_FLAG_OVERLAPPED | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_WRITE_THROUGH, nullptr);
                 AsyncStreamIO ^io = gcnew AsyncStreamIO((HANDLE)h);
-                SafeFileHandle ^sh = gcnew SafeFileHandle(h, true);
+                //SafeFileHandle ^sh = gcnew SafeFileHandle(h, true);
                 io->m_position = 0LL;
                 io->m_length = 0LL;
                 io->m_canRead = false;
@@ -625,7 +625,7 @@ namespace Tools {
                 Char *pName = (Char*)namePtr;
                 IntPtr h = (IntPtr)CreateFile(pName, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED | FILE_FLAG_SEQUENTIAL_SCAN | FILE_FLAG_WRITE_THROUGH, nullptr);
                 AsyncStreamIO ^io = gcnew AsyncStreamIO((HANDLE)h);
-                SafeFileHandle ^sh = gcnew SafeFileHandle(h, true);
+                //SafeFileHandle ^sh = gcnew SafeFileHandle(h, true);
                 io->m_position = 0LL;
                 pin_ptr<__int64> pLen = &io->m_length;
                 int ret = io->m_cb->FileSize((__int64*)pLen);
