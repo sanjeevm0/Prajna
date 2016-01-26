@@ -274,6 +274,7 @@ type SafeRefCnt<'T when 'T:null and 'T :> IRefCounter<string>> (infoStr : string
 
     override x.Finalize() =
         x.Release(true)
+        // base.Finalize // should be called if deriving from another class which has Finalize
 
     interface IDisposable with
         member x.Dispose() =
@@ -467,14 +468,6 @@ type [<AllowNullLiteral>] RBufPart<'T> =
 
     override x.ReleaseElem(b) =
         base.ReleaseElem(b)
-
-    override x.Finalize() =
-        x.Release(true)
-
-    interface IDisposable with
-        member x.Dispose() = 
-            x.Release(false)
-            GC.SuppressFinalize(x)
 
 type [<AllowNullLiteral>] internal SharedMemoryPool<'T,'TBase when 'T :> RefCntBuf<'TBase> and 'T: (new : unit -> 'T)> =
     inherit SharedPool<string,'T>
@@ -753,15 +746,6 @@ type StreamReader<'T>(_bls : StreamBase<'T>, _bufPos : int64, _maxLen : int64) =
     new (bls, bufPos) =
         new StreamReader<'T>(bls, bufPos, Int64.MaxValue)
 
-    member x.Release() =
-        ()
-    override x.Finalize() =
-        x.Release()
-    interface IDisposable with
-        member x.Dispose() = 
-            x.Release()
-            GC.SuppressFinalize(x)
-
     member x.Reset(_bufPos : int64, _maxLen : int64) =
         elemPos <- 0
         bufPos <- _bufPos
@@ -993,7 +977,7 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
         getNewWriteBuffer <- x.GetStackElem
         ()
 
-    member private x.ElemLen with get() = elemLen
+    member internal x.ElemLen with get() = elemLen
     member private x.FinalWriteElem with get() = finalWriteElem
     member private x.SimpleBuffer with get() = bSimpleBuffer
     member private x.ReplicateInfoFrom(src : BufferListStream<'T>) =
@@ -1200,7 +1184,7 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
             arr
 
     member x.GetBuffer(arr : byte[], offset : int64, count : int64) =
-        use sr = new StreamReader<'T>(x, offset, count)
+        let sr = new StreamReader<'T>(x, offset, count)
         let count = Math.Min(count, length-offset)
         let offset = ref 0
         let rem = ref arr.Length
@@ -1295,7 +1279,8 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
             bufBeginPos <- rbufPartNew.Offset
 
     // move to beginning of buffer i
-    member private x.MoveToBufferI(bAllowExtend : bool, i : int) =
+    abstract MoveToBufferI : bool*int -> bool
+    default x.MoveToBufferI(bAllowExtend : bool, i : int) =
         if (bAllowExtend && i >= elemLen) then
             let mutable j = elemLen
             while (j <= i) do
@@ -1544,7 +1529,7 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
 
     // append another memstream onto this one
     override x.Append(strmList : StreamBase<'TS>, offset : int64, count : int64) =
-        use sr = new StreamReader<'TS>(strmList, offset, count)
+        let sr = new StreamReader<'TS>(strmList, offset, count)
         let mutable bDone = false
         while (not bDone) do
             let (buf, pos, cnt) = sr.GetMoreBuffer()
@@ -1554,7 +1539,7 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
                 bDone <- true
 
     override x.AppendNoCopy(strmList : StreamBase<'T>, offset : int64, count : int64) =
-        use sr = new StreamReader<'T>(strmList, offset, count)
+        let sr = new StreamReader<'T>(strmList, offset, count)
         let mutable bDone = false
         while (not bDone) do
             use rbuf = sr.GetMoreBufferPart()
@@ -1567,6 +1552,75 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
     override x.AppendNoCopy(rbuf : RBufPart<'T>, offset : int64, count : int64) =
         use rbufAdd = new RBufPart<'T>(rbuf, int offset, int count)
         x.WriteRBufNoCopy(rbufAdd)
+
+    member internal x.SetPosToI(i : int) =
+        rbufPart <- bufList.[i]
+        elemPos <- i + 1
+        finalWriteElem <- Math.Max(finalWriteElem, elemPos)
+        rbuf <- rbufPart.Elem
+        bufBeginPos <- rbufPart.Offset
+        bufPos <- rbufPart.Offset
+        bufRem <- rbufPart.Count
+        if (i=0) then
+            rbufPart.StreamPos <- 0L
+        else
+            rbufPart.StreamPos <- bufList.[i-1].StreamPos + int64 bufList.[i-1].Count
+        // allow writing at end of last buffer
+        if (rbufPart.StreamPos + int64 rbufPart.Count >= length) then
+            bufRemWrite <- rbufPart.Elem.Length - rbufPart.Offset
+        else
+            // if already written buffer, then don't extend count
+            bufRemWrite <- rbufPart.Count
+
+open Prajna.Tools.Native
+
+[<AllowNullLiteral>]
+type BufferListStreamWithCache<'T>(fileName : string, bufferLess : bool) =
+    inherit BufferListStream<'T>()
+
+    let freader : Native.AsyncStreamIO = null
+    let fwriter : Native.AsyncStreamIO = null
+    let validList = new Dictionary<int, bool>()
+    let disposer = new DoOnce()
+    let initR = new DoOnce()
+    let initW = new DoOnce()
+
+    member val NumValid = 1 with get, set
+
+    member private x.DisposeInternal() =
+        if (Utils.IsNotNull freader) then
+            freader.Dispose()
+        if (Utils.IsNotNull fwriter) then
+            fwriter.Dispose()
+        validList.Clear()
+
+    member private x.OpenReader() =
+        if (null = freader) then
+            lock (freader) (fun _ ->
+                if (null = freader) then
+                    let mutable strm = null
+                    let fOpt = FileOptions.Asynchronous ||| FileOptions.S
+                    freader = AsyncStreamIO.OpenFileRead(name, &strm, 
+            )
+
+    override x.Dispose(bDisposing) =
+        disposer.Run(x.DisposeInternal)
+        base.Dispose(bDisposing)
+
+    override x.MoveToBufferI(bAllowExtend : bool, i : int) =
+        if (bAllowExtend && i >= x.ElemLen) then
+            let mutable j = x.ElemLen
+            while (j <= i) do
+                // extend by grabbing another buffer and appending to list
+                x.AddNewBuffer()
+                j <- j + 1
+        else if (i >= x.ElemLen) then
+            if 
+        if (i < x.ElemLen) then
+            x.SetPosToI(i)
+            true
+        else
+            false
 
 // MemoryStream which is essentially a collection of RefCntBuf
 // Not GetBuffer is not supported by this as it is not useful
