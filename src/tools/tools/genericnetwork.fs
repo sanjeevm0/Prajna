@@ -486,7 +486,7 @@ and [<AllowNullLiteral>] GenericConn() as x =
     member val RecvQEnqueue = xRecvC.Q.EnqueueWaitTime with get, set
 
     member private x.ContinueReceive(o : obj, bTimeOut : bool) =
-        eRecvSA.Count <- (eRecvSA.Elem :?> RefCntBufSA).SA.BytesTransferred
+        eRecvSA.Count <- int64 (eRecvSA.Elem :?> RefCntBufSA).SA.BytesTransferred
         let (success, event) = x.RecvQEnqueue(eRecvSA)
         if (success) then
             //Logger.LogF( LogLevel.MildVerbose, fun _ -> sprintf "Enqueue %d bytes from %s" eRecvNetwork.BytesTransferred (xConn.Socket.RemoteEndPoint.ToString()) )
@@ -685,7 +685,7 @@ and [<AllowNullLiteral>] GenericConn() as x =
                         bDone <- fst output
                         bForceEnqueue <- snd output
                 if (0 = eSendRem || bForceEnqueue) then
-                    eSendProcess.Count <- eSendOffset
+                    eSendProcess.Count <- int64 eSendOffset
                     eSendNetwork.SA.SetBuffer(0, eSendOffset)
                     let output = enqueueAction(eSendProcess)
                     let bSuccess = fst output

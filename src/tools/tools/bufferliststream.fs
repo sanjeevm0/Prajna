@@ -443,8 +443,10 @@ type internal RefCntBufAlign<'T>() =
 type [<AllowNullLiteral>] RBufPart<'T> =
     inherit SafeRefCnt<RefCntBuf<'T>>
 
+    // is virtual RBufPart (without any element)
+    [<DefaultValue>] val mutable Virtual : bool
     [<DefaultValue>] val mutable Offset : int
-    [<DefaultValue>] val mutable Count : int
+    [<DefaultValue>] val mutable Count : int64
     // the beginning element's position in the stream 
     [<DefaultValue>] val mutable StreamPos : int64
 
@@ -461,27 +463,40 @@ type [<AllowNullLiteral>] RBufPart<'T> =
             x.Offset <- e.Offset
             x.Count <- e.Count
 
-    new(e : RBufPart<'T>, offset : int, count : int) as x =
+    new(e : RBufPart<'T>, offset : int, count : int64) as x =
         { inherit SafeRefCnt<RefCntBuf<'T>>("RBufPart", e) }
         then
             x.Init()
             x.Offset <- offset
             x.Count <- count
 
-    new (buf : 'T[], offset : int, count : int) as x =
+    new (buf : 'T[], offset : int, count : int64) as x =
         { inherit SafeRefCnt<RefCntBuf<'T>>("RBufPart", new RefCntBuf<'T>(buf)) }
         then
             x.Init()
             x.Offset <- offset
             x.Count <- count
 
+    static member GetVirtual() : RBufPart<'T> =
+        let x = new RBufPart<'T>()
+        x.Offset <- 0
+        x.Count <- 0L
+        x.StreamPos <- 0L
+        x.Virtual <- true
+        x
+
+    member x.MakeVirtual() =
+        x.ReleaseElem(Some(false))
+        x.Virtual <- true
+
     member x.Init() =
+        x.Virtual <- false
         ()
 
     override x.InitElem(e) =
         base.InitElem(e)
         x.Offset <- e.Offset
-        x.Count <- 0
+        x.Count <- 0L
         x.StreamPos <- 0L
 
     override x.ReleaseElem(b) =
@@ -777,7 +792,7 @@ type StreamReader<'T>(_bls : StreamBase<'T>, _bufPos : int64, _maxLen : int64) =
             use rbuf = bls.GetMoreBufferPart(&elemPos, &bufPos)
             let retCnt = Math.Min(int64 rbuf.Count, maxLen)
             maxLen <- maxLen - retCnt
-            let ret = new RBufPart<'T>(rbuf, rbuf.Offset, int retCnt)
+            let ret = new RBufPart<'T>(rbuf, rbuf.Offset, retCnt)
             rbuf.Release()
             ret
         else
@@ -867,7 +882,7 @@ type StreamBaseByte =
 
     override x.GetMoreBufferPart(elemPos : int byref, pos : int64 byref) : RBufPart<byte> =
         let (buf, pos, cnt) = x.GetMoreBuffer(&elemPos, &pos)
-        new RBufPart<byte>(buf, pos, cnt)
+        new RBufPart<byte>(buf, pos, int64 cnt)
 
     override x.GetTotalBuffer() =
         x.GetBuffer()
@@ -929,7 +944,7 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
             bufferSizeDefault
     let mutable getNewWriteBuffer : unit->RBufPart<'T> = (fun _ ->
         let buf = Array.zeroCreate<'T>(bufferSize)
-        new RBufPart<'T>(buf, 0, 0)
+        new RBufPart<'T>(buf, 0, 0L)
     )
     let mutable bufList : List<RBufPart<'T>> = null
     let mutable bufListRef : SafeRefCnt<RefCntList<RBufPart<'T>,RefCntBuf<'T>>> = null
@@ -960,7 +975,7 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
         new BufferListStream<'T>()
         then
             x.SimpleBuffer <- true
-            x.AddExistingBuffer(new RBufPart<'T>(buf, index, count))
+            x.AddExistingBuffer(new RBufPart<'T>(buf, index, int64 count))
 
     new(bls : BufferListStream<'T>, offset : int64, count : int64) as x =
         new BufferListStream<'T>()
@@ -995,8 +1010,9 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
         getNewWriteBuffer <- x.GetStackElem
         ()
 
-    member internal x.ElemLen with get() = elemLen
-    member internal x.ElemPos with get() = elemPos
+    member internal x.ElemLen with get() = elemLen and set(v) = elemLen <- v
+    member internal x.ElemPos with get() = elemPos and set(v) = elemPos <- v
+    member internal x.RBufPart with get() = rbufPart
     member private x.FinalWriteElem with get() = finalWriteElem
     member private x.SimpleBuffer with get() = bSimpleBuffer
     member private x.ReplicateInfoFrom(src : BufferListStream<'T>) =
@@ -1180,7 +1196,7 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
     member x.NumBuf with get() = elemLen
 
     member private x.BufListNoCheck with get() = bufListRef.ElemNoCheck.List
-    member private x.BufList with get() : List<RBufPart<'T>> = bufList and set(v) = bufList <- v
+    member internal x.BufList with get() : List<RBufPart<'T>> = bufList and set(v) = bufList <- v
     member private x.BufListRef with get() : SafeRefCnt<RefCntList<RBufPart<'T>,RefCntBuf<'T>>> = bufListRef and set(v) = bufListRef <- v
 
     override x.GetTotalBuffer() =
@@ -1193,9 +1209,9 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
             for l in bufList do
                 let off1 = l.Offset*sizeof<'T>
                 let off2 =  offset*sizeof<'T>
-                let len = Math.Min(l.Count*sizeof<'T>, (int32) length - off2)
+                let len = Math.Min(int l.Count*sizeof<'T>, (int32) length - off2)
                 Buffer.BlockCopy(l.Elem.Buffer, off1, arr,off2, len)
-                offset <- offset + l.Count
+                offset <- offset + int l.Count
             arr
 
     member x.GetBuffer(arr : byte[], offset : int64, count : int64) =
@@ -1223,7 +1239,7 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
             while (bufList.[elemPos].StreamPos + int64 bufList.[elemPos].Count <= pos) do
                 elemPos <- elemPos + 1
             let offset = int(pos - bufList.[elemPos].StreamPos)
-            let cnt = bufList.[elemPos].Count - offset
+            let cnt = bufList.[elemPos].Count - int64 offset
             pos <- pos + int64 cnt
             let totalOffset = bufList.[elemPos].Offset + offset
             new RBufPart<'T>(bufList.[elemPos], totalOffset, cnt)
@@ -1233,7 +1249,7 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
             (null, 0, 0)
         else
             let part = x.GetMoreBufferPart(&elemPos, &pos)
-            let ret = (part.Elem.Buffer, part.Offset, part.Count)
+            let ret = (part.Elem.Buffer, part.Offset, int part.Count)
             part.Release()
             ret
 
@@ -1290,8 +1306,27 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
             finalWriteElem <- elemLen
             bufRem <- 0
             bufRemWrite <- 0
-            bufPos <- rbufPartNew.Offset + rbufPartNew.Count
+            bufPos <- rbufPartNew.Offset + int rbufPartNew.Count
             bufBeginPos <- rbufPartNew.Offset
+
+    member internal x.SetPosToI(i : int) =
+        rbufPart <- bufList.[i]
+        elemPos <- i + 1
+        finalWriteElem <- Math.Max(finalWriteElem, elemPos)
+        rbuf <- rbufPart.Elem
+        bufBeginPos <- rbufPart.Offset
+        bufPos <- rbufPart.Offset
+        bufRem <- int rbufPart.Count
+        if (i=0) then
+            rbufPart.StreamPos <- 0L
+        else
+            rbufPart.StreamPos <- bufList.[i-1].StreamPos + int64 bufList.[i-1].Count
+        // allow writing at end of last buffer
+        if (rbufPart.StreamPos + int64 rbufPart.Count >= length) then
+            bufRemWrite <- rbufPart.Elem.Length - rbufPart.Offset
+        else
+            // if already written buffer, then don't extend count
+            bufRemWrite <- int rbufPart.Count
 
     // move to beginning of buffer i
     abstract MoveToBufferI : bool*int -> bool
@@ -1303,23 +1338,7 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
                 x.AddNewBuffer()
                 j <- j + 1
         if (i < elemLen) then
-            rbufPart <- bufList.[i]
-            elemPos <- i + 1
-            finalWriteElem <- Math.Max(finalWriteElem, elemPos)
-            rbuf <- rbufPart.Elem
-            bufBeginPos <- rbufPart.Offset
-            bufPos <- rbufPart.Offset
-            bufRem <- rbufPart.Count
-            if (i=0) then
-                rbufPart.StreamPos <- 0L
-            else
-                rbufPart.StreamPos <- bufList.[i-1].StreamPos + int64 bufList.[i-1].Count
-            // allow writing at end of last buffer
-            if (rbufPart.StreamPos + int64 rbufPart.Count >= length) then
-                bufRemWrite <- rbufPart.Elem.Length - rbufPart.Offset
-            else
-                // if already written buffer, then don't extend count
-                bufRemWrite <- rbufPart.Count
+            x.SetPosToI(i)
             true
         else
             false
@@ -1338,9 +1357,9 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
             let ret = x.MoveToBufferI(false, elemPos-2)
             if (ret) then
                 // go back by count
-                bufPos <- rbufPart.Offset + rbufPart.Count
+                bufPos <- rbufPart.Offset + int rbufPart.Count
                 bufRem <- 0
-                bufRemWrite <- bufRemWrite - rbufPart.Count
+                bufRemWrite <- bufRemWrite - int rbufPart.Count
             ret
         else
             true
@@ -1349,7 +1368,7 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
         bufPos <- bufPos + amt
         bufRemWrite <- bufRemWrite - amt
         bufRem <- Math.Max(0, bufRem - amt)
-        rbufPart.Count <- Math.Max(rbufPart.Count, bufPos - bufBeginPos)
+        rbufPart.Count <- Math.Max(rbufPart.Count, int64 (bufPos - bufBeginPos))
         position <- position + int64 amt
         length <- Math.Max(length, position)
 
@@ -1383,9 +1402,9 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
                 | SeekOrigin.End ->
                     // seek to end
                     x.MoveToBufferI(false, finalWriteElem-1) |> ignore
-                    bufPos <- bufPos + rbufPart.Count
-                    bufRem <- bufRem - rbufPart.Count
-                    bufRemWrite <- bufRemWrite - rbufPart.Count
+                    bufPos <- bufPos + int rbufPart.Count
+                    bufRem <- bufRem - int rbufPart.Count
+                    bufRemWrite <- bufRemWrite - int rbufPart.Count
                     position <- length
                 | _ -> ()
         if (finalPos > position) then
@@ -1441,7 +1460,7 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
             x.MoveToNextBuffer(true, bufRemWrite) |> ignore
             let (srcCopy, dstCopy) = BufferListStream<'T>.SrcDstBlkCopy<'TS[],'T[],'TS,'T>(buf, &bOffset, &bCount, rbuf.Buffer, &bufPos, &bufRemWrite)
             bufRem <- Math.Max(0, bufRem - dstCopy)
-            rbufPart.Count <- Math.Max(rbufPart.Count, bufPos - bufBeginPos)
+            rbufPart.Count <- Math.Max(rbufPart.Count, int64(bufPos - bufBeginPos))
             position <- position + int64 dstCopy
             length <- Math.Max(length, position)
 
@@ -1460,7 +1479,7 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
                 bufRem <- 0
             else
                 bufRem <- Math.Max(0, bufRem - dstCopy)
-            rbufPart.Count <- Math.Max(rbufPart.Count, bufPos - bufBeginPos)
+            rbufPart.Count <- Math.Max(rbufPart.Count, int64(bufPos - bufBeginPos))
             position <- position + int64 dstCopy
             length <- Math.Max(length, position)        
 
@@ -1478,7 +1497,7 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
             x.MoveToNextBuffer(true, bufRemWrite) |> ignore
             let (srcCopy, dstCopy) = BufferListStream<'T>.SrcDstBlkCopy<Array,'T[],byte,'T>(buf, &bOffset, &bCount, rbuf.Buffer, &bufPos, &bufRemWrite)
             bufRem <- Math.Max(0, bufRem - dstCopy)
-            rbufPart.Count <- Math.Max(rbufPart.Count, bufPos - bufBeginPos)
+            rbufPart.Count <- Math.Max(rbufPart.Count, int64(bufPos - bufBeginPos))
             position <- position + int64 dstCopy
             length <- Math.Max(length, position)
 
@@ -1555,98 +1574,190 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
                 bDone <- true
 
     override x.AppendNoCopy(rbuf : RBufPart<'T>, offset : int64, count : int64) =
-        use rbufAdd = new RBufPart<'T>(rbuf, int offset, int count)
+        use rbufAdd = new RBufPart<'T>(rbuf, int offset, count)
         x.WriteRBufNoCopy(rbufAdd)
-
-    member internal x.SetPosToI(i : int) =
-        rbufPart <- bufList.[i]
-        elemPos <- i + 1
-        finalWriteElem <- Math.Max(finalWriteElem, elemPos)
-        rbuf <- rbufPart.Elem
-        bufBeginPos <- rbufPart.Offset
-        bufPos <- rbufPart.Offset
-        bufRem <- rbufPart.Count
-        if (i=0) then
-            rbufPart.StreamPos <- 0L
-        else
-            rbufPart.StreamPos <- bufList.[i-1].StreamPos + int64 bufList.[i-1].Count
-        // allow writing at end of last buffer
-        if (rbufPart.StreamPos + int64 rbufPart.Count >= length) then
-            bufRemWrite <- rbufPart.Elem.Length - rbufPart.Offset
-        else
-            // if already written buffer, then don't extend count
-            bufRemWrite <- rbufPart.Count
 
 open Prajna.Tools.Native
 
 [<AllowNullLiteral>]
-type BufferListStreamWithCache<'T>(fileName : string) =
+type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 'TP :> IRefCounter<string>> private (fileName : string, b : bool) =
     inherit BufferListStream<'T>()
 
-    let mutable freader : Native.AsyncStreamIO = null
-    let mutable fwriter : Native.AsyncStreamIO = null
-    let validList = new Dictionary<int, bool>() // bool tells if buffer is dirty and needs to be written to file upon invalidation
-    let mutable curWrite = 0
+    let mutable file : Native.AsyncStreamIO = null
+    let validList = new List<int>()
+    let isDirty = new Dictionary<int, bool>() // bool tells if buffer is dirty and needs to be written to file upon invalidation
     let disposer = new DoOnce()
+    let eDoneIO = new ManualResetEvent(false)
 
+    internal new (fileName : string) as x =
+        new BufferListStreamWithCache<'T,'TP>(fileName, false)
+        then
+            if (File.Exists(fileName)) then
+                x.OpenFile()
+                let elem = RBufPart<'T>.GetVirtual()
+                elem.StreamPos <- 0L
+                elem.Count <- x.File.Length
+                x.BufList.Add(elem)
+                x.Capacity64 <- elem.Count
+
+    internal new (fileName : string, pool : SharedPool<string,'TP>) as x =
+        new BufferListStreamWithCache<'T,'TP>(fileName)
+        then
+            x.Pool <- pool
+            x.GetNewWriteBuffer <- x.GetNewBuffer
+
+    // bufList consists of "pre", "numValid", and "post" list (i.e. NumValid + 2 elements at most)
+    member private x.File with get() : AsyncStreamIO = file
     member val NumValid = 1 with get, set
     member val BufferLess = false with get, set
     member val SequentialRead = true with get, set
     member val SequentialWrite = true with get, set
+    member val private Pool : SharedPool<string, 'TP> = null with get, set
+    member val Alignment = 1 with get, set
+
+    member private x.GetNewBuffer() =
+        let (event, buf) = RBufPart<'T>.GetFromPool(x.GetInfoId()+":RBufPart", x.Pool,
+                                                    fun () -> new RBufPart<'T>() :> SafeRefCnt<RefCntBuf<'T>>)
+        buf.Elem.UserToken <- box(x)
+        buf :?> RBufPart<'T>
+
+    member private x.GetNewBufferWait() =
+        let mutable bDone = false
+        let mutable buf = null
+        while not bDone do
+            let (event, bufGet) = RBufPart<'T>.GetFromPool(x.GetInfoId()+":RBufPart", x.Pool,
+                                                           fun () -> new RBufPart<'T>() :> SafeRefCnt<RefCntBuf<'T>>)
+            if (Utils.IsNotNull bufGet) then
+                buf <- bufGet
+        buf.Elem.UserToken <- box(x)
+        buf :?> RBufPart<'T>
 
     member private x.DisposeInternal() =
-        if (Utils.IsNotNull freader) then
-            freader.Dispose()
-        if (Utils.IsNotNull fwriter) then
-            fwriter.Dispose()
+        if (Utils.IsNotNull file) then
+            file.Dispose()
         validList.Clear()
+        isDirty.Clear()
 
-    member private x.OpenReader() =
-        if (null = freader) then
-            lock (freader) (fun _ ->
-                if (null = freader) then
+    member private x.OpenFile() =
+        if (null = file) then
+            lock (file) (fun _ ->
+                if (null = file) then
                     let mutable strm = null
                     let mutable fOpt = FileOptions.Asynchronous
                     if x.SequentialRead then
                         fOpt <- fOpt ||| FileOptions.SequentialScan
-                    freader <- AsyncStreamIO.OpenFileRead(fileName, &strm, fOpt, x.BufferLess)
-            )
-
-    member private x.OpenWriter() =
-        if (null = fwriter) then
-            lock (fwriter) (fun _ ->
-                if (null = fwriter) then
-                    let mutable strm = null
-                    let mutable fOpt = FileOptions.Asynchronous
                     if x.SequentialWrite then
                         fOpt <- fOpt ||| FileOptions.WriteThrough
-                    fwriter <- AsyncStreamIO.OpenFileWrite(fileName, &strm, fOpt, x.BufferLess)
+                    file <- AsyncStreamIO.OpenFileReadWrite(fileName, &strm, fOpt, x.BufferLess)
             )
 
     override x.Dispose(bDisposing) =
         disposer.Run(x.DisposeInternal)
         base.Dispose(bDisposing)
 
+    member x.DoneIO (ioResult : int) (state : obj) (buffer : 'T[]) (offset : int) (bytesTransferred : int) =
+        let num = state :?> int
+        if (num <> bytesTransferred*sizeof<'T>) then
+            raise (new Exception("I/O failed "))
+        eDoneIO.Set() |> ignore
+
+    member x.MakeVirtual(numKeep : int) =
+        while (validList.Count > numKeep) do
+            let elem = validList.[0] // take from top
+            let rbuf = x.BufList.[elem]
+            if (isDirty.[elem]) then
+                eDoneIO.Reset() |> ignore
+                file.WriteFilePos(rbuf.Elem.Buffer, rbuf.Offset, int rbuf.Count, IOCallbackDel<'T>(x.DoneIO), rbuf.Count, rbuf.StreamPos) |> ignore
+                eDoneIO.WaitOne() |> ignore
+            rbuf.MakeVirtual()
+            validList.RemoveAt(0)
+            isDirty.Remove(elem) |> ignore
+
+    member x.FillWithRead(elem : RBufPart<'T>) =
+        // fill in using reader
+        x.OpenFile()
+        if (file.Length > elem.StreamPos*(int64 sizeof<'T>)) then
+            let maxRead = file.Length/(int64 sizeof<'T>) - elem.StreamPos
+            let numRead = int (Math.Min(maxRead, elem.Count))
+            eDoneIO.Reset() |> ignore
+            file.ReadFilePos(elem.Elem.Buffer, elem.Elem.Offset, numRead, new IOCallbackDel<'T>(x.DoneIO), numRead, elem.StreamPos) |> ignore
+            eDoneIO.WaitOne() |> ignore
+
     override x.MoveToNextBuffer(bAllowExtend : bool, rem : int) =
+        if (bAllowExtend && 0 = rem) then
+            x.MakeVirtual(x.NumValid-1) // one more will be added in the Move call, will get added to validList
         let ret = base.MoveToNextBuffer(bAllowExtend, rem)
-        if (bAllowExtend) then
-            validList.[curWrite] <- true
+        // check if buffer is invalid
+        if (x.RBufPart.Virtual) then
+            x.MakeVirtual(x.NumValid-1)
+            if (x.ElemPos <> x.BufList.Count) then
+                raise (new Exception("Invalid position -- internal error"))
+            // remove last element
+            let vElem = x.BufList.[x.ElemPos-1]
+            x.BufList.RemoveAt(x.ElemPos-1)
+            let elem = x.GetNewBufferWait()
+            // split, take portion of virtual count
+            elem.Count <- Math.Min(int64 elem.Elem.Length, vElem.Count)
+            elem.StreamPos <- vElem.StreamPos
+            elem.Virtual <- false
+            x.BufList.Add(elem)
+            x.FillWithRead(elem)
+            vElem.Count <- vElem.Count - elem.Count
+            vElem.StreamPos <- vElem.StreamPos + elem.Count
+            if (vElem.Count > 0L) then
+                x.BufList.Add(vElem)
+                x.ElemLen <- x.ElemLen  + 1
+            else
+                vElem.Release() // already virtual, so won't do much
+            // reset the position
+            x.SetPosToI(x.ElemPos-1)
+        if not (isDirty.ContainsKey(x.ElemPos-1)) then
+            isDirty.[x.ElemPos-1] <- false
+            validList.Add(x.ElemPos-1)
+        isDirty.[x.ElemPos-1] <- bAllowExtend
         ret
 
-    override x.MoveToBufferI(bAllowExtend : bool, i : int) =
-        if (bAllowExtend && i >= x.ElemLen) then
-            let mutable j = x.ElemLen
-            while (j <= i) do
-                // extend by grabbing another buffer and appending to list
-                x.AddNewBuffer()
-                j <- j + 1
-        else if (i >= x.ElemLen) then
-            if 
-        if (i < x.ElemLen) then
-            x.SetPosToI(i)
-            true
-        else
-            false
+    override x.Seek(offset : int64, origin : SeekOrigin) =
+        let mutable finalPos =
+            match origin with
+                | SeekOrigin.Begin -> offset
+                | SeekOrigin.Current -> x.Position + offset
+                | SeekOrigin.End -> x.Length + offset
+                | _ -> Int64.MaxValue
+        finalPos <- Math.Min(finalPos, x.Length)
+        if (finalPos <> x.Position) then
+            let finalPosAlign = finalPos / (int64 x.Alignment) * (int64 x.Alignment)
+            // dump and clear dirty buffers
+            x.MakeVirtual(0)
+            for e in x.BufList do
+                e.Release()
+            x.BufList.Clear()
+            x.ElemLen <- 0
+            x.ElemPos <- 0
+            if (finalPosAlign > 0L) then
+                let elem = RBufPart<'T>.GetVirtual()
+                elem.Count <- finalPosAlign
+                elem.StreamPos <- 0L
+                x.BufList.Add(elem)
+                x.ElemLen <- x.ElemLen + 1
+                x.ElemPos <- x.ElemPos + 1
+            let elem = x.GetNewBuffer()
+            elem.StreamPos <- finalPosAlign
+            elem.Count <- Math.Min(int64 elem.Elem.Length, file.Length/(int64 sizeof<'T>) - finalPosAlign)
+            x.FillWithRead(elem)
+            x.BufList.Add(elem)
+            x.SetPosToI(x.ElemPos)
+            x.MoveForwardAfterRead(int(finalPos - finalPosAlign))
+            x.ElemLen <- x.ElemLen + 1
+            x.ElemPos <- x.ElemPos + 1
+            // remainder
+            if (x.Length > elem.StreamPos + elem.Count) then
+                let elemLast = RBufPart<'T>.GetVirtual()
+                elemLast.Count <- x.Length - (elem.StreamPos + elem.Count)
+                elemLast.StreamPos <- elem.StreamPos + elem.Count
+                x.BufList.Add(elemLast)
+                x.ElemLen <- x.ElemLen + 1
+        finalPos
 
 // MemoryStream which is essentially a collection of RefCntBuf
 // Not GetBuffer is not supported by this as it is not useful
@@ -1672,7 +1783,7 @@ type MemoryStreamB(defaultBufSize : int, toAvoidConfusion : byte) =
         new MemoryStreamB()
         then
             x.SimpleBuffer <- true
-            x.AddExistingBuffer(new RBufPart<byte>(buf, index, count))
+            x.AddExistingBuffer(new RBufPart<byte>(buf, index, int64 count))
 
     new(buf : byte[]) =
         new MemoryStreamB(buf, 0, buf.Length)
@@ -1720,7 +1831,7 @@ type MemoryStreamB(defaultBufSize : int, toAvoidConfusion : byte) =
 
     override x.ComputeHash(hasher : Security.Cryptography.HashAlgorithm, offset : int64, len : int64) =
         let mutable bDone = false
-        use sr = new StreamReader<byte>(x, offset, len)
+        let sr = new StreamReader<byte>(x, offset, len)
         sr.ApplyFnToBuffers (fun (buf, pos, cnt) -> hasher.TransformBlock(buf, pos, cnt, null, 0) |> ignore)
         hasher.TransformFinalBlock(emptyBlk, 0, 0) |> ignore
         hasher.Hash

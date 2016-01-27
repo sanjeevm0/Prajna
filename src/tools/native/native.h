@@ -642,12 +642,33 @@ namespace Native {
             return io;
         }
 
+        static AsyncStreamIO^ OpenFileReadWrite(String^ name, Stream^ %fsOut, FileOptions fOpt, bool bBufferLess)
+        {
+            array<Char> ^nameArr = name->ToCharArray();
+            pin_ptr<Char> namePtr = &nameArr[0];
+            Char *pName = (Char*)namePtr;
+            int dwFlags = (int)fOpt;
+            if (bBufferLess) dwFlags |= FILE_FLAG_NO_BUFFERING;
+            IntPtr h = (IntPtr)CreateFile(pName, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, nullptr, OPEN_ALWAYS, dwFlags, nullptr);
+            AsyncStreamIO ^io = gcnew AsyncStreamIO((HANDLE)h);
+            io->m_position = 0LL;
+            pin_ptr<__int64> pLen = &io->m_length;
+            int ret = io->m_cb->FileSize((__int64*)pLen);
+            if (!ret)
+                throw gcnew IOException("Unable to get file length");
+            io->m_canRead = true;
+            io->m_canWrite = true;
+            io->m_canSeek = true;
+            fsOut = io;
+            return io;
+        }
+
         generic <class T> int ReadFilePos(array<T> ^pBuffer, int offset, int nNum, IOCallbackDel<T> ^cb, Object ^state, Int64 position)
         {
             Lock lock(m_ioLock);
             IOCallbackClass<T>^ cbFn = GetCbFn(pBuffer);
             IntPtr pBuf = cbFn->Set(state, pBuffer, offset, cb);
-            int ret = m_cb->ReadFileAsync<byte>((byte*)pBuf.ToPointer(), nNum*cbFn->TypeSize(), cbFn->CbFn(), cbFn->SelfPtr().ToPointer(), position);
+            int ret = m_cb->ReadFileAsync<byte>((byte*)pBuf.ToPointer(), nNum*cbFn->TypeSize(), cbFn->CbFn(), cbFn->SelfPtr().ToPointer(), position*cbFn->TypeSize());
             if (-1 == ret || ret > 0) // > 0 not really an error, but finished sync, so no callback
                 cbFn->OnError();
             return ret;
@@ -663,7 +684,7 @@ namespace Native {
             Lock lock(m_ioLock);
             IOCallbackClass<T>^ cbFn = GetCbFn(pBuffer);
             IntPtr pBuf = cbFn->Set(state, pBuffer, offset, cb);
-            int ret = m_cb->WriteFileAsync<byte>((byte*)pBuf.ToPointer(), nNum*cbFn->TypeSize(), cbFn->CbFn(), cbFn->SelfPtr().ToPointer(), m_position);
+            int ret = m_cb->WriteFileAsync<byte>((byte*)pBuf.ToPointer(), nNum*cbFn->TypeSize(), cbFn->CbFn(), cbFn->SelfPtr().ToPointer(), position*cbFn->TypeSize());
             if (-1 == ret || ret > 0) // > 0 not really an error, but finished sync, so no callback
                 cbFn->OnError();
             return ret;
