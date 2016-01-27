@@ -195,6 +195,7 @@ type [<AllowNullLiteral>] internal SharedPool<'K,'T when 'T :> IRefCounter<'K> a
 [<AllowNullLiteral>]
 type SafeRefCnt<'T when 'T:null and 'T :> IRefCounter<string>> (infoStr : string)=
     [<DefaultValue>] val mutable private info : string
+    [<DefaultValue>] val mutable private baseInfo : string
 
     static let g_id = ref -1L
     let mutable id = Interlocked.Increment(g_id) //mutable for GetFromPool
@@ -241,6 +242,7 @@ type SafeRefCnt<'T when 'T:null and 'T :> IRefCounter<string>> (infoStr : string
             x.Element <- poolElem :> IRefCounter<string> :?> 'T
             x.InitElem(x.Element)
             x.RC.SetRef(1L)
+            x.baseInfo <- infoStr
             x.info <- infoStr + ":" + x.Id.ToString()
 #if DEBUGALLOCS
             x.Element.Allocs.[x.info] <- Environment.StackTrace
@@ -249,6 +251,22 @@ type SafeRefCnt<'T when 'T:null and 'T :> IRefCounter<string>> (infoStr : string
             (event, x)
         else
             (event, null)
+
+    member internal x.RefreshFromPool<'TP when 'TP:null and 'TP:(new:unit->'TP) and 'TP :> IRefCounter<string>>(pool : SharedPool<string,'TP>) :  ManualResetEvent =
+        let idGet = Interlocked.Increment(g_id)
+        let getInfo = infoStr + ":" + idGet.ToString()
+        let (event, poolElem) = pool.GetElem(getInfo)
+        if (Utils.IsNotNull poolElem) then
+            x.SetId(idGet)
+            x.Element <- poolElem :> IRefCounter<string> :?> 'T
+            x.InitElem(x.Element)
+            x.RC.SetRef(1L)
+            x.info <- x.baseInfo + ":" + x.Id.ToString()
+#if DEBUGALLOCS
+            x.Element.Allocs.[x.info] <- Environment.StackTrace
+            Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Using pool element %s for id %d - refcount %d" x.Element.Key x.Id x.Element.GetRef)
+#endif
+        event
 
     abstract InitElem : 'T->unit
     default x.InitElem(poolElem) =
@@ -978,6 +996,7 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
         ()
 
     member internal x.ElemLen with get() = elemLen
+    member internal x.ElemPos with get() = elemPos
     member private x.FinalWriteElem with get() = finalWriteElem
     member private x.SimpleBuffer with get() = bSimpleBuffer
     member private x.ReplicateInfoFrom(src : BufferListStream<'T>) =
@@ -1135,13 +1154,9 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
                 Logger.LogF(LogLevel.WildVerbose, fun _ -> sprintf "List release for %s with id %d %A finalize: %b remain: %d" x.Info x.Id (Array.init bufList.Count (fun index -> bufList.[index].ElemNoCheck.Id)) bFromFinalize streamsInUse.Count)
             else
                 Logger.LogF(LogLevel.WildVerbose, fun _ -> sprintf "List release for %s with id %d %A finalize: %b remain: %d" x.Info x.Id (Array.init bufList.Count (fun index -> bufList.[index].Elem.Id)) bFromFinalize streamsInUse.Count)
-            //if not (base.Info.Equals("")) then
-            //    streamsInUse.TryRemove(base.Info) |> ignore
             let b = ref Unchecked.defaultof<BufferListStream<'T>>
             streamsInUse.TryRemove(x.Id, b) |> ignore
             Interlocked.Decrement(streamsInUseCnt) |> ignore
-//            if not (streamsInUse.TryRemove(x.Id, b)) then
-//                failwith "Illegal"
             bufListRef.Release() // only truly releases when refcount goes to zero
 
     override x.Dispose(bDisposing : bool) =
@@ -1309,7 +1324,8 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
         else
             false
 
-    member private x.MoveToNextBuffer(bAllowExtend : bool, rem : int) =
+    abstract MoveToNextBuffer : bool*int -> bool
+    default x.MoveToNextBuffer(bAllowExtend : bool, rem : int) =
         if (0 = rem) then
             x.MoveToBufferI(bAllowExtend, elemPos)
         else
@@ -1417,17 +1433,6 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
     member x.SealAndGetNextWriteBuffer() =
         x.SealWriteBuffer()
         x.GetWriteBuffer()
-
-    member x.WriteArrConcurrent<'TS>(buf : 'TS[], offset : int, count : int) =
-        let mutable bOffset = offset
-        let mutable bCount = count
-        while (bCount > 0) do
-            x.MoveToNextBuffer(true, bufRemWrite) |> ignore
-            let (srcCopy, dstCopy) = BufferListStream<'T>.SrcDstBlkCopy<'TS[],'T[],'TS,'T>(buf, &bOffset, &bCount, rbuf.Buffer, &bufPos, &bufRemWrite)
-            bufRem <- Math.Max(0, bufRem - dstCopy)
-            rbufPart.Count <- Math.Max(rbufPart.Count, bufPos - bufBeginPos)
-            position <- position + int64 dstCopy
-            length <- Math.Max(length, position)
 
     member x.WriteArr<'TS>(buf : 'TS[], offset : int, count : int) =
         let mutable bOffset = offset
@@ -1575,17 +1580,19 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
 open Prajna.Tools.Native
 
 [<AllowNullLiteral>]
-type BufferListStreamWithCache<'T>(fileName : string, bufferLess : bool) =
+type BufferListStreamWithCache<'T>(fileName : string) =
     inherit BufferListStream<'T>()
 
-    let freader : Native.AsyncStreamIO = null
-    let fwriter : Native.AsyncStreamIO = null
-    let validList = new Dictionary<int, bool>()
+    let mutable freader : Native.AsyncStreamIO = null
+    let mutable fwriter : Native.AsyncStreamIO = null
+    let validList = new Dictionary<int, bool>() // bool tells if buffer is dirty and needs to be written to file upon invalidation
+    let mutable curWrite = 0
     let disposer = new DoOnce()
-    let initR = new DoOnce()
-    let initW = new DoOnce()
 
     member val NumValid = 1 with get, set
+    member val BufferLess = false with get, set
+    member val SequentialRead = true with get, set
+    member val SequentialWrite = true with get, set
 
     member private x.DisposeInternal() =
         if (Utils.IsNotNull freader) then
@@ -1599,13 +1606,32 @@ type BufferListStreamWithCache<'T>(fileName : string, bufferLess : bool) =
             lock (freader) (fun _ ->
                 if (null = freader) then
                     let mutable strm = null
-                    let fOpt = FileOptions.Asynchronous ||| FileOptions.S
-                    freader = AsyncStreamIO.OpenFileRead(name, &strm, 
+                    let mutable fOpt = FileOptions.Asynchronous
+                    if x.SequentialRead then
+                        fOpt <- fOpt ||| FileOptions.SequentialScan
+                    freader <- AsyncStreamIO.OpenFileRead(fileName, &strm, fOpt, x.BufferLess)
+            )
+
+    member private x.OpenWriter() =
+        if (null = fwriter) then
+            lock (fwriter) (fun _ ->
+                if (null = fwriter) then
+                    let mutable strm = null
+                    let mutable fOpt = FileOptions.Asynchronous
+                    if x.SequentialWrite then
+                        fOpt <- fOpt ||| FileOptions.WriteThrough
+                    fwriter <- AsyncStreamIO.OpenFileWrite(fileName, &strm, fOpt, x.BufferLess)
             )
 
     override x.Dispose(bDisposing) =
         disposer.Run(x.DisposeInternal)
         base.Dispose(bDisposing)
+
+    override x.MoveToNextBuffer(bAllowExtend : bool, rem : int) =
+        let ret = base.MoveToNextBuffer(bAllowExtend, rem)
+        if (bAllowExtend) then
+            validList.[curWrite] <- true
+        ret
 
     override x.MoveToBufferI(bAllowExtend : bool, i : int) =
         if (bAllowExtend && i >= x.ElemLen) then
@@ -1788,11 +1814,9 @@ type MemoryStreamB(defaultBufSize : int, toAvoidConfusion : byte) =
             fh.Write(buf.Buffer, pos, int readAmt)
             x.MoveForwardAfterRead(int readAmt)
 
-    
-
     // read count starting from offset, and don't move position forward
     override x.ReadToStream(s : Stream, offset : int64, count : int64) =
-        use sr = new StreamReader<byte>(x, offset, count)
+        let sr = new StreamReader<byte>(x, offset, count)
         sr.ApplyFnToBuffers(fun (buf, pos, cnt) -> s.Write(buf, pos, cnt))
 
     // From MemStreamB to something

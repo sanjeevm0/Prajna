@@ -603,12 +603,14 @@ namespace Native {
         //    return fs;
         //}
 
-        static AsyncStreamIO^ OpenFileWrite(String^ name, Stream^ %fsOut, FileOptions fOpt)
+        static AsyncStreamIO^ OpenFileWrite(String^ name, Stream^ %fsOut, FileOptions fOpt, bool bBufferLess)
         {
             array<Char> ^nameArr = name->ToCharArray();
             pin_ptr<Char> namePtr = &nameArr[0];
             Char *pName = (Char*)namePtr;
-            IntPtr h = (IntPtr)CreateFile(pName, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, (int)fOpt, nullptr);
+            int dwFlags = (int)fOpt;
+            if (bBufferLess) dwFlags |= FILE_FLAG_NO_BUFFERING;
+            IntPtr h = (IntPtr)CreateFile(pName, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, dwFlags, nullptr);
             AsyncStreamIO ^io = gcnew AsyncStreamIO((HANDLE)h);
             io->m_position = 0LL;
             io->m_length = 0LL;
@@ -619,12 +621,14 @@ namespace Native {
             return io;
         }
 
-        static AsyncStreamIO^ OpenFileRead(String^ name, Stream^ %fsOut, FileOptions fOpt)
+        static AsyncStreamIO^ OpenFileRead(String^ name, Stream^ %fsOut, FileOptions fOpt, bool bBufferLess)
         {
             array<Char> ^nameArr = name->ToCharArray();
             pin_ptr<Char> namePtr = &nameArr[0];
             Char *pName = (Char*)namePtr;
-            IntPtr h = (IntPtr)CreateFile(pName, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, (int)fOpt, nullptr);
+            int dwFlags = (int)fOpt;
+            if (bBufferLess) dwFlags |= FILE_FLAG_NO_BUFFERING;
+            IntPtr h = (IntPtr)CreateFile(pName, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, dwFlags, nullptr);
             AsyncStreamIO ^io = gcnew AsyncStreamIO((HANDLE)h);
             io->m_position = 0LL;
             pin_ptr<__int64> pLen = &io->m_length;
@@ -638,18 +642,23 @@ namespace Native {
             return io;
         }
 
-        generic <class T> int ReadFile(array<T> ^pBuffer, int offset, int nNum, IOCallbackDel<T> ^cb, Object ^state)
+        generic <class T> int ReadFilePos(array<T> ^pBuffer, int offset, int nNum, IOCallbackDel<T> ^cb, Object ^state, Int64 position)
         {
             Lock lock(m_ioLock);
             IOCallbackClass<T>^ cbFn = GetCbFn(pBuffer);
             IntPtr pBuf = cbFn->Set(state, pBuffer, offset, cb);
-            int ret = m_cb->ReadFileAsync<byte>((byte*)pBuf.ToPointer(), nNum*cbFn->TypeSize(), cbFn->CbFn(), cbFn->SelfPtr().ToPointer(), m_position);
+            int ret = m_cb->ReadFileAsync<byte>((byte*)pBuf.ToPointer(), nNum*cbFn->TypeSize(), cbFn->CbFn(), cbFn->SelfPtr().ToPointer(), position);
             if (-1 == ret || ret > 0) // > 0 not really an error, but finished sync, so no callback
                 cbFn->OnError();
             return ret;
         }
 
-        generic <class T> int WriteFile(array<T> ^pBuffer, int offset, int nNum, IOCallbackDel<T> ^cb, Object ^state)
+        generic <class T> __forceinline int ReadFile(array<T> ^pBuffer, int offset, int nNum, IOCallbackDel<T> ^cb, Object ^state)
+        {
+            return ReadFilePos(pBuffer, offset, nNum, cb, state, m_position);
+        }
+
+        generic <class T> int WriteFilePos(array<T> ^pBuffer, int offset, int nNum, IOCallbackDel<T> ^cb, Object ^state, Int64 position)
         {
             Lock lock(m_ioLock);
             IOCallbackClass<T>^ cbFn = GetCbFn(pBuffer);
@@ -658,6 +667,11 @@ namespace Native {
             if (-1 == ret || ret > 0) // > 0 not really an error, but finished sync, so no callback
                 cbFn->OnError();
             return ret;
+        }
+
+        generic <class T> __forceinline int WriteFile(array<T> ^pBuffer, int offset, int nNum, IOCallbackDel<T> ^cb, Object ^state)
+        {
+            return WriteFilePos(pBuffer, offset, nNum, cb, state, m_position);
         }
 
         generic <class T> int ReadFileSync(array<T> ^pBuffer, int offset, int nNum)
