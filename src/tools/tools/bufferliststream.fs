@@ -1645,6 +1645,14 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
         if (Utils.IsNotNull file) then
             file.Dispose()
 
+    override x.Dispose(bDisposing) =
+        disposer.Run(x.DisposeInternal)
+        base.Dispose(bDisposing)
+
+    override x.Flush() =
+        x.WriteBuffers()
+        file.Flush()
+
     member private x.OpenFile() =
         if (null = file) then
             lock (file) (fun _ ->
@@ -1658,18 +1666,14 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
                     file <- AsyncStreamIO.OpenFileReadWrite(fileName, &strm, fOpt, x.BufferLess)
             )
 
-    override x.Dispose(bDisposing) =
-        disposer.Run(x.DisposeInternal)
-        base.Dispose(bDisposing)
-
-    member x.DoneIO (ioResult : int) (state : obj) (buffer : 'T[]) (offset : int) (bytesTransferred : int) =
+    member private x.DoneIO (ioResult : int) (state : obj) (buffer : 'T[]) (offset : int) (bytesTransferred : int) =
         let num = state :?> int
         if (num <> bytesTransferred*sizeof<'T>) then
             raise (new Exception("I/O failed "))
         eDoneIO.Set() |> ignore
 
     // attempt to fill up to count elements
-    member x.FillWithRead(elem : RBufPart<'T>) =
+    member private x.FillWithRead(elem : RBufPart<'T>) =
         // fill in using reader
         x.OpenFile()
         if (file.Length > elem.StreamPos*(int64 sizeof<'T>)) then
@@ -1680,7 +1684,7 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
             eDoneIO.WaitOne() |> ignore
 
     // split virtual element "i" to create a (virtual, valid, virtual) or (valid, virtual)
-    member x.SplitVirtual(i : int, pos : int64) =
+    member private x.SplitVirtual(i : int, pos : int64) =
         // first remove the "i"th element
         let vElem = x.BufList.[i]
         x.BufList.RemoveAt(i)
@@ -1720,30 +1724,58 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
         else
             vElem.Release() // already virtual, so won't do much
 
+        numValid <- numValid + 1
+
         x.ElemLen <- x.ElemLen + num - 1
-        if (3 = num) then
-            x.ElemPos <- x.ElemPos + 1 // move to valid, otherwise stay where you are at
+        if (x.ElemPos-1 = i) then
+            if (3 = num) then
+                x.ElemPos <- x.ElemPos + 1
+        else if (x.ElemPos-1 > i) then
+            x.ElemPos <- x.ElemPos + num - 1
+
+        num
 
     // returns new position after merges complete
-    member x.MergeVirtual(i : int) =
+    member private x.MergeVirtual(i : int) =
         if (x.BufList.[i].Type=RBufPartType.Virtual) then
             // forward
             while (x.BufList.Count > i+1 && x.BufList.[i+1].Type=RBufPartType.Virtual) do
                 x.BufList.[i].Count <- x.BufList.[i].Count + x.BufList.[i+1].Count
                 x.BufList.RemoveAt(i+1)
                 x.ElemLen <- x.ElemLen - 1
+                if (x.ElemPos-1 > i) then
+                    x.ElemPos <- x.ElemPos - 1
             // backward
             let mutable i = i
             while (i-1 >= 0 && x.BufList.[i-1].Type=RBufPartType.Virtual) do
                 x.BufList.[i-1].Count <- x.BufList.[i-1].Count + x.BufList.[i].Count
                 x.BufList.RemoveAt(i)
+                x.ElemLen <- x.ElemLen - 1
+                if (x.ElemPos-1 >= i) then
+                    x.ElemPos <- x.ElemPos - 1
                 i <- i-1
         i
 
-    member x.SplitAndMergeVirtual(i : int, pos : int64) =
-                
-            
-    member x.MakeVirtual(numKeep : int) =
+    member private x.SplitAndMergeVirtual(i : int, pos : int64) =
+        let num = x.SplitVirtual(i, pos)
+        for cnt = 1 to num do
+            if (x.BufList.[i+num-cnt].Type = RBufPartType.Virtual) then
+                x.MergeVirtual(i+num-cnt) |> ignore
+
+    // reset the position
+    member private x.ResetPos() : unit =
+        x.SetPosToI(x.ElemPos-1)
+        x.MoveForwardAfterRead(x.Position - x.RBufPart.StreamPos) 
+
+    member private x.WriteBuffers() =
+        for rbuf in x.BufList do
+            if (rbuf.Type = RBufPartType.ValidWrite) then
+                eDoneIO.Reset() |> ignore
+                file.WriteFilePos(rbuf.Elem.Buffer, rbuf.Offset, int rbuf.Count, IOCallbackDel<'T>(x.DoneIO), rbuf.Count, rbuf.StreamPos) |> ignore
+                eDoneIO.WaitOne() |> ignore
+                rbuf.Type <- RBufPartType.Valid
+                       
+    member private x.MakeVirtual(numKeep : int) =
         while (numValid > numKeep) do
             let mutable i = 0
             while (x.BufList.[i].Type = RBufPartType.Virtual && i < x.BufList.Count) do
@@ -1755,20 +1787,25 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
                 file.WriteFilePos(rbuf.Elem.Buffer, rbuf.Offset, int rbuf.Count, IOCallbackDel<'T>(x.DoneIO), rbuf.Count, rbuf.StreamPos) |> ignore
                 eDoneIO.WaitOne() |> ignore
             rbuf.MakeVirtual()
+            numValid <- numValid - 1
             x.MergeVirtual(i) |> ignore
 
     override x.MoveToNextBuffer(bAllowExtend : bool, rem : int) =
+        let mutable bNeedReset = false
         if (bAllowExtend && 0 = rem) then
             x.MakeVirtual(x.MaxNumValid-1) // one more will be added in the Move call, will get added to validList
+            numValid <- numValid + 1
+            bNeedReset <- true
         let ret = base.MoveToNextBuffer(bAllowExtend, rem)
         // check if buffer is invalid
         if (x.RBufPart.Type = RBufPartType.Virtual) then
             x.MakeVirtual(x.MaxNumValid-1)
             if (x.ElemPos <> x.BufList.Count) then
                 raise (new Exception("Invalid position -- internal error"))
-            x.SplitVirtual(x.ElemPos-1, x.RBufPart.StreamPos)
-            // reset the position
-            x.SetPosToI(x.ElemPos-1)
+            x.SplitAndMergeVirtual(x.ElemPos-1, x.RBufPart.StreamPos)
+            bNeedReset <- true
+        if (bNeedReset) then
+            x.ResetPos()
         if (bAllowExtend) then
             x.RBufPart.Type <- RBufPartType.ValidWrite
         ret
@@ -1784,18 +1821,15 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
         x.BufList.Add(elem)
         x.ElemLen <- 1
         x.ElemPos <- 1
-        let oldPos = x.Position
-        x.SetPosToI(0)
-        x.MoveForwardAfterRead(oldPos)
+        x.ResetPos()
 
     override x.Seek(offset : int64, origin : SeekOrigin) =
         let ret = base.Seek(offset, origin)
         if (x.RBufPart.Type = RBufPartType.Virtual) then           
             let finalPosAlign = ret / (int64 x.Alignment) * (int64 x.Alignment)
             let seekPos = Math.Max(finalPosAlign, x.RBufPart.StreamPos)
-            x.SplitVirtual(x.ElemPos-1, seekPos)
-            let validPos =
-                if (x
+            x.SplitAndMergeVirtual(x.ElemPos-1, seekPos)
+            x.ResetPos()
         ret
 
 // MemoryStream which is essentially a collection of RefCntBuf
@@ -1882,9 +1916,9 @@ type MemoryStreamB(defaultBufSize : int, toAvoidConfusion : byte) =
         while (bCount > 0L) do
             let (buf, pos, amt) = x.GetWriteBuffer()
             let toRead = int (Math.Min(bCount, int64 amt))
-            let writeAmt = fh.Read(buf.Buffer, pos, toRead)
+            let writeAmt = fh.Read(buf.Buffer, int pos, toRead)
             bCount <- bCount - int64 writeAmt
-            x.MoveForwardAfterWrite(writeAmt)
+            x.MoveForwardAfterWrite(int64 writeAmt)
             if (writeAmt <> toRead) then
                 failwith "Write to memstream from file fails as file is out data"
 
@@ -1896,8 +1930,8 @@ type MemoryStreamB(defaultBufSize : int, toAvoidConfusion : byte) =
             if (toRead < bCount) then
                 // constrained by dest buffer
                 toRead <- toRead/(int64 align)*(int64 align)
-            let writeAmt = fh.Read(buf.Buffer, pos, int toRead)
-            x.MoveForwardAfterWrite(writeAmt)
+            let writeAmt = fh.Read(buf.Buffer, int pos, int toRead)
+            x.MoveForwardAfterWrite(int64 writeAmt)
             if (toRead < bCount) then
                 // if constrained by dest buffer then seal so no more data can be written to current buffer
                 x.SealWriteBuffer()
@@ -1961,8 +1995,8 @@ type MemoryStreamB(defaultBufSize : int, toAvoidConfusion : byte) =
         while (bCount > 0L) do
             let (buf, pos, amt) = x.GetReadBuffer()
             let readAmt = Math.Min(bCount, int64 amt)
-            fh.Write(buf.Buffer, pos, int readAmt)
-            x.MoveForwardAfterRead(int readAmt)
+            fh.Write(buf.Buffer, int pos, int readAmt)
+            x.MoveForwardAfterRead(readAmt)
 
     // read count starting from offset, and don't move position forward
     override x.ReadToStream(s : Stream, offset : int64, count : int64) =
