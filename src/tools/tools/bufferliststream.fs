@@ -1274,6 +1274,8 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
     override x.SetLength(l) =
         assert(false)
 
+    member internal x.PositionInternal with get() = position and set(v) = position <- v
+
     member x.Capacity64
         with get() =
             capacity
@@ -1318,7 +1320,7 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
         rbufPart <- bufList.[i]
         elemPos <- i + 1
         finalWriteElem <- Math.Max(finalWriteElem, elemPos)
-        rbuf <- rbufPart.Elem
+        rbuf <- rbufPart.ElemNoCheck
         bufBeginPos <- int64 rbufPart.Offset
         bufPos <- int64 rbufPart.Offset
         bufRem <- rbufPart.Count
@@ -1588,6 +1590,7 @@ open Prajna.Tools.Native
 type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 'TP :> IRefCounter<string>> private (fileName : string, b : bool) as x =
     inherit BufferListStream<'T>()
 
+    let fileOpenLock = Object()
     let mutable file : Native.AsyncStreamIO = null
     let disposer = new DoOnce()
     let eDoneIO = new ManualResetEvent(false)
@@ -1608,6 +1611,8 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
                 elem.StreamPos <- 0L
                 elem.Count <- x.File.Length
                 x.BufList.Add(elem)
+            else
+                x.OpenFile()
 
     internal new (fileName : string, pool : SharedPool<string,'TP>) as x =
         new BufferListStreamWithCache<'T,'TP>(fileName)
@@ -1638,6 +1643,7 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
                                                            fun () -> new RBufPart<'T>() :> SafeRefCnt<RefCntBuf<'T>>)
             if (Utils.IsNotNull bufGet) then
                 buf <- bufGet
+                bDone <- true
         buf.Elem.UserToken <- box(x)
         buf :?> RBufPart<'T>
 
@@ -1655,7 +1661,7 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
 
     member private x.OpenFile() =
         if (null = file) then
-            lock (file) (fun _ ->
+            lock (fileOpenLock) (fun _ ->
                 if (null = file) then
                     let mutable strm = null
                     let mutable fOpt = FileOptions.Asynchronous
@@ -1668,7 +1674,7 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
 
     member private x.DoneIO (ioResult : int) (state : obj) (buffer : 'T[]) (offset : int) (bytesTransferred : int) =
         let num = state :?> int
-        if (num <> bytesTransferred*sizeof<'T>) then
+        if (num*sizeof<'T> <> bytesTransferred) then
             raise (new Exception("I/O failed "))
         eDoneIO.Set() |> ignore
 
@@ -1727,10 +1733,7 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
         numValid <- numValid + 1
 
         x.ElemLen <- x.ElemLen + num - 1
-        if (x.ElemPos-1 = i) then
-            if (3 = num) then
-                x.ElemPos <- x.ElemPos + 1
-        else if (x.ElemPos-1 > i) then
+        if (x.ElemPos-1 > i) then
             x.ElemPos <- x.ElemPos + num - 1
 
         num
@@ -1765,13 +1768,15 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
     // reset the position
     member private x.ResetPos() : unit =
         x.SetPosToI(x.ElemPos-1)
-        x.MoveForwardAfterRead(x.Position - x.RBufPart.StreamPos) 
+        let amtToMove = x.Position - x.RBufPart.StreamPos
+        x.PositionInternal <- x.RBufPart.StreamPos
+        x.MoveForwardAfterRead(amtToMove) 
 
     member private x.WriteBuffers() =
         for rbuf in x.BufList do
             if (rbuf.Type = RBufPartType.ValidWrite) then
                 eDoneIO.Reset() |> ignore
-                file.WriteFilePos(rbuf.Elem.Buffer, rbuf.Offset, int rbuf.Count, IOCallbackDel<'T>(x.DoneIO), rbuf.Count, rbuf.StreamPos) |> ignore
+                file.WriteFilePos(rbuf.Elem.Buffer, rbuf.Offset, int rbuf.Count, IOCallbackDel<'T>(x.DoneIO), int rbuf.Count, rbuf.StreamPos) |> ignore
                 eDoneIO.WaitOne() |> ignore
                 rbuf.Type <- RBufPartType.Valid
                        
@@ -1784,30 +1789,41 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
             let rbuf = x.BufList.[i]
             if (rbuf.Type = RBufPartType.ValidWrite) then
                 eDoneIO.Reset() |> ignore
-                file.WriteFilePos(rbuf.Elem.Buffer, rbuf.Offset, int rbuf.Count, IOCallbackDel<'T>(x.DoneIO), rbuf.Count, rbuf.StreamPos) |> ignore
+                file.WriteFilePos(rbuf.Elem.Buffer, rbuf.Offset, int rbuf.Count, IOCallbackDel<'T>(x.DoneIO), int rbuf.Count, rbuf.StreamPos) |> ignore
                 eDoneIO.WaitOne() |> ignore
             rbuf.MakeVirtual()
             numValid <- numValid - 1
             x.MergeVirtual(i) |> ignore
 
     override x.MoveToNextBuffer(bAllowExtend : bool, rem : int) =
-        let mutable bNeedReset = false
-        if (bAllowExtend && 0 = rem) then
-            x.MakeVirtual(x.MaxNumValid-1) // one more will be added in the Move call, will get added to validList
-            numValid <- numValid + 1
-            bNeedReset <- true
-        let ret = base.MoveToNextBuffer(bAllowExtend, rem)
-        // check if buffer is invalid
-        if (x.RBufPart.Type = RBufPartType.Virtual) then
-            x.MakeVirtual(x.MaxNumValid-1)
-            if (x.ElemPos <> x.BufList.Count) then
-                raise (new Exception("Invalid position -- internal error"))
-            x.SplitAndMergeVirtual(x.ElemPos-1, x.RBufPart.StreamPos)
-            bNeedReset <- true
-        if (bNeedReset) then
-            x.ResetPos()
+        let ret =
+            if (0 = rem) then
+                if (bAllowExtend && x.ElemPos=x.ElemLen) then
+                    x.MakeVirtual(x.MaxNumValid-1)
+                    x.AddNewBuffer() // will not be virtual, will increment x.ElemLen by 1
+                    numValid <- numValid + 1
+                    x.SetPosToI(x.ElemPos) // will increment elempos by 1
+                    true
+                else if (x.ElemPos < x.ElemLen) then
+                    let rbuf = x.BufList.[x.ElemPos]
+                    if (rbuf.Type = RBufPartType.Virtual) then
+                        x.ElemPos <- x.ElemPos + 1 // current element is "elemPos-1" which is tracked
+                        x.MakeVirtual(x.MaxNumValid-1)
+                        x.SplitAndMergeVirtual(x.ElemPos-1, rbuf.StreamPos)
+                        // after split, valid configurations are (valid,virtual), (virtual,valid), and (virtual,valid,virtual)
+                        // split points to first element in split
+                        if (x.BufList.[x.ElemPos-1].Type = RBufPartType.Virtual) then
+                            x.ElemPos <- x.ElemPos + 1
+                        x.ResetPos()
+                    else
+                        x.SetPosToI(x.ElemPos)         
+                    true
+                else
+                    false
+            else
+                true
         if (bAllowExtend) then
-            x.RBufPart.Type <- RBufPartType.ValidWrite
+            x.BufList.[x.ElemPos-1].Type <- ValidWrite
         ret
 
     member x.CleanToVirtual() =
@@ -1824,13 +1840,38 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
         x.ResetPos()
 
     override x.Seek(offset : int64, origin : SeekOrigin) =
-        let ret = base.Seek(offset, origin)
-        if (x.RBufPart.Type = RBufPartType.Virtual) then           
-            let finalPosAlign = ret / (int64 x.Alignment) * (int64 x.Alignment)
-            let seekPos = Math.Max(finalPosAlign, x.RBufPart.StreamPos)
+        let mutable offset = offset
+        let mutable finalPos =
+            match origin with
+                | SeekOrigin.Begin -> offset
+                | SeekOrigin.Current -> x.Position + offset
+                | SeekOrigin.End -> x.Length + offset
+                | _ -> Int64.MaxValue
+        finalPos <- Math.Min(finalPos, x.Length)
+        // binary search
+        let mutable left = 0
+        let mutable right = x.ElemLen
+        let mutable middle = 0
+        let mutable bDone = false
+        while not bDone do
+            middle <- (left + right) >>> 1
+            if (finalPos >= x.BufList.[middle].StreamPos) then
+                if (x.ElemLen-1 = middle || finalPos < x.BufList.[middle+1].StreamPos) then
+                    bDone <- true
+                else
+                    left <- middle
+            else
+                right <- middle
+        x.ElemPos <- middle+1
+        let rbuf = x.BufList.[middle]
+        if (rbuf.Type = RBufPartType.Virtual) then           
+            x.MakeVirtual(x.MaxNumValid-1)
+            let finalPosAlign = finalPos / (int64 x.Alignment) * (int64 x.Alignment)
+            let seekPos = Math.Max(finalPosAlign, rbuf.StreamPos)
             x.SplitAndMergeVirtual(x.ElemPos-1, seekPos)
-            x.ResetPos()
-        ret
+        x.PositionInternal <- finalPos
+        x.ResetPos()
+        finalPos
 
 // MemoryStream which is essentially a collection of RefCntBuf
 // Not GetBuffer is not supported by this as it is not useful
