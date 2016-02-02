@@ -591,6 +591,11 @@ namespace Native {
             m_length = max(m_length, m_position);
         }
 
+        void SetLock(Object^ lockObj)
+        {
+            m_ioLock = lockObj;
+        }
+
         // not useful as both m_ptp and FileStream cannot both simultaneously exist!!
         //static FileStream^ OpenFileAsyncWrite(String^ name)
         //{
