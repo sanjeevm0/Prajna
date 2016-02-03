@@ -455,6 +455,7 @@ namespace Native {
         bool m_canRead;
         bool m_canWrite;
         bool m_canSeek;
+        bool m_bBufferless;
         Int64 m_length;
         Int64 m_position;
 
@@ -590,6 +591,8 @@ namespace Native {
                 throw gcnew IOException("Unable to write to stream");
         }
 
+        bool BufferLess() { return m_bBufferless;  }
+
         virtual void UpdatePos(Int64 amt) = IIO::UpdatePos
         {
             m_position += amt;
@@ -622,6 +625,7 @@ namespace Native {
             if (bBufferLess) dwFlags |= FILE_FLAG_NO_BUFFERING;
             IntPtr h = (IntPtr)CreateFile(pName, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, dwFlags, nullptr);
             AsyncStreamIO ^io = gcnew AsyncStreamIO((HANDLE)h);
+            io->m_bBufferless = bBufferLess;
             io->m_position = 0LL;
             io->m_length = 0LL;
             io->m_canRead = false;
@@ -640,6 +644,7 @@ namespace Native {
             if (bBufferLess) dwFlags |= FILE_FLAG_NO_BUFFERING;
             IntPtr h = (IntPtr)CreateFile(pName, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, dwFlags, nullptr);
             AsyncStreamIO ^io = gcnew AsyncStreamIO((HANDLE)h);
+            io->m_bBufferless = bBufferLess;
             io->m_position = 0LL;
             pin_ptr<__int64> pLen = &io->m_length;
             int ret = io->m_cb->FileSize((__int64*)pLen);
@@ -661,6 +666,7 @@ namespace Native {
             if (bBufferLess) dwFlags |= FILE_FLAG_NO_BUFFERING;
             IntPtr h = (IntPtr)CreateFile(pName, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, nullptr, OPEN_ALWAYS, dwFlags, nullptr);
             AsyncStreamIO ^io = gcnew AsyncStreamIO((HANDLE)h);
+            io->m_bBufferless = bBufferLess;
             io->m_position = 0LL;
             pin_ptr<__int64> pLen = &io->m_length;
             int ret = io->m_cb->FileSize((__int64*)pLen);

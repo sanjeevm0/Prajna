@@ -564,6 +564,8 @@ type [<AllowNullLiteral>] RBufPart<'T> =
     [<DefaultValue>] val mutable Count : int64
     // the beginning element's position in the stream 
     [<DefaultValue>] val mutable StreamPos : int64
+    // for read/write IO
+    [<DefaultValue>] val mutable IOEvent : MEvent
 
     // following is used when getting element from pool
     new() as x =
@@ -592,6 +594,18 @@ type [<AllowNullLiteral>] RBufPart<'T> =
             x.Offset <- offset
             x.Count <- count
 
+    member x.SetIOEvent() =
+        if (Utils.IsNull x.IOEvent) then
+            x.IOEvent <- MEvent(true)
+        else
+            x.IOEvent.Set()
+
+    member x.ResetIOEvent() =
+        if (Utils.IsNull x.IOEvent) then
+            x.IOEvent <- MEvent(false)
+        else
+            x.IOEvent.Reset()
+
     static member GetVirtual() : RBufPart<'T> =
         let x = new RBufPart<'T>()
         x.Offset <- 0
@@ -606,6 +620,7 @@ type [<AllowNullLiteral>] RBufPart<'T> =
 
     member x.Init() =
         x.Type <- RBufPartType.Valid
+        x.IOEvent <- null
         ()
 
     override x.InitElem(e) =
@@ -1144,7 +1159,7 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
     member internal x.RBufPart with get() = rbufPart
     member private x.FinalWriteElem with get() = finalWriteElem
     member private x.SimpleBuffer with get() = bSimpleBuffer
-    member private x.ReplicateInfoFrom(src : BufferListStream<'T>) =
+    member internal x.ReplicateInfoFrom(src : BufferListStream<'T>) =
         elemLen <- src.ElemLen
         length <- src.Length
         capacity <- src.Capacity64
@@ -1710,14 +1725,72 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
 
 open Prajna.Tools.Native
 
+type RWHQueue() =
+    static let count = ref 0
+    static let q = ConcurrentQueue<RegisteredWaitHandle*WaitHandle>()
+
+    static member private Release() =
+        let elem = ref Unchecked.defaultof<RegisteredWaitHandle*WaitHandle>
+        let mutable bCont = true
+        while bCont do
+            let ret = q.TryDequeue(elem)
+            if (ret) then
+                let (rwh, wh) = !elem
+                rwh.Unregister(wh) |> ignore
+            bCont <- (Interlocked.Decrement(count) > 0)
+
+    static member Add(rwh : RegisteredWaitHandle, wh : WaitHandle) =
+        q.Enqueue(rwh, wh)
+        if (Interlocked.Increment(count) = 1) then
+            PoolTimer.AddTimer(RWHQueue.Release, 1000L)
+
+type internal DiskIO() =
+    static let fileKey = ConcurrentDictionary<char, Object>()
+
+    static member private GetFileKey(fileName : string) =
+        let c = fileName.ToLower().[0]
+        fileKey.GetOrAdd(c, fun _ -> Object())
+
+    static member val GetLockObj : string->Object = DiskIO.GetFileKey with get, set
+
+    static member OpenFile(fileName : string, fOpt : FileOptions, bufferLess : bool) =
+        let mutable strm = null
+        let file = AsyncStreamIO.OpenFileReadWrite(fileName, &strm, fOpt, bufferLess)
+        file.SetLock(DiskIO.GetLockObj(Path.GetFullPath(fileName)))
+        file
+
+type internal DiskIOFn<'T>() =
+    static member private DoneIOWrite (ioResult : int) (state : obj) (buffer : 'T[]) (offset : int) (bytesTransferred : int) =
+        let (rbuf, file) = state :?> (RBufPart<'T>*AsyncStreamIO)
+        if (file.BufferLess()) then
+            if (int rbuf.Elem.Length*sizeof<'T> <> bytesTransferred) then
+                raise (new Exception("I/O failed "))
+            if (rbuf.Count < int64 rbuf.Elem.Length) then
+                file.AdjustFilePosition(int(rbuf.Count - int64 rbuf.Elem.Length))
+        else
+            if (int rbuf.Count*sizeof<'T> <> bytesTransferred) then
+                raise (new Exception("I/O failed "))
+        rbuf.IOEvent.Set()
+        if (rbuf.Type = Virtual) then
+            rbuf.ReleaseElem(Some(false))
+    static member val private DoneIOWriteDel = IOCallbackDel<'T>(DiskIOFn<'T>.DoneIOWrite)
+
+    static member WriteBuffer(elem : RBufPart<'T>, file : AsyncStreamIO) =
+        elem.ResetIOEvent()
+        if (file.BufferLess()) then
+            file.WriteFilePos(elem.Elem.Buffer, elem.Offset, elem.Elem.Length, DiskIOFn<'T>.DoneIOWriteDel, (elem, file), elem.StreamPos) |> ignore
+        else
+            file.WriteFilePos(elem.Elem.Buffer, elem.Offset, int elem.Count, DiskIOFn<'T>.DoneIOWriteDel, (elem, file), elem.StreamPos) |> ignore
+
 [<AllowNullLiteral>]
 type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 'TP :> IRefCounter<string>> private (fileName : string, b : bool) as x =
     inherit BufferListStream<'T>()
 
     let fileOpenLock = Object()
+    let prefetchLock = Object()
+    let mutable doFetching = true
     let mutable file : Native.AsyncStreamIO = null
     let disposer = new DoOnce()
-    let fileKey = ConcurrentDictionary<char, Object>()
 
     let insertIntoList(elem : RBufPart<'T>, i : int) =
         if (i = x.BufList.Count) then
@@ -1744,6 +1817,23 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
             x.Pool <- pool
             x.GetNewWriteBuffer <- x.GetNewBuffer
 
+    internal new (bls : BufferListStreamWithCache<'T,'TP>) as x =
+        new BufferListStreamWithCache<'T,'TP>(bls.FileName)
+        then
+            bls.WriteBuffers()
+            x.Pool <- bls.Pool
+            x.GetNewWriteBuffer <- x.GetNewBuffer
+            // now copy over data
+            for b in bls.BufList do
+                let elem = new RBufPart<'T>(b)
+                x.BufList.Add(elem)
+            x.ReplicateInfoFrom(bls)
+            x.ElemPos <- 0
+            x.Position <- 0L
+            //x.AppendNoCopy(bls, 0L, bls.Length)
+
+    member private x.FileName with get() : string = fileName
+
     override x.Replicate() =
         x.WriteBuffers()
         new BufferListStreamWithCache<'T,'TP>(fileName, x.Pool) :> StreamBase<'T>
@@ -1764,11 +1854,27 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
     member val private Pool : SharedPool<string, 'TP> = null with get, set
     member val Alignment = 1 with get, set
 
-    member private x.GetFileKey(fileName : string) =
-        let c = fileName.ToLower().[0]
-        fileKey.GetOrAdd(c, fun _ -> Object())
+    member x.SetPrefetch(numPrefetch : int) =
+        x.NumPrefetch <- numPrefetch
+        x.TryPrefetch(x.NumPrefetch) |> ignore
 
-    member val GetLock : string->Object = x.GetFileKey with get, set
+    member x.StartPrefetch(numPrefetch : int) =
+        x.NumPrefetch <- numPrefetch
+        x.DoBackgroundPrefetch null false
+
+    member x.StopPrefetch() =
+        lock (prefetchLock) (fun _ ->
+            doFetching <- false
+        )
+
+    member x.DoBackgroundPrefetch(state : obj) (bTimeOut : bool) =
+        lock (prefetchLock) (fun _ ->
+            if doFetching then
+                let (bDone, event) = x.TryPrefetch(x.NumPrefetch)
+                if not bDone then
+                    RWHQueue.Add(ThreadPool.RegisterWaitForSingleObject(event, x.BackgroundPrefetch, null, -1, true), event)
+        )
+    member private x.BackgroundPrefetch = new WaitOrTimerCallback(x.DoBackgroundPrefetch)
 
     member private x.GetNewBuffer() =
         let (event, buf) = RBufPart<'T>.GetFromPool(x.GetInfoId()+":RBufPart", x.Pool,
@@ -1780,10 +1886,10 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
         let (event, buf) = RBufPart<'T>.GetFromPool(x.GetInfoId()+":RBufPart", x.Pool,
                                                     fun () -> new RBufPart<'T>() :> SafeRefCnt<RefCntBuf<'T>>)
         if (Utils.IsNull buf) then
-            (false, null)
+            (event, null)
         else
             buf.Elem.UserToken <- box(x)
-            (true, buf :?> RBufPart<'T>)
+            (event, buf :?> RBufPart<'T>)
 
     member private x.GetNewBufferWait() =
         let mutable bDone = false
@@ -1813,14 +1919,12 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
         if (null = file) then
             lock (fileOpenLock) (fun _ ->
                 if (null = file) then
-                    let mutable strm = null
                     let mutable fOpt = FileOptions.Asynchronous
                     if x.SequentialRead then
                         fOpt <- fOpt ||| FileOptions.SequentialScan
                     if x.SequentialWrite then
                         fOpt <- fOpt ||| FileOptions.WriteThrough
-                    file <- AsyncStreamIO.OpenFileReadWrite(fileName, &strm, fOpt, x.BufferLess)
-                    file.SetLock(x.GetLock(Path.GetFullPath(fileName)))
+                    file <- DiskIO.OpenFile(fileName, fOpt, x.BufferLess)
             )
 
     member private x.DoneIOWrite (ioResult : int) (state : obj) (buffer : 'T[]) (offset : int) (bytesTransferred : int) =
@@ -1833,7 +1937,8 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
         else
             if (int rbuf.Count*sizeof<'T> <> bytesTransferred) then
                 raise (new Exception("I/O failed "))
-        rbuf.Elem.WriteIO.Set()
+        rbuf.IOEvent.Set()
+        //rbuf.Elem.WriteIO.Set()
         if (rbuf.Type = Virtual) then
             rbuf.ReleaseElem(Some(false))
     member val private DoneIOWriteDel = IOCallbackDel<'T>(x.DoneIOWrite)
@@ -1842,7 +1947,8 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
         let rbuf = state :?> RBufPart<'T>
         if (int rbuf.Count*sizeof<'T> <> bytesTransferred) then
             raise (new Exception("I/O failed "))
-        rbuf.Elem.ReadIO.Set()
+        rbuf.IOEvent.Set()
+        //rbuf.Elem.ReadIO.Set()
     member val private DoneIOReadDel = IOCallbackDel<'T>(x.DoneIORead)
 
     member private x.PrefetchNextRead() =
@@ -1858,14 +1964,16 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
         if (file.Length > elem.StreamPos*(int64 sizeof<'T>)) then
             let maxRead = file.Length/(int64 sizeof<'T>) - elem.StreamPos
             let numRead = int (Math.Min(maxRead, elem.Count))
-            elem.Elem.ReadIO.Reset()
+            //elem.Elem.ReadIO.Reset()
+            elem.ResetIOEvent()
             if (x.BufferLess) then
                 // read full alignment, return should be less
                 file.ReadFilePos(elem.Elem.Buffer, elem.Elem.Offset, elem.Elem.Length, x.DoneIOReadDel, numRead, elem.StreamPos) |> ignore
             else
                 file.ReadFilePos(elem.Elem.Buffer, elem.Elem.Offset, numRead, x.DoneIOReadDel, numRead, elem.StreamPos) |> ignore
         else
-            elem.Elem.ReadIO.Set()
+            //elem.Elem.ReadIO.Set()
+            elem.SetIOEvent()
 
     // split virtual element "i" to create a (virtual, valid, virtual) or (valid, virtual)
     member private x.SplitVirtual(i : int, pos : int64, elemUse : Option<RBufPart<'T>>) =
@@ -1876,6 +1984,7 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
         let mutable num = 0
         let mutable streamPos = vElem.StreamPos
         let mutable remCount = vElem.Count
+        let mutable bFirstVirtual = false
 
         // first virtual if needed
         if (pos > vElem.StreamPos) then
@@ -1886,6 +1995,7 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
             remCount <- remCount - vElemPrev.Count
             insertIntoList(vElemPrev, i + num)
             num <- num + 1
+            bFirstVirtual <- true
 
         // the valid element
         let elem = defaultArg elemUse (x.GetNewBufferWait())
@@ -1911,6 +2021,8 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
         x.ElemLen <- x.ElemLen + num - 1
         if (x.ElemPos-1 > i) then
             x.ElemPos <- x.ElemPos + num - 1
+        else if (x.ElemPos-1 = i && bFirstVirtual) then
+            x.ElemPos <- x.ElemPos + 1
 
         num
 
@@ -1942,13 +2054,13 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
                 x.MergeVirtual(i+num-cnt) |> ignore
 
     member private x.TrySplitAndMergeVirtual(i : int, pos : int64) =
-        let (ret, elem) = x.TryGetNewBuffer()
-        if (ret) then
+        let (event, elem) = x.TryGetNewBuffer()
+        if (Utils.IsNotNull elem) then
             let num = x.SplitVirtual(i, pos, Some(elem))
             for cnt = 1 to num do
                 if (x.BufList.[i+num-cnt].Type = RBufPartType.Virtual) then
                     x.MergeVirtual(i+num-cnt) |> ignore
-        ret
+        (Utils.IsNotNull elem, event)
 
     // reset the position
     member private x.ResetPos() : unit =
@@ -1961,7 +2073,8 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
         for rbuf in x.BufList do
             if (rbuf.Type = RBufPartType.ValidWrite) then
                 rbuf.Type <- RBufPartType.Valid // don't write again
-                rbuf.Elem.WriteIO.Reset()
+                //rbuf.Elem.WriteIO.Reset()
+                rbuf.ResetIOEvent()
                 if (x.BufferLess) then
                     // write full aligned chunk
                     file.WriteFilePos(rbuf.Elem.Buffer, rbuf.Offset, rbuf.Elem.Length, x.DoneIOWriteDel, rbuf, rbuf.StreamPos) |> ignore
@@ -1978,7 +2091,8 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
             if (rbuf.Type <> RBufPartType.Virtual) then
                 rbuf.Type <- Virtual
                 if (rbuf.Type = RBufPartType.ValidWrite) then
-                    rbuf.Elem.WriteIO.Reset()
+                    //rbuf.Elem.WriteIO.Reset()
+                    rbuf.ResetIOEvent()
                     if (x.BufferLess) then
                         file.WriteFilePos(rbuf.Elem.Buffer, rbuf.Offset, rbuf.Elem.Length, x.DoneIOWriteDel, rbuf, rbuf.StreamPos) |> ignore
                     else
@@ -1986,14 +2100,19 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
                 i <- x.MergeVirtual(i)
             i <- i + 1
 
-    member private x.Prefetch(numFetch : int) =
+    member private x.TryPrefetch(numFetch : int) =
         let mutable i = 0
         let mutable bCont = true
-        while bCont && (i < numFetch) do
+        let mutable event = null
+        // len and pos can keep changing
+        while bCont && (i < Math.Min(numFetch, x.ElemLen-x.ElemPos)) do
             let rbuf = x.BufList.[x.ElemPos + i]
             if (rbuf.Type = RBufPartType.Virtual) then
-                bCont <- x.TrySplitAndMergeVirtual(i, rbuf.StreamPos)
+                let (bContRet, eventRet) = x.TrySplitAndMergeVirtual(i, rbuf.StreamPos)
+                bCont <- bContRet
+                event <- eventRet
             i <- i + 1
+        (i = Math.Min(numFetch, x.ElemLen-x.ElemPos), event)
 
     override x.MoveToNextBuffer(bAllowExtend : bool, rem : int) =
         let ret =
@@ -2001,20 +2120,22 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
                 x.MakeVirtual(x.MaxNumValid-1)
                 if (bAllowExtend && x.ElemPos=x.ElemLen) then
                     x.AddNewBuffer() // will increment by 1
-                    x.BufList.[x.ElemLen-1].Elem.ReadIO.Set()
+                    //x.BufList.[x.ElemLen-1].Elem.ReadIO.Set()
+                    x.BufList.[x.ElemLen-1].SetIOEvent()
                 if (x.ElemPos < x.ElemLen) then
                     let rbuf = x.BufList.[x.ElemPos] // the next element
                     x.ElemPos <- x.ElemPos + 1
                     if (rbuf.Type = RBufPartType.Virtual) then
                         x.SplitAndMergeVirtual(x.ElemPos-1, rbuf.StreamPos)
-                    x.Prefetch(x.NumPrefetch)
+                    x.TryPrefetch(x.NumPrefetch) |> ignore
                     x.ResetPos()
-                    x.BufList.[x.ElemPos-1].Elem.ReadIO.Wait()
+                    //x.BufList.[x.ElemPos-1].Elem.ReadIO.Wait()
+                    x.BufList.[x.ElemPos-1].IOEvent.Wait()
                     true
                 else
                     false
             else
-                x.Prefetch(x.NumPrefetch)
+                x.TryPrefetch(x.NumPrefetch) |> ignore
                 true
         if (bAllowExtend) then
             x.BufList.[x.ElemPos-1].Type <- ValidWrite
@@ -2064,11 +2185,34 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
             let finalPosAlign = finalPos / (int64 x.Alignment) * (int64 x.Alignment)
             let seekPos = Math.Max(finalPosAlign, rbuf.StreamPos)
             x.SplitAndMergeVirtual(x.ElemPos-1, seekPos)
-        x.Prefetch(x.NumPrefetch)
+        x.TryPrefetch(x.NumPrefetch) |> ignore
         x.PositionInternal <- finalPos
         x.ResetPos()
-        x.BufList.[x.ElemPos-1].Elem.ReadIO.Wait()
+        //x.BufList.[x.ElemPos-1].Elem.ReadIO.Wait()
+        x.BufList.[x.ElemPos-1].IOEvent.Wait()
         finalPos
+
+    override x.GetMoreBufferPart(elemPos : int byref, pos : int64 byref) : RBufPart<'T> =
+        if (pos >= x.Length) then
+            null
+        else
+            if (pos < x.BufList.[elemPos].StreamPos) then
+                elemPos <- 0
+            while (x.BufList.[elemPos].StreamPos + int64 x.BufList.[elemPos].Count <= pos) do
+                elemPos <- elemPos + 1
+            x.ElemPos <- elemPos + 1 // track elemPos
+            x.MakeVirtual(x.MaxNumValid-1)
+            let rbuf = x.BufList.[x.ElemPos-1]
+            if (rbuf.Type = RBufPartType.Virtual) then
+                x.SplitAndMergeVirtual(x.ElemPos-1, pos)
+            x.TryPrefetch(x.NumPrefetch) |> ignore
+            let rbuf = x.BufList.[x.ElemPos-1]
+            let offset = int(pos - rbuf.StreamPos)
+            let cnt = rbuf.Count - int64 offset
+            pos <- pos + int64 cnt
+            x.PositionInternal <- pos
+            x.ResetPos()
+            new RBufPart<'T>(x.BufList.[x.ElemPos-1], x.BufList.[x.ElemPos-1].Offset + offset, cnt)
 
 // MemoryStream which is essentially a collection of RefCntBuf
 // Not GetBuffer is not supported by this as it is not useful
