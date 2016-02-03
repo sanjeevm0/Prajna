@@ -225,6 +225,11 @@ public:
         //printf("InClose - Leave\n");
         return ret;
     }
+
+    __forceinline BOOL SetFileEnd()
+    {
+        return SetEndOfFile(m_hFile);
+    }
 };
 
 // ====================================================
@@ -454,7 +459,7 @@ namespace Native {
         Int64 m_position;
 
         generic <class T>
-            IOCallbackClass<T>^ GetCbFn(array<T> ^pBuffer)
+            IOCallbackClass<T>^ GetCbFn()
             {
                 Type ^t = T::typeid;
                 if (!m_cbFns->ContainsKey(t))
@@ -671,7 +676,7 @@ namespace Native {
         generic <class T> int ReadFilePos(array<T> ^pBuffer, int offset, int nNum, IOCallbackDel<T> ^cb, Object ^state, Int64 position)
         {
             Lock lock(m_ioLock);
-            IOCallbackClass<T>^ cbFn = GetCbFn(pBuffer);
+            IOCallbackClass<T>^ cbFn = GetCbFn<T>();
             IntPtr pBuf = cbFn->Set(state, pBuffer, offset, cb);
             int ret = m_cb->ReadFileAsync<byte>((byte*)pBuf.ToPointer(), nNum*cbFn->TypeSize(), cbFn->CbFn(), cbFn->SelfPtr().ToPointer(), position*cbFn->TypeSize());
             if (-1 == ret || ret > 0) // > 0 not really an error, but finished sync, so no callback
@@ -687,7 +692,7 @@ namespace Native {
         generic <class T> int WriteFilePos(array<T> ^pBuffer, int offset, int nNum, IOCallbackDel<T> ^cb, Object ^state, Int64 position)
         {
             Lock lock(m_ioLock);
-            IOCallbackClass<T>^ cbFn = GetCbFn(pBuffer);
+            IOCallbackClass<T>^ cbFn = GetCbFn<T>();
             IntPtr pBuf = cbFn->Set(state, pBuffer, offset, cb);
             int ret = m_cb->WriteFileAsync<byte>((byte*)pBuf.ToPointer(), nNum*cbFn->TypeSize(), cbFn->CbFn(), cbFn->SelfPtr().ToPointer(), position*cbFn->TypeSize());
             if (-1 == ret || ret > 0) // > 0 not really an error, but finished sync, so no callback
@@ -718,6 +723,18 @@ namespace Native {
             if (amtWrite >= 0)
                 UpdatePos(amtWrite);
             return amtWrite;
+        }
+
+        generic <class T> void AdjustFilePosition(int amt)
+        {
+            IOCallbackClass<T>^ cbFn = GetCbFn<T>();
+            Lock lock(m_ioLock);
+            Int64 newPos;
+            m_position = m_position + amt;
+            if (FALSE == m_cb->SeekFile(amt*cbFn->TypeSize(), (Int32)SeekOrigin::Current, &newPos))
+                throw gcnew IOException("Unable to seek");
+            if (FALSE == m_cb->SetFileEnd())
+                throw gcnew IOException("Unable to set end of file");
         }
     };
 }

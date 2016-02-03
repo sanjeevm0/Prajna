@@ -498,7 +498,10 @@ type internal RefCntBufChunkAlign<'T>() =
 
     static let mutable currentChunk : ArrAlign<'T> = null
     static let mutable chunkOffset : int = 0
+    static let mutable chunkCount : int ref = ref 0
     static let chunkLock = Object()
+
+    let mutable refCount : int ref = ref 0
 
     new (size : int, alignBytes : int) as x =
         new RefCntBufChunkAlign<'T>()
@@ -507,26 +510,30 @@ type internal RefCntBufChunkAlign<'T>() =
 
     static member val AlignBytes = 1 with get, set
     static member val ChunkSize = 1<<<18 with get, set
-    static member val private CurrentChunk : ArrAlign<'T> = null
-    static member val private CurrentOffset = 0 with get, set
-    static member val private ChunkLock = Object() with get
 
     member val private BufAlign : ArrAlign<'T> = null with get, set
-    member val private Owner = false with get, set
+
+    member x.Ptr() =
+        IntPtr.Add(x.BufAlign.GCHandle.AddrOfPinnedObject(), x.Offset*sizeof<'T>)
 
     member x.Alloc(size : int, alignBytes : int) =
         let (xBuf, xOffset) =
             lock (chunkLock) (fun _ ->
-                if (currentChunk = null) then
-                    currentChunk <- new ArrAlign<'T>(RefCntBufChunkAlign<'T>.ChunkSize, RefCntBufChunkAlign<'T>.AlignBytes)
-                    chunkOffset <- 0
-                    x.Owner <- true
-                else
-                    chunkOffset <- (chunkOffset + (alignBytes - 1))/alignBytes*alignBytes
-                    x.Owner <- false
+                while (currentChunk = null) do
+                    if (currentChunk = null) then
+                        currentChunk <- new ArrAlign<'T>(RefCntBufChunkAlign<'T>.ChunkSize, RefCntBufChunkAlign<'T>.AlignBytes)
+                        chunkOffset <- 0
+                        chunkCount <- ref 1
+                    else
+                        chunkOffset <- (chunkOffset + (alignBytes - 1))/alignBytes*alignBytes
+                        if (chunkOffset + size > currentChunk.Size) then
+                            currentChunk <- null
+                        else
+                            chunkCount := !chunkCount + 1
                 let xOffset = chunkOffset
                 chunkOffset <- chunkOffset + size
-                (currentChunk, xOffset)
+                refCount <- chunkCount
+                (currentChunk, xOffset + currentChunk.Offset)
             )
         x.BufAlign <- xBuf
         x.SetBuffer(x.BufAlign.Arr, xOffset, size)
@@ -535,9 +542,12 @@ type internal RefCntBufChunkAlign<'T>() =
         x.Alloc(size, RefCntBufChunkAlign<'T>.AlignBytes)
 
     override x.DisposeInternal() =
-        if (x.Owner && (Utils.IsNotNull x.BufAlign)) then
-            (x.BufAlign :> IDisposable).Dispose()
-        x.BufAlign <- null
+        lock (chunkLock) (fun _ ->
+            refCount := !refCount - 1
+            if (0 = !refCount && (Utils.IsNotNull x.BufAlign)) then
+                (x.BufAlign :> IDisposable).Dispose()
+                x.BufAlign <- null
+        )
         base.DisposeInternal()
 
 type RBufPartType =
@@ -1815,8 +1825,14 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
 
     member private x.DoneIOWrite (ioResult : int) (state : obj) (buffer : 'T[]) (offset : int) (bytesTransferred : int) =
         let rbuf = state :?> RBufPart<'T>
-        if (int rbuf.Count*sizeof<'T> <> bytesTransferred) then
-            raise (new Exception("I/O failed "))
+        if (x.BufferLess) then
+            if (int rbuf.Elem.Length*sizeof<'T> <> bytesTransferred) then
+                raise (new Exception("I/O failed "))
+            if (rbuf.Count < int64 rbuf.Elem.Length) then
+                file.AdjustFilePosition(int(rbuf.Count - int64 rbuf.Elem.Length))
+        else
+            if (int rbuf.Count*sizeof<'T> <> bytesTransferred) then
+                raise (new Exception("I/O failed "))
         rbuf.Elem.WriteIO.Set()
         if (rbuf.Type = Virtual) then
             rbuf.ReleaseElem(Some(false))
@@ -1843,7 +1859,11 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
             let maxRead = file.Length/(int64 sizeof<'T>) - elem.StreamPos
             let numRead = int (Math.Min(maxRead, elem.Count))
             elem.Elem.ReadIO.Reset()
-            file.ReadFilePos(elem.Elem.Buffer, elem.Elem.Offset, numRead, x.DoneIOReadDel, numRead, elem.StreamPos) |> ignore
+            if (x.BufferLess) then
+                // read full alignment, return should be less
+                file.ReadFilePos(elem.Elem.Buffer, elem.Elem.Offset, elem.Elem.Length, x.DoneIOReadDel, numRead, elem.StreamPos) |> ignore
+            else
+                file.ReadFilePos(elem.Elem.Buffer, elem.Elem.Offset, numRead, x.DoneIOReadDel, numRead, elem.StreamPos) |> ignore
         else
             elem.Elem.ReadIO.Set()
 
@@ -1940,9 +1960,13 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
     member private x.WriteBuffers() =
         for rbuf in x.BufList do
             if (rbuf.Type = RBufPartType.ValidWrite) then
+                rbuf.Type <- RBufPartType.Valid // don't write again
                 rbuf.Elem.WriteIO.Reset()
-                rbuf.Type <- RBufPartType.Valid
-                file.WriteFilePos(rbuf.Elem.Buffer, rbuf.Offset, int rbuf.Count, x.DoneIOWriteDel, rbuf, rbuf.StreamPos) |> ignore
+                if (x.BufferLess) then
+                    // write full aligned chunk
+                    file.WriteFilePos(rbuf.Elem.Buffer, rbuf.Offset, rbuf.Elem.Length, x.DoneIOWriteDel, rbuf, rbuf.StreamPos) |> ignore
+                else
+                    file.WriteFilePos(rbuf.Elem.Buffer, rbuf.Offset, int rbuf.Count, x.DoneIOWriteDel, rbuf, rbuf.StreamPos) |> ignore
 
     // keep at most numKeep up to "i", don't split if it does not exist
     // keep "maxI-numKeep", ..., "maxI-2", "maxI-1" 
@@ -1955,7 +1979,10 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
                 rbuf.Type <- Virtual
                 if (rbuf.Type = RBufPartType.ValidWrite) then
                     rbuf.Elem.WriteIO.Reset()
-                    file.WriteFilePos(rbuf.Elem.Buffer, rbuf.Offset, int rbuf.Count, x.DoneIOWriteDel, rbuf, rbuf.StreamPos) |> ignore
+                    if (x.BufferLess) then
+                        file.WriteFilePos(rbuf.Elem.Buffer, rbuf.Offset, rbuf.Elem.Length, x.DoneIOWriteDel, rbuf, rbuf.StreamPos) |> ignore
+                    else
+                        file.WriteFilePos(rbuf.Elem.Buffer, rbuf.Offset, int rbuf.Count, x.DoneIOWriteDel, rbuf, rbuf.StreamPos) |> ignore
                 i <- x.MergeVirtual(i)
             i <- i + 1
 
