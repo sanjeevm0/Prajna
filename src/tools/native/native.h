@@ -616,55 +616,35 @@ namespace Native {
         //    return fs;
         //}
 
-        static AsyncStreamIO^ OpenFileWrite(String^ name, Stream^ %fsOut, FileOptions fOpt, bool bBufferLess)
+        static AsyncStreamIO^ OpenFile(String^ name, FileAccess access, FileOptions fOpt, bool bBufferLess)
         {
             array<Char> ^nameArr = name->ToCharArray();
             pin_ptr<Char> namePtr = &nameArr[0];
             Char *pName = (Char*)namePtr;
             int dwFlags = (int)fOpt;
             if (bBufferLess) dwFlags |= FILE_FLAG_NO_BUFFERING;
-            IntPtr h = (IntPtr)CreateFile(pName, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, dwFlags, nullptr);
-            AsyncStreamIO ^io = gcnew AsyncStreamIO((HANDLE)h);
-            io->m_bBufferless = bBufferLess;
-            io->m_position = 0LL;
-            io->m_length = 0LL;
-            io->m_canRead = false;
-            io->m_canWrite = true;
-            io->m_canSeek = true;
-            fsOut = io;
-            return io;
-        }
-
-        static AsyncStreamIO^ OpenFileRead(String^ name, Stream^ %fsOut, FileOptions fOpt, bool bBufferLess)
-        {
-            array<Char> ^nameArr = name->ToCharArray();
-            pin_ptr<Char> namePtr = &nameArr[0];
-            Char *pName = (Char*)namePtr;
-            int dwFlags = (int)fOpt;
-            if (bBufferLess) dwFlags |= FILE_FLAG_NO_BUFFERING;
-            IntPtr h = (IntPtr)CreateFile(pName, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, dwFlags, nullptr);
-            AsyncStreamIO ^io = gcnew AsyncStreamIO((HANDLE)h);
-            io->m_bBufferless = bBufferLess;
-            io->m_position = 0LL;
-            pin_ptr<__int64> pLen = &io->m_length;
-            int ret = io->m_cb->FileSize((__int64*)pLen);
-            if (!ret)
-                throw gcnew IOException("Unable to get file length");
-            io->m_canRead = true;
-            io->m_canWrite = false;
-            io->m_canSeek = true;
-            fsOut = io;
-            return io;
-        }
-
-        static AsyncStreamIO^ OpenFileReadWrite(String^ name, Stream^ %fsOut, FileOptions fOpt, bool bBufferLess)
-        {
-            array<Char> ^nameArr = name->ToCharArray();
-            pin_ptr<Char> namePtr = &nameArr[0];
-            Char *pName = (Char*)namePtr;
-            int dwFlags = (int)fOpt;
-            if (bBufferLess) dwFlags |= FILE_FLAG_NO_BUFFERING;
-            IntPtr h = (IntPtr)CreateFile(pName, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, nullptr, OPEN_ALWAYS, dwFlags, nullptr);
+            Int32 accessMode = 0;
+            Int32 creation = 0;
+            //if ((int)access & (int)FileAccess::Read)
+            //    accessMode |= GENERIC_READ;
+            //if ((int)access & (int)FileAccess::Write)
+            //    accessMode |= GENERIC_WRITE;
+            switch (access)
+            {
+            case FileAccess::Read:
+                accessMode = GENERIC_READ;
+                creation = OPEN_EXISTING;
+                break;
+            case FileAccess::Write:
+                accessMode = GENERIC_WRITE;
+                creation = CREATE_ALWAYS;
+                break;
+            case FileAccess::ReadWrite:
+                accessMode = GENERIC_READ | GENERIC_WRITE;
+                creation = OPEN_ALWAYS;
+                break;
+            }   
+            IntPtr h = (IntPtr)CreateFile(pName, accessMode, FILE_SHARE_READ, nullptr, creation, dwFlags, nullptr);
             AsyncStreamIO ^io = gcnew AsyncStreamIO((HANDLE)h);
             io->m_bBufferless = bBufferLess;
             io->m_position = 0LL;
@@ -672,10 +652,9 @@ namespace Native {
             int ret = io->m_cb->FileSize((__int64*)pLen);
             if (!ret)
                 throw gcnew IOException("Unable to get file length");
-            io->m_canRead = true;
-            io->m_canWrite = true;
+            io->m_canRead = ((accessMode & GENERIC_READ) != 0);
+            io->m_canWrite = ((accessMode & GENERIC_WRITE) != 0);
             io->m_canSeek = true;
-            fsOut = io;
             return io;
         }
 

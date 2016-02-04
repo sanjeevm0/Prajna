@@ -1762,8 +1762,7 @@ type internal DiskIO() =
     static member val GetLockObj : string->Object = DiskIO.GetFileKey with get, set
 
     static member OpenFile(fileName : string, fOpt : FileOptions, bufferLess : bool) =
-        let mutable strm = null
-        let file = AsyncStreamIO.OpenFileReadWrite(fileName, &strm, fOpt, bufferLess)
+        let file = AsyncStreamIO.OpenFile(fileName, FileAccess.ReadWrite, fOpt, bufferLess)
         file.SetLock(DiskIO.GetLockObj(Path.GetFullPath(fileName)))
         file
 
