@@ -44,8 +44,10 @@ open Prajna.Tools.FSharp
 /// <param name="size">The number of elements of type 'T</param>
 /// <param name="align">The alignment required as number of bytes</param>
 type [<AllowNullLiteral>] internal ArrAlign<'T>(size : int, alignBytes : int) =
-    let align = (alignBytes + sizeof<'T> - 1) / sizeof<'T>
-    let alignBytes = align * sizeof<'T>
+    do
+        if (alignBytes/sizeof<'T>*sizeof<'T> <> alignBytes) then
+            raise (Exception("Invalid alignment size - must be multiple of element size"))
+    let align = alignBytes / sizeof<'T>
     let alignSize = (size + align - 1)/align*align
     let mutable arr = Array.zeroCreate<'T>(alignSize + align - 1)
     let handle = GCHandle.Alloc(arr, GCHandleType.Pinned)
@@ -289,22 +291,6 @@ type SafeRefCnt<'T when 'T:null and 'T :> IRefCounter<string>> (infoStr : string
         else
             (event, null)
 
-    member internal x.RefreshFromPool<'TP when 'TP:null and 'TP:(new:unit->'TP) and 'TP :> IRefCounter<string>>(pool : SharedPool<string,'TP>) :  ManualResetEvent =
-        let idGet = Interlocked.Increment(g_id)
-        let getInfo = infoStr + ":" + idGet.ToString()
-        let (event, poolElem) = pool.GetElem(getInfo)
-        if (Utils.IsNotNull poolElem) then
-            x.SetId(idGet)
-            x.Element <- poolElem :> IRefCounter<string> :?> 'T
-            x.InitElem(x.Element)
-            x.RC.SetRef(1L)
-            x.info <- x.baseInfo + ":" + x.Id.ToString()
-#if DEBUGALLOCS
-            x.Element.Allocs.[x.info] <- Environment.StackTrace
-            Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Using pool element %s for id %d - refcount %d" x.Element.Key x.Id x.Element.GetRef)
-#endif
-        event
-
     abstract InitElem : 'T->unit
     default x.InitElem(poolElem) =
         ()
@@ -462,6 +448,7 @@ type [<AllowNullLiteral>] RefCntBuf<'T>() =
         override x.Dispose() =
             disposer.Run(x.DisposeInternal)
 
+[<AllowNullLiteral>]
 type internal RefCntBufAlign<'T>() =
     inherit RefCntBuf<'T>()
 
@@ -493,7 +480,8 @@ type internal RefCntBufAlign<'T>() =
             bufAlign <- null
         base.DisposeInternal()
 
-type internal RefCntBufChunkAlign<'T>() =
+[<AllowNullLiteral>]
+type RefCntBufChunkAlign<'T>() =
     inherit RefCntBuf<'T>()
 
     static let mutable currentChunk : ArrAlign<'T> = null
@@ -508,7 +496,7 @@ type internal RefCntBufChunkAlign<'T>() =
         then
             x.Alloc(size, alignBytes)
 
-    static member val AlignBytes = 1 with get, set
+    static member val AlignBytes = 4096 with get, set // sector align
     static member val ChunkSize = 1<<<18 with get, set
 
     member val private BufAlign : ArrAlign<'T> = null with get, set
@@ -517,19 +505,16 @@ type internal RefCntBufChunkAlign<'T>() =
         IntPtr.Add(x.BufAlign.GCHandle.AddrOfPinnedObject(), x.Offset*sizeof<'T>)
 
     member x.Alloc(size : int, alignBytes : int) =
+        let align = alignBytes / sizeof<'T>
         let (xBuf, xOffset) =
             lock (chunkLock) (fun _ ->
-                while (currentChunk = null) do
-                    if (currentChunk = null) then
-                        currentChunk <- new ArrAlign<'T>(RefCntBufChunkAlign<'T>.ChunkSize, RefCntBufChunkAlign<'T>.AlignBytes)
-                        chunkOffset <- 0
-                        chunkCount <- ref 1
-                    else
-                        chunkOffset <- (chunkOffset + (alignBytes - 1))/alignBytes*alignBytes
-                        if (chunkOffset + size > currentChunk.Size) then
-                            currentChunk <- null
-                        else
-                            chunkCount := !chunkCount + 1
+                chunkOffset <- (chunkOffset + (align - 1))/align*align
+                if (null = currentChunk || chunkOffset + size > currentChunk.Size) then
+                    currentChunk <- new ArrAlign<'T>(RefCntBufChunkAlign<'T>.ChunkSize, RefCntBufChunkAlign<'T>.AlignBytes)
+                    chunkOffset <- 0
+                    chunkCount <- ref 1
+                else
+                    chunkCount := !chunkCount + 1
                 let xOffset = chunkOffset
                 chunkOffset <- chunkOffset + size
                 refCount <- chunkCount
@@ -542,12 +527,12 @@ type internal RefCntBufChunkAlign<'T>() =
         x.Alloc(size, RefCntBufChunkAlign<'T>.AlignBytes)
 
     override x.DisposeInternal() =
-        lock (chunkLock) (fun _ ->
-            refCount := !refCount - 1
-            if (0 = !refCount && (Utils.IsNotNull x.BufAlign)) then
+        if (Interlocked.Decrement(refCount) = 0) then
+            if (Utils.IsNotNull x.BufAlign) then
                 (x.BufAlign :> IDisposable).Dispose()
                 x.BufAlign <- null
-        )
+        else
+            x.BufAlign <- null
         base.DisposeInternal()
 
 type RBufPartType =
@@ -1477,7 +1462,7 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
             rbufPart.StreamPos <- bufList.[i-1].StreamPos + int64 bufList.[i-1].Count
         // allow writing at end of last buffer
         if (rbufPart.StreamPos + int64 rbufPart.Count >= length) then
-            bufRemWrite <- int64(rbufPart.Elem.Length - rbufPart.Offset)
+            bufRemWrite <- int64(rbufPart.Elem.Length - (rbufPart.Offset - rbufPart.Elem.Offset))
         else
             // if already written buffer, then don't extend count
             bufRemWrite <- rbufPart.Count

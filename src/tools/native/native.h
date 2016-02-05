@@ -370,28 +370,50 @@ namespace Native {
         virtual void UpdatePos(__int64 amt);
     };
 
+    generic <class T> private ref class IOState
+    {
+    public:
+        GCHandle m_self;
+        void *m_selfPtr;
+
+        Object ^m_parent;
+        GCHandle ^m_handleBuffer;
+        IOCallbackDel<T> ^m_cb;
+        Object ^m_pState;
+        array<T> ^m_buffer;
+        int m_offset;
+
+        IOState() 
+        {
+            m_self = GCHandle::Alloc(this);
+            IntPtr selfPtr = GCHandle::ToIntPtr(m_self);
+            m_selfPtr = selfPtr.ToPointer();
+        }
+        ~IOState()
+        {
+            m_self.Free();
+            m_handleBuffer->Free();
+        }
+    };
+
     generic <class T> private ref class IOCallbackClass
     {
     private:
         IIO ^m_parent;
-        IOCallbackDel<T> ^m_cb;
         int m_managedTypeSize;
-        GCHandle ^m_handleBuffer;
         GCHandle ^m_handleCallback;
         GCHandle ^m_self;
-        Object ^m_pState;
-        array<T> ^m_buffer;
-        int m_offset;
         CallbackFn *m_pfn;
         IntPtr m_selfPtr;
 
         static void __clrcall Callback(int ioResult, void *pState, void *pBuffer, int bytesTransferred)
         {
             GCHandle ^pStateHandle = GCHandle::FromIntPtr(static_cast<IntPtr>(pState));
-            IOCallbackClass ^x = safe_cast<IOCallbackClass^>(pStateHandle->Target);
-            x->m_handleBuffer->Free();
+            IOState<T> ^ioState = safe_cast<IOState<T>^>(pStateHandle->Target);
+            IOCallbackClass ^x = (IOCallbackClass^)ioState->m_parent;
+            ioState->~IOState();
             x->m_parent->UpdatePos(bytesTransferred);
-            x->m_cb->Invoke(ioResult, x->m_pState, x->m_buffer, x->m_offset, bytesTransferred);
+            ioState->m_cb->Invoke(ioResult, ioState->m_pState, ioState->m_buffer, ioState->m_offset, bytesTransferred);
         }
 
     public:
@@ -425,19 +447,29 @@ namespace Native {
             m_self->Free();
         }
 
-        IntPtr Set(Object ^state, array<T> ^buffer, int offset, IOCallbackDel<T> ^cb)
+        IntPtr Set(IntPtr ptr, Object ^state, array<T> ^buffer, int offset, IOCallbackDel<T> ^cb, IOState<T> ^ioState)
         {
-            m_handleBuffer = GCHandle::Alloc(buffer, GCHandleType::Pinned); // must pin so unmanaged code can use it
-            m_pState = state;
-            m_buffer = buffer;
-            m_offset = offset;
-            m_cb = cb;
-            return IntPtr::Add(m_handleBuffer->AddrOfPinnedObject(), m_offset*m_managedTypeSize);
+            ioState->m_parent = this;
+            ioState->m_pState = state;
+            ioState->m_buffer = buffer;
+            ioState->m_offset = offset;
+            ioState->m_cb = cb;
+
+            if (ptr == IntPtr::Zero)
+            {
+                ioState->m_handleBuffer = nullptr;
+            }
+            else
+            {
+                ioState->m_handleBuffer = GCHandle::Alloc(buffer, GCHandleType::Pinned); // must pin so unmanaged code can use it            
+                ptr = IntPtr::Add(ioState->m_handleBuffer->AddrOfPinnedObject(), ioState->m_offset*m_managedTypeSize);
+            }
+            return ptr;
         }
 
-        void OnError()
+        void OnError(IOState<T> ^ioState)
         {
-            m_handleBuffer->Free();
+            ioState->~IOState();
         }
 
         __forceinline CallbackFn* CbFn() { return m_pfn; }
@@ -662,10 +694,11 @@ namespace Native {
         {
             Lock lock(m_ioLock);
             IOCallbackClass<T>^ cbFn = GetCbFn<T>();
-            IntPtr pBuf = cbFn->Set(state, pBuffer, offset, cb);
-            int ret = m_cb->ReadFileAsync<byte>((byte*)pBuf.ToPointer(), nNum*cbFn->TypeSize(), cbFn->CbFn(), cbFn->SelfPtr().ToPointer(), position*cbFn->TypeSize());
+            IOState<T>^ ioState = gcnew IOState<T>();
+            IntPtr pBuf = cbFn->Set(IntPtr::Zero, state, pBuffer, offset, cb, ioState);
+            int ret = m_cb->ReadFileAsync<byte>((byte*)pBuf.ToPointer(), nNum*cbFn->TypeSize(), cbFn->CbFn(), ioState->m_selfPtr, position*cbFn->TypeSize());
             if (-1 == ret || ret > 0) // > 0 not really an error, but finished sync, so no callback
-                cbFn->OnError();
+                cbFn->OnError(ioState);
             return ret;
         }
 
@@ -674,15 +707,21 @@ namespace Native {
             return ReadFilePos(pBuffer, offset, nNum, cb, state, m_position);
         }
 
-        generic <class T> int WriteFilePos(array<T> ^pBuffer, int offset, int nNum, IOCallbackDel<T> ^cb, Object ^state, Int64 position)
+        generic <class T> int WriteFilePos(IntPtr ptr, array<T> ^pBuffer, int offset, int nNum, IOCallbackDel<T> ^cb, Object ^state, Int64 position)
         {
             Lock lock(m_ioLock);
             IOCallbackClass<T>^ cbFn = GetCbFn<T>();
-            IntPtr pBuf = cbFn->Set(state, pBuffer, offset, cb);
-            int ret = m_cb->WriteFileAsync<byte>((byte*)pBuf.ToPointer(), nNum*cbFn->TypeSize(), cbFn->CbFn(), cbFn->SelfPtr().ToPointer(), position*cbFn->TypeSize());
+            IOState<T> ^ioState = gcnew IOState<T>();
+            IntPtr pBuf = cbFn->Set(ptr, state, pBuffer, offset, cb, ioState);
+            int ret = m_cb->WriteFileAsync<byte>((byte*)pBuf.ToPointer(), nNum*cbFn->TypeSize(), cbFn->CbFn(), ioState->m_selfPtr, position*cbFn->TypeSize());
             if (-1 == ret || ret > 0) // > 0 not really an error, but finished sync, so no callback
-                cbFn->OnError();
+                cbFn->OnError(ioState);
             return ret;
+        }
+
+        generic <class T> __forceinline int WriteFilePos(array<T> ^pBuffer, int offset, int nNum, IOCallbackDel<T> ^cb, Object ^state, Int64 position)
+        {
+            return WriteFilePos(IntPtr::Zero, pBuffer, offset, nNum, cb, state, position);
         }
 
         generic <class T> __forceinline int WriteFile(array<T> ^pBuffer, int offset, int nNum, IOCallbackDel<T> ^cb, Object ^state)
