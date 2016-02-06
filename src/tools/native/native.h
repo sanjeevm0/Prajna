@@ -65,6 +65,7 @@ public:
         if (nullptr == m_ptp)
         {
             int e = GetLastError();
+            printf("Last error: 0x%x", e);
             throw "Fail to initialize threadpool I/O error";
         }
         memset(&m_olap, 0, sizeof(m_olap));
@@ -430,8 +431,8 @@ namespace Native {
             GCHandle ^pStateHandle = GCHandle::FromIntPtr(static_cast<IntPtr>(pState));
             IOState<T> ^ioState = safe_cast<IOState<T>^>(pStateHandle->Target);
             IOCallbackClass ^x = (IOCallbackClass^)ioState->m_parent;
-            ioState->m_cb->Invoke(ioResult, ioState->m_pState, ioState->m_buffer, ioState->m_offset, bytesTransferred);
             x->m_parent->UpdateIO(ioState->m_tpio, bytesTransferred);
+            ioState->m_cb->Invoke(ioResult, ioState->m_pState, ioState->m_buffer, ioState->m_offset, bytesTransferred);
             ioState->Free();
         }
 
@@ -499,21 +500,24 @@ namespace Native {
     };
 
     // expand a function from Func<T,TResult> to Func<Object^,T,TResult>
-    generic <class T, class TResult> private value class Func1
+    generic <class N, class T, class TResult> private ref class Func2to3
     {
     private:
-        Object ^m_state;
-        Func<Object^, T, TResult> ^m_fn;
-        void TResult PerformFn(T x)
+        N m_val;
+        Func<N, T, TResult> ^m_fn;
+
+        TResult PerformFn(T x)
         {
-            m_fn->Invoke()
+            return m_fn(m_val, x);
         }
 
     public:
-        Func1(Object ^state) { m_state = state; }
-        static Func<T,TResult> FuncDo(Object ^state, Func<T, TResult> fn)
+        Func2to3(N val, Func<N, T, TResult> ^fn) : m_val(val), m_fn(fn) {}
+
+        static Func<T,TResult>^ Init(N val, Func<N, T, TResult>^ fn)
         {
-            Func1 x = new Func1(state);
+            Func2to3 ^x = gcnew Func2to3(val, fn);
+            return gcnew Func<T, TResult>(x, &Func2to3::PerformFn);
         }
     };
 
@@ -533,27 +537,34 @@ namespace Native {
         bool m_bBufferless;
         Int64 m_length;
         Int64 m_position;
+        Func<Type^, Object^> ^m_cbCreate;
 
-        //generic <class T> Func<IOCallbackClass<T>^> ^GetNew(System::Type t)
-        //{
-        //    return gcnew IOCallbackClass<T>(this);
-        //}
-
-        generic <class T> static Object^ GetNewCbX(AsyncStreamIO ^x, Type ^t)
+        generic <class T> static Object^ GetNewCbX(Object ^x, Type ^t)
         {
-            return gcnew IOCallbackClass<T>(x);
+            return gcnew IOCallbackClass<T>((IIO^)x);
         }
 
-        generic <class T> static Func<Type^, Object^>^ GetFn(AsyncStreamIO ^x)
+        Object^ GetNewCb(Type ^t)
         {
-
+            Assembly ^a = Assembly::GetExecutingAssembly();
+            //array<Type^> ^tps = a->GetTypes();
+            Type ^cbClass = a->GetType("Prajna.Tools.Native.IOCallbackClass`1");
+            //FullName	"Prajna.Tools.Native.IOCallbackClass`1"	System::String^
+            array<Type^> ^arr = gcnew array<Type^>(1);
+            arr[0] = t;
+            Type ^gType = cbClass->MakeGenericType(arr);
+            array<Object^> ^ao = gcnew array<Object^>(1);
+            ao[0] = this;
+            return Activator::CreateInstance(gType, ao);
+            //return gcnew IOCallbackClass<T>((IIO^)this);
         }
 
         generic <class T> IOCallbackClass<T>^ GetCbFn()
         {
-            Func<Type^, Object^> ^getNew = gcnew Func<Type^, Object^>(AsyncStreamIO::GetFn);
+            //Func2to3<Object^,Type^,Object^> f(this, gcnew Func<Object^, Type^, Object^>(AsyncStreamIO::GetNewCbX<T>));
+            //Func<Type^, Object^> ^getNew = gcnew Func2to3::Init(this, gcnew Func<Type^, Object^>(AsyncStreamIO::GetNewCbX));
             // unmanaged C++ lambda: [this](Type ^t) -> IOCallbackClass<T> { return gcnew IOCallbackClass<T>(this); }
-            return (IOCallbackClass<T>^)m_cbFns->GetOrAdd(T::typeid, getNew);
+            return (IOCallbackClass<T>^)m_cbFns->GetOrAdd(T::typeid, m_cbCreate);
         }
 
     protected:
@@ -586,6 +597,8 @@ namespace Native {
         AsyncStreamIO(HANDLE h, int maxIO) : m_cb(nullptr)
         {
             int i;
+
+            m_cbCreate = gcnew Func<Type^, Object^>(this, &AsyncStreamIO::GetNewCb);
 
             m_cbFns = gcnew ConcurrentDictionary<Type^, Object^>();
             m_ioLock = gcnew Object();
