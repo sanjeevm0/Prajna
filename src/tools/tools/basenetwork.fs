@@ -683,7 +683,7 @@ type Network() =
         let toCopy = Math.Min(srcLen, dstLen)
         if (toCopy > 0) then
             //dst.Write(src, srcOffset, toCopy)
-            dst.AppendNoCopy(src, int64 srcOffset, int64 toCopy)
+            dst.AppendNoCopy(src, int64 src.Offset + int64 srcOffset, int64 toCopy)
             srcOffset <- srcOffset + toCopy
             srcLen <- srcLen - toCopy
             dstLen <- dstLen - toCopy

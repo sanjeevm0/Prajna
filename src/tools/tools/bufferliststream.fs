@@ -405,6 +405,9 @@ type [<AllowNullLiteral>] RefCntBuf<'T>() =
         then 
             x.SetBuffer(buf, 0, buf.Length)
 
+    abstract Ptr : IntPtr with get
+    default x.Ptr with get() = IntPtr.Zero
+
     member internal x.ReadIO with get() = readIO
     member internal x.WriteIO with get() = writeIO
 
@@ -466,6 +469,10 @@ type internal RefCntBufAlign<'T>() =
             x.BufAlign <- arr
             x.SetBuffer(x.BufAlign.Arr, x.BufAlign.Offset, x.BufAlign.Size)
 
+    override x.Ptr
+        with get() =
+            IntPtr.Add(bufAlign.GCHandle.AddrOfPinnedObject(), x.Offset*sizeof<'T>)
+
     static member val AlignBytes = 1 with get, set
 
     member private x.BufAlign with get() : ArrAlign<'T> = bufAlign and set(v) = bufAlign <- v
@@ -501,8 +508,9 @@ type RefCntBufChunkAlign<'T>() =
 
     member val private BufAlign : ArrAlign<'T> = null with get, set
 
-    member x.Ptr() =
-        IntPtr.Add(x.BufAlign.GCHandle.AddrOfPinnedObject(), x.Offset*sizeof<'T>)
+    override x.Ptr
+        with get() =
+            IntPtr.Add(x.BufAlign.GCHandle.AddrOfPinnedObject(), x.Offset*sizeof<'T>)
 
     member x.Alloc(size : int, alignBytes : int) =
         let align = alignBytes / sizeof<'T>
@@ -1264,21 +1272,6 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
             dstLen <- dstLen - int64 numDst
         (numSrc, numDst)
 
-    static member internal SrcDstBlkNoCopy<'T1,'T2,'T1Elem,'T2Elem when 'T1 :> Array and 'T2 :>Array>
-        (src : 'T1, srcOffset : int byref, srcLen : int byref,
-         dst : 'T2, dstOffset : int byref, dstLen : int byref) =
-        let toCopy = Math.Min(srcLen*sizeof<'T1Elem>, dstLen*sizeof<'T2Elem>) // in units of bytes
-        let numSrc = toCopy / sizeof<'T1Elem>
-        let numDst = toCopy / sizeof<'T2Elem>
-        if (toCopy > 0) then
-            srcOffset <- srcOffset + numSrc
-            srcLen <- srcLen - numSrc
-            dstOffset <- dstOffset + numDst
-            dstLen <- dstLen - numDst
-            (src, srcOffset-numSrc, dst, dstOffset-numDst, toCopy, numSrc, numDst)
-        else
-            (src, srcOffset, dst, dstOffset, 0, numSrc, numDst)
-
     // return is in units of bytes - only copy sufficient so that dst alignment is "align"
     // that is after copy (total length of dst - alignOffset) should be divisible by align (in units of bytes)
     static member internal SrcDstBlkCopyAlign<'T1,'T2,'T1Elem,'T2Elem when 'T1 :> Array and 'T2 :>Array>
@@ -1762,6 +1755,7 @@ type internal DiskIOFn<'T>() =
         else
             if (int rbuf.Count*sizeof<'T> <> bytesTransferred) then
                 raise (new Exception("I/O failed "))
+        Console.WriteLine("Finish streampos: {0} {1}", rbuf.StreamPos, rbuf.Type)
         rbuf.IOEvent.Set()
         if (rbuf.Type = Virtual) then
             rbuf.ReleaseElem(Some(false))
@@ -1771,10 +1765,11 @@ type internal DiskIOFn<'T>() =
         //elem.Elem.WriteIO.Reset()
         elem.ResetIOEvent()
         let pos = defaultArg pos elem.StreamPos
+        Console.WriteLine("Writing element pos: {0} length: {1}", elem.StreamPos, elem.Count)
         if (file.BufferLess()) then
-            file.WriteFilePos(elem.Elem.Buffer, elem.Offset, elem.Elem.Length, DiskIOFn<'T>.DoneIOWriteDel, (elem, file), pos) |> ignore
+            file.WriteFilePos(elem.Elem.Ptr, elem.Elem.Buffer, elem.Offset, elem.Elem.Length, DiskIOFn<'T>.DoneIOWriteDel, (elem, file), pos) |> ignore
         else
-            file.WriteFilePos(elem.Elem.Buffer, elem.Offset, int elem.Count, DiskIOFn<'T>.DoneIOWriteDel, (elem, file), pos) |> ignore
+            file.WriteFilePos(elem.Elem.Ptr, elem.Elem.Buffer, elem.Offset, int elem.Count, DiskIOFn<'T>.DoneIOWriteDel, (elem, file), pos) |> ignore
 
     static member private DoneIORead (ioResult : int) (state : obj) (buffer : 'T[]) (offset : int) (bytesTransferred : int) =
         let rbuf = state :?> RBufPart<'T>
@@ -1790,10 +1785,10 @@ type internal DiskIOFn<'T>() =
         let pos = defaultArg pos elem.StreamPos
         if (file.BufferLess()) then
             // read full alignment, return should be less
-            file.ReadFilePos(elem.Elem.Buffer, elem.Elem.Offset, elem.Elem.Length, DiskIOFn<'T>.DoneIOReadDel, numRead, pos) |> ignore
+            file.ReadFilePos(elem.Elem.Ptr, elem.Elem.Buffer, elem.Elem.Offset, elem.Elem.Length, DiskIOFn<'T>.DoneIOReadDel, elem, pos) |> ignore
         else
             let numRead = defaultArg numRead (int elem.Count)
-            file.ReadFilePos(elem.Elem.Buffer, elem.Elem.Offset, numRead, DiskIOFn<'T>.DoneIOReadDel, numRead, pos) |> ignore
+            file.ReadFilePos(elem.Elem.Ptr, elem.Elem.Buffer, elem.Elem.Offset, numRead, DiskIOFn<'T>.DoneIOReadDel, elem, pos) |> ignore
   
 [<AllowNullLiteral>]
 type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 'TP :> IRefCounter<string>> private (fileName : string, b : bool) as x =
@@ -2037,7 +2032,9 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
                 if (x.ElemPos-1 >= i) then
                     x.ElemPos <- x.ElemPos - 1
                 i <- i-1
-        i
+            i
+        else
+            i
 
     member private x.SplitAndMergeVirtual(i : int, pos : int64) =
         let num = x.SplitVirtual(i, pos, None)
@@ -2097,11 +2094,20 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
         while bCont && (i < Math.Min(numFetch, x.ElemLen-x.ElemPos)) do
             let rbuf = x.BufList.[x.ElemPos + i]
             if (rbuf.Type = RBufPartType.Virtual) then
-                let (bContRet, eventRet) = x.TrySplitAndMergeVirtual(i, rbuf.StreamPos)
+                let (bContRet, eventRet) = x.TrySplitAndMergeVirtual(x.ElemPos + i, rbuf.StreamPos)
                 bCont <- bContRet
                 event <- eventRet
             i <- i + 1
-        (i = Math.Min(numFetch, x.ElemLen-x.ElemPos), event)
+        let ret = (i = Math.Min(numFetch, x.ElemLen-x.ElemPos), event)
+
+        // now remove at end
+        i <- x.ElemLen-1
+        while (i >= x.ElemPos + numFetch) do
+            x.BufList.[i].MakeVirtual()
+            i <- x.MergeVirtual(i)
+            i <- i - 1
+
+        ret
 
     // assumes x.ElemPos is set correctly
     member x.SetCurPos(pos : int64) =

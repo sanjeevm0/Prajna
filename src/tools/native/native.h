@@ -32,16 +32,15 @@ typedef enum _Oper
     WriteFileOper = 1
 } Oper;
 
-class IOCallback {
+class TPIO {
 private:
-    OVERLAPPED m_olap;
-    CallbackFn *m_pfn;
-    void *m_pstate;
-    PTP_IO m_ptp;
     HANDLE m_hFile;
+    OVERLAPPED m_olap;
+    PTP_IO m_ptp;
+    void *m_pstate;
     void *m_pBuffer;
     volatile unsigned int m_inUse;
-    CRITICAL_SECTION *m_cs;
+    CallbackFn *m_pfn;
 
     static void CALLBACK Callback(
         PTP_CALLBACK_INSTANCE Instance,
@@ -51,7 +50,7 @@ private:
         ULONG_PTR bytesTransferred,
         PTP_IO ptp)
     {
-        IOCallback *x = (IOCallback*)state;
+        TPIO *x = (TPIO*)state;
         if (NO_ERROR != ioResult)
             bytesTransferred = 0LL;
         x->m_inUse = 0;
@@ -59,18 +58,19 @@ private:
     }
 
 public:
-    IOCallback(HANDLE hFile) :
-        m_pfn(nullptr), m_pstate(nullptr), m_ptp(nullptr), m_hFile(hFile), 
+    TPIO(HANDLE hFile) : m_hFile(hFile), m_pfn(nullptr), m_pstate(nullptr), m_ptp(nullptr),
         m_pBuffer(nullptr), m_inUse(0)
     {
+        m_ptp = CreateThreadpoolIo(hFile, TPIO::Callback, this, NULL);
         if (nullptr == m_ptp)
-            m_ptp = CreateThreadpoolIo(m_hFile, IOCallback::Callback, this, NULL);
+        {
+            int e = GetLastError();
+            throw "Fail to initialize threadpool I/O error";
+        }
         memset(&m_olap, 0, sizeof(m_olap));
-        m_cs = new CRITICAL_SECTION;
-        InitializeCriticalSection(m_cs);
     }
 
-    ~IOCallback()
+    ~TPIO()
     {
         if (m_ptp)
         {
@@ -78,11 +78,6 @@ public:
             CloseThreadpoolIo(m_ptp);
             m_ptp = nullptr;
         }
-        Close(); // in case we didn't call close
-        DeleteCriticalSection(m_cs);
-        delete m_cs;
-        m_cs = NULL;
-        //printf("CritSec deleted\n");
     }
 
     // use enum as WriteFile and ReadFile have slightly differing signatures (LPVOID vs. LPCVOID)
@@ -92,15 +87,6 @@ public:
     {
         if (0 == InterlockedCompareExchange(&m_inUse, 1, 0))
         {
-            if (nullptr == m_ptp)
-                m_ptp = CreateThreadpoolIo(m_hFile, IOCallback::Callback, this, NULL);
-            if (nullptr == m_ptp)
-            {
-                int e = GetLastError();
-                printf("Fail to initialize threadpool I/O error: %x", e);
-                return -1;
-            }
-            DWORD num;
             m_pfn = pfn;
             m_pstate = state;
             m_pBuffer = pBuffer;
@@ -114,10 +100,10 @@ public:
             switch (oper)
             {
             case ReadFileOper:
-                ret = ReadFile(m_hFile, pBuffer, nNumberOfElems*sizeof(T), &num, &m_olap);
+                ret = ReadFile(m_hFile, pBuffer, nNumberOfElems*sizeof(T), NULL, &m_olap);
                 break;
             case WriteFileOper:
-                ret = WriteFile(m_hFile, pBuffer, nNumberOfElems*sizeof(T), &num, &m_olap);
+                ret = WriteFile(m_hFile, pBuffer, nNumberOfElems*sizeof(T), NULL, &m_olap);
                 break;
             default:
                 assert(false);
@@ -139,11 +125,32 @@ public:
             return -1;
         }
     }
+};
+
+class IOCallback {
+private:
+    HANDLE m_hFile;
+    CRITICAL_SECTION *m_cs;
+
+public:
+    IOCallback(HANDLE hFile) : m_hFile(hFile)
+    {
+        m_cs = new CRITICAL_SECTION;
+        InitializeCriticalSection(m_cs);
+    }
+
+    ~IOCallback()
+    {
+        Close(); // in case we didn't call close
+        DeleteCriticalSection(m_cs);
+        delete m_cs;
+        m_cs = NULL;
+    }
 
     template <class T>
-    __forceinline int ReadFileAsync(T *pBuffer, DWORD nNum, CallbackFn *pfn, void *state, __int64 pos=-1LL)
+    __forceinline int ReadFileAsync(TPIO *tpio, T *pBuffer, DWORD nNum, CallbackFn *pfn, void *state, __int64 pos=-1LL)
     {
-        return OperFile<T, ReadFileOper>(pBuffer, nNum, pfn, state, pos);
+        return tpio->OperFile<T, ReadFileOper>(pBuffer, nNum, pfn, state, pos);
     }
 
     template <class T>
@@ -161,9 +168,9 @@ public:
     }
 
     template <class T>
-    __forceinline int WriteFileAsync(T *pBuffer, DWORD nNum, CallbackFn *pfn, void *state, __int64 pos=-1LL)
+    __forceinline int WriteFileAsync(TPIO *tpio, T *pBuffer, DWORD nNum, CallbackFn *pfn, void *state, __int64 pos=-1LL)
     {
-        return OperFile<T, WriteFileOper>(pBuffer, nNum, pfn, state, pos);
+        return tpio->OperFile<T, WriteFileOper>(pBuffer, nNum, pfn, state, pos);
     }
 
     template <class T>
@@ -241,6 +248,7 @@ using namespace System::IO;
 using namespace System::Reflection;
 using namespace System::Threading;
 using namespace System::Collections::Generic;
+using namespace System::Collections::Concurrent;
 using namespace System::Runtime::InteropServices;
 using namespace Microsoft::Win32::SafeHandles;
 
@@ -339,14 +347,18 @@ namespace Test {
 namespace Prajna {
 namespace Tools {
 namespace Native {
+
+    // with null object, lock is removed
     ref class Lock {
         Object^ m_pObject;
     public:
         Lock(Object ^ pObject) : m_pObject(pObject) {
-            Monitor::Enter(m_pObject);
+            if (nullptr != m_pObject)
+                Monitor::Enter(m_pObject);
         }
         ~Lock() {
-            Monitor::Exit(m_pObject);
+            if (nullptr != m_pObject)
+                Monitor::Exit(m_pObject);
         }
     };
 
@@ -367,32 +379,39 @@ namespace Native {
     private interface class IIO
     {
     public:
-        virtual void UpdatePos(__int64 amt);
+        virtual void UpdateIO(IntPtr tpio, __int64 amt);
     };
 
     generic <class T> private ref class IOState
     {
     public:
         GCHandle m_self;
-        void *m_selfPtr;
+        IntPtr m_selfPtr;
 
         Object ^m_parent;
         GCHandle ^m_handleBuffer;
         IOCallbackDel<T> ^m_cb;
         Object ^m_pState;
         array<T> ^m_buffer;
+        IntPtr m_tpio;
         int m_offset;
 
         IOState() 
         {
             m_self = GCHandle::Alloc(this);
-            IntPtr selfPtr = GCHandle::ToIntPtr(m_self);
-            m_selfPtr = selfPtr.ToPointer();
+            m_selfPtr = GCHandle::ToIntPtr(m_self);
         }
-        ~IOState()
+
+        void Free()
         {
             m_self.Free();
-            m_handleBuffer->Free();
+            if (nullptr != m_handleBuffer)
+                m_handleBuffer->Free();
+        }
+
+        __forceinline void* SelfPtr()
+        {
+            return m_selfPtr.ToPointer();
         }
     };
 
@@ -402,18 +421,18 @@ namespace Native {
         IIO ^m_parent;
         int m_managedTypeSize;
         GCHandle ^m_handleCallback;
-        GCHandle ^m_self;
         CallbackFn *m_pfn;
-        IntPtr m_selfPtr;
+        //GCHandle ^m_self;
+        //IntPtr m_selfPtr;
 
         static void __clrcall Callback(int ioResult, void *pState, void *pBuffer, int bytesTransferred)
         {
             GCHandle ^pStateHandle = GCHandle::FromIntPtr(static_cast<IntPtr>(pState));
             IOState<T> ^ioState = safe_cast<IOState<T>^>(pStateHandle->Target);
             IOCallbackClass ^x = (IOCallbackClass^)ioState->m_parent;
-            ioState->~IOState();
-            x->m_parent->UpdatePos(bytesTransferred);
             ioState->m_cb->Invoke(ioResult, ioState->m_pState, ioState->m_buffer, ioState->m_offset, bytesTransferred);
+            x->m_parent->UpdateIO(ioState->m_tpio, bytesTransferred);
+            ioState->Free();
         }
 
     public:
@@ -421,7 +440,7 @@ namespace Native {
         {
             this->m_parent = parent;
 
-            //Type^ t = NativeHelper::typeid;
+            //Type^ t = NativeHelper::typeid;q
             //Object ^o = t->GetMethod("SizeOf", BindingFlags::Static | BindingFlags::NonPublic)
             //    ->GetGenericMethodDefinition()
             //    ->MakeGenericMethod(T::typeid)
@@ -436,52 +455,76 @@ namespace Native {
             m_pfn = static_cast<CallbackFn*>(ip.ToPointer());
 
             // a gchandle to self
-            m_self = GCHandle::Alloc(this);
-            m_selfPtr = GCHandle::ToIntPtr(*m_self);
+            //m_self = GCHandle::Alloc(this);
+            //m_selfPtr = GCHandle::ToIntPtr(*m_self);
         }
 
         ~IOCallbackClass()
         {
             Lock lock(this);
             m_handleCallback->Free();
-            m_self->Free();
+            //m_self->Free();
         }
 
-        IntPtr Set(IntPtr ptr, Object ^state, array<T> ^buffer, int offset, IOCallbackDel<T> ^cb, IOState<T> ^ioState)
+        IntPtr Set(IntPtr ptr, Object ^state, array<T> ^buffer, int offset, IOCallbackDel<T> ^cb, IntPtr tpio, IOState<T> ^ioState)
         {
             ioState->m_parent = this;
             ioState->m_pState = state;
             ioState->m_buffer = buffer;
             ioState->m_offset = offset;
             ioState->m_cb = cb;
+            ioState->m_tpio = tpio;
 
-            if (ptr == IntPtr::Zero)
-            {
-                ioState->m_handleBuffer = nullptr;
-            }
-            else
+            if (IntPtr::Zero == ptr)
             {
                 ioState->m_handleBuffer = GCHandle::Alloc(buffer, GCHandleType::Pinned); // must pin so unmanaged code can use it            
                 ptr = IntPtr::Add(ioState->m_handleBuffer->AddrOfPinnedObject(), ioState->m_offset*m_managedTypeSize);
             }
+            else
+            {
+                ioState->m_handleBuffer = nullptr;
+            }
             return ptr;
         }
 
-        void OnError(IOState<T> ^ioState)
+        void OnNoCallback(IOState<T> ^ioState)
         {
-            ioState->~IOState();
+            m_parent->UpdateIO(ioState->m_tpio, 0L);
+            ioState->Free();
         }
 
         __forceinline CallbackFn* CbFn() { return m_pfn; }
         __forceinline int TypeSize() { return m_managedTypeSize; }
-        __forceinline IntPtr SelfPtr() { return m_selfPtr;  }
+        //__forceinline IntPtr SelfPtr() { return m_selfPtr;  }
+    };
+
+    // expand a function from Func<T,TResult> to Func<Object^,T,TResult>
+    generic <class T, class TResult> private value class Func1
+    {
+    private:
+        Object ^m_state;
+        Func<Object^, T, TResult> ^m_fn;
+        void TResult PerformFn(T x)
+        {
+            m_fn->Invoke()
+        }
+
+    public:
+        Func1(Object ^state) { m_state = state; }
+        static Func<T,TResult> FuncDo(Object ^state, Func<T, TResult> fn)
+        {
+            Func1 x = new Func1(state);
+        }
     };
 
     public ref class AsyncStreamIO : public IIO, public Stream
     {
     private:
         IOCallback *m_cb;
-        Dictionary<Type^, Object^> ^m_cbFns;
+        TPIO **m_tpio;
+        int m_numTPIO;
+        BlockingCollection<IntPtr> ^m_tpioColl;
+        ConcurrentDictionary<Type^, Object^> ^m_cbFns;
         Object ^m_ioLock;
         // Stream stuff
         bool m_canRead;
@@ -491,42 +534,71 @@ namespace Native {
         Int64 m_length;
         Int64 m_position;
 
-        generic <class T>
-            IOCallbackClass<T>^ GetCbFn()
-            {
-                Type ^t = T::typeid;
-                if (!m_cbFns->ContainsKey(t))
-                    m_cbFns[t] = (Object^)(gcnew IOCallbackClass<T>(this));
-                return (IOCallbackClass<T>^)m_cbFns[t];
-            }
+        //generic <class T> Func<IOCallbackClass<T>^> ^GetNew(System::Type t)
+        //{
+        //    return gcnew IOCallbackClass<T>(this);
+        //}
+
+        generic <class T> static Object^ GetNewCbX(AsyncStreamIO ^x, Type ^t)
+        {
+            return gcnew IOCallbackClass<T>(x);
+        }
+
+        generic <class T> static Func<Type^, Object^>^ GetFn(AsyncStreamIO ^x)
+        {
+
+        }
+
+        generic <class T> IOCallbackClass<T>^ GetCbFn()
+        {
+            Func<Type^, Object^> ^getNew = gcnew Func<Type^, Object^>(AsyncStreamIO::GetFn);
+            // unmanaged C++ lambda: [this](Type ^t) -> IOCallbackClass<T> { return gcnew IOCallbackClass<T>(this); }
+            return (IOCallbackClass<T>^)m_cbFns->GetOrAdd(T::typeid, getNew);
+        }
 
     protected:
         void virtual Free()
         {
             Lock lock(this);
+            int i;
+
             if (nullptr != m_cb)
             {
                 m_cb->Close();
                 delete m_cb;
                 m_cb = nullptr;
+                for (i = 0; i < m_numTPIO; i++)
+                    delete m_tpio[i];
+                delete[] m_tpio;
             }
             //ICollection<Object^>^ cb = (ICollection<Object^>^)m_cbFns;
         }
 
     public:
-        AsyncStreamIO(FileStream ^strm) : m_cb(nullptr), m_cbFns(nullptr), m_ioLock(nullptr),
-            m_canRead(false), m_canWrite(false), m_canSeek(false), m_length(0LL), m_position(0LL)
-        {
-            m_cb = new IOCallback((void*)strm->SafeFileHandle->DangerousGetHandle());
-            m_cbFns = gcnew Dictionary<Type^, Object^>();
-            m_ioLock = gcnew Object();
-        }
+        //AsyncStreamIO(FileStream ^strm) : m_cb(nullptr), m_cbFns(nullptr), m_ioLock(nullptr),
+        //    m_canRead(false), m_canWrite(false), m_canSeek(false), m_length(0LL), m_position(0LL)
+        //{
+        //    m_cb = new IOCallback((void*)strm->SafeFileHandle->DangerousGetHandle());
+        //    m_cbFns = gcnew Dictionary<Type^, Object^>();
+        //    m_ioLock = gcnew Object();
+        //}
 
-        AsyncStreamIO(HANDLE h) : m_cb(nullptr)
+        AsyncStreamIO(HANDLE h, int maxIO) : m_cb(nullptr)
         {
-            m_cb = new IOCallback(h);
-            m_cbFns = gcnew Dictionary<Type^, Object^>();
+            int i;
+
+            m_cbFns = gcnew ConcurrentDictionary<Type^, Object^>();
             m_ioLock = gcnew Object();
+            m_tpioColl = gcnew BlockingCollection<IntPtr>();
+
+            m_cb = new IOCallback(h);
+            m_numTPIO = maxIO;
+            m_tpio = new TPIO*[m_numTPIO];
+            for (i = 0; i < maxIO; i++)
+            {
+                m_tpio[i] = new TPIO(h);
+                m_tpioColl->Add((IntPtr)m_tpio[i]);
+            }
         }
 
         // destructor (e.g. Dispose with bDisposing = true), automatically adds suppressfinalize call
@@ -625,10 +697,12 @@ namespace Native {
 
         bool BufferLess() { return m_bBufferless;  }
 
-        virtual void UpdatePos(Int64 amt) = IIO::UpdatePos
+        virtual void UpdatePos(IntPtr tpio, Int64 amt) = IIO::UpdateIO
         {
             m_position += amt;
             m_length = max(m_length, m_position);
+            if (IntPtr::Zero != tpio)
+                m_tpioColl->Add(tpio);
         }
 
         void SetLock(Object^ lockObj)
@@ -677,7 +751,7 @@ namespace Native {
                 break;
             }   
             IntPtr h = (IntPtr)CreateFile(pName, accessMode, FILE_SHARE_READ, nullptr, creation, dwFlags, nullptr);
-            AsyncStreamIO ^io = gcnew AsyncStreamIO((HANDLE)h);
+            AsyncStreamIO ^io = gcnew AsyncStreamIO((HANDLE)h, 1);
             io->m_bBufferless = bBufferLess;
             io->m_position = 0LL;
             pin_ptr<__int64> pLen = &io->m_length;
@@ -690,16 +764,29 @@ namespace Native {
             return io;
         }
 
-        generic <class T> int ReadFilePos(array<T> ^pBuffer, int offset, int nNum, IOCallbackDel<T> ^cb, Object ^state, Int64 position)
+        generic <class T> int ReadFilePos(IntPtr ptr, array<T> ^pBuffer, int offset, int nNum, IOCallbackDel<T> ^cb, Object ^state, Int64 position)
         {
-            Lock lock(m_ioLock);
+            //Lock lock(m_ioLock);
             IOCallbackClass<T>^ cbFn = GetCbFn<T>();
             IOState<T>^ ioState = gcnew IOState<T>();
-            IntPtr pBuf = cbFn->Set(IntPtr::Zero, state, pBuffer, offset, cb, ioState);
-            int ret = m_cb->ReadFileAsync<byte>((byte*)pBuf.ToPointer(), nNum*cbFn->TypeSize(), cbFn->CbFn(), ioState->m_selfPtr, position*cbFn->TypeSize());
-            if (-1 == ret || ret > 0) // > 0 not really an error, but finished sync, so no callback
-                cbFn->OnError(ioState);
+            IntPtr tpio = m_tpioColl->Take(); // may block until one is available
+            IntPtr pBuf = cbFn->Set(ptr, state, pBuffer, offset, cb, tpio, ioState);
+            int ret = m_cb->ReadFileAsync<byte>((TPIO*)tpio.ToPointer(), (byte*)pBuf.ToPointer(), nNum*cbFn->TypeSize(), cbFn->CbFn(), ioState->SelfPtr(), position*cbFn->TypeSize());
+            if (-1 == ret || ret > 0)
+            {   // > 0 not really an error, but finished sync, so no callback
+                if (-1 == ret)
+                {
+                    Int32 error = GetLastError();
+                    throw gcnew Exception("Error reading file:" + error.ToString());
+                }
+                cbFn->OnNoCallback(ioState);
+            }
             return ret;
+        }
+
+        generic <class T> __forceinline int ReadFilePos(array<T> ^pBuffer, int offset, int nNum, IOCallbackDel<T> ^cb, Object ^state, Int64 position)
+        {
+            return ReadFilePos(IntPtr::Zero, pBuffer, offset, nNum, cb, state, position);
         }
 
         generic <class T> __forceinline int ReadFile(array<T> ^pBuffer, int offset, int nNum, IOCallbackDel<T> ^cb, Object ^state)
@@ -709,13 +796,22 @@ namespace Native {
 
         generic <class T> int WriteFilePos(IntPtr ptr, array<T> ^pBuffer, int offset, int nNum, IOCallbackDel<T> ^cb, Object ^state, Int64 position)
         {
-            Lock lock(m_ioLock);
+            //Lock lock(m_ioLock);
             IOCallbackClass<T>^ cbFn = GetCbFn<T>();
             IOState<T> ^ioState = gcnew IOState<T>();
-            IntPtr pBuf = cbFn->Set(ptr, state, pBuffer, offset, cb, ioState);
-            int ret = m_cb->WriteFileAsync<byte>((byte*)pBuf.ToPointer(), nNum*cbFn->TypeSize(), cbFn->CbFn(), ioState->m_selfPtr, position*cbFn->TypeSize());
-            if (-1 == ret || ret > 0) // > 0 not really an error, but finished sync, so no callback
-                cbFn->OnError(ioState);
+            IntPtr tpio = m_tpioColl->Take();
+            IntPtr pBuf = cbFn->Set(ptr, state, pBuffer, offset, cb, tpio, ioState);
+            printf("Write first elem: %d\n", *(int*)pBuf.ToPointer());
+            int ret = m_cb->WriteFileAsync<byte>((TPIO*)tpio.ToPointer(), (byte*)pBuf.ToPointer(), nNum*cbFn->TypeSize(), cbFn->CbFn(), ioState->SelfPtr(), position*cbFn->TypeSize());
+            if (-1 == ret || ret > 0)
+            {   // > 0 not really an error, but finished sync, so no callback
+                if (-1 == ret)
+                {
+                    Int32 error = GetLastError();
+                    throw gcnew Exception("Error writing file:" + error.ToString());
+                }
+                cbFn->OnNoCallback(ioState);
+            }
             return ret;
         }
 
@@ -735,7 +831,7 @@ namespace Native {
             pin_ptr<T> pBuf = &pBuffer[0];
             int amtRead = m_cb->ReadFileSync<byte>((byte*)pBuf, nNum*sizeof(T));
             if (amtRead >= 0)
-                UpdatePos(amtRead);
+                UpdatePos(IntPtr::Zero, amtRead);
             return amtRead;
         }
 
@@ -745,7 +841,7 @@ namespace Native {
             pin_ptr<T> pBuf = &pBuffer[0];
             int amtWrite = m_cb->WriteFileSync<byte>((byte*)pBuf, nNum*sizeof(T));
             if (amtWrite >= 0)
-                UpdatePos(amtWrite);
+                UpdatePos(IntPtr::Zero, amtWrite);
             return amtWrite;
         }
 
