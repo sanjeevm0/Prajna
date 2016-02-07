@@ -33,78 +33,82 @@ typedef enum _Oper
 } Oper;
 
 class TPIO {
-private:
-    HANDLE m_hFile;
+public:
     OVERLAPPED m_olap;
-    PTP_IO m_ptp;
     void *m_pstate;
     void *m_pBuffer;
     volatile unsigned int m_inUse;
     CallbackFn *m_pfn;
 
-    static void CALLBACK Callback(
-        PTP_CALLBACK_INSTANCE Instance,
-        PVOID state,
-        PVOID olp,
-        ULONG ioResult,
-        ULONG_PTR bytesTransferred,
-        PTP_IO ptp)
-    {
-        TPIO *x = (TPIO*)state;
-        if (NO_ERROR != ioResult)
-            bytesTransferred = 0LL;
-        x->m_inUse = 0;
-        (*x->m_pfn)(ioResult, x->m_pstate, x->m_pBuffer, (int)bytesTransferred);
-    }
-
 public:
-    TPIO(HANDLE hFile) : m_hFile(hFile), m_pfn(nullptr), m_pstate(nullptr), m_ptp(nullptr),
-        m_pBuffer(nullptr), m_inUse(0)
+    TPIO(HANDLE hFile) : m_pfn(nullptr), m_pstate(nullptr), m_pBuffer(nullptr), m_inUse(0)
     {
-        m_ptp = CreateThreadpoolIo(hFile, TPIO::Callback, this, NULL);
-        if (nullptr == m_ptp)
-        {
-            int e = GetLastError();
-            printf("Last error: 0x%x", e);
-            throw "Fail to initialize threadpool I/O error";
-        }
         memset(&m_olap, 0, sizeof(m_olap));
+        //m_olap.hEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
     }
 
     ~TPIO()
     {
-        if (m_ptp)
-        {
-            WaitForThreadpoolIoCallbacks(m_ptp, TRUE);
-            CloseThreadpoolIo(m_ptp);
-            m_ptp = nullptr;
-        }
+        //CloseHandle(m_olap.hEvent);
+    }
+};
+
+class IOCallback {
+private:
+    HANDLE m_hFile;
+    PTP_IO m_ptp;
+    CRITICAL_SECTION *m_cs;
+
+    TPIO **m_tpio;
+    int m_numTp;
+
+    static void CALLBACK Callback(
+        PTP_CALLBACK_INSTANCE Instance,
+        PVOID state,
+        PVOID olap,
+        ULONG ioResult,
+        ULONG_PTR bytesTransferred,
+        PTP_IO ptp)
+    {
+        IOCallback *x = (IOCallback*)state;
+        LPOVERLAPPED polap = (LPOVERLAPPED)olap;
+        int i;
+        if (NO_ERROR != ioResult)
+            bytesTransferred = 0LL;
+        for (i = 0; i < x->m_numTp; i++)
+            if (x->m_tpio[i]->m_olap.Offset == polap->Offset &&
+                x->m_tpio[i]->m_olap.OffsetHigh == polap->OffsetHigh)
+                break;
+        //assert(i < x->m_numTp); // can use hEvent if position may be same
+        TPIO *tpio = x->m_tpio[i];
+        tpio->m_inUse = 0;
+        (*tpio->m_pfn)(ioResult, tpio->m_pstate, tpio->m_pBuffer, (int)bytesTransferred);
     }
 
     // use enum as WriteFile and ReadFile have slightly differing signatures (LPVOID vs. LPCVOID)
     //template <class T, OperFn fn>
     template <class T, Oper oper>
-    int OperFile(T *pBuffer, DWORD nNumberOfElems, CallbackFn *pfn, void *state, __int64 pos)
+    int OperFile(TPIO *tpio, T *pBuffer, DWORD nNumberOfElems, CallbackFn *pfn, void *state, __int64 pos)
     {
-        if (0 == InterlockedCompareExchange(&m_inUse, 1, 0))
+        if (0 == InterlockedCompareExchange(&tpio->m_inUse, 1, 0))
         {
-            m_pfn = pfn;
-            m_pstate = state;
-            m_pBuffer = pBuffer;
+            tpio->m_pfn = pfn;
+            tpio->m_pstate = state;
+            tpio->m_pBuffer = pBuffer;
             if (pos < 0)
                 pos = SetFilePointer(m_hFile, 0, 0, FILE_CURRENT); // won't work for files > 32-bit in length
-            m_olap.Offset = (DWORD)(pos & 0x00000000ffffffff);
-            m_olap.OffsetHigh = (DWORD)(pos >> 32);
+            tpio->m_olap.Offset = (DWORD)(pos & 0x00000000ffffffff);
+            tpio->m_olap.OffsetHigh = (DWORD)(pos >> 32);
             StartThreadpoolIo(m_ptp);
             //return fn(m_hFile, (void*)pBuffer, nNumberOfElems*sizeof(T), &num, &m_olap);
             int ret = 0;
             switch (oper)
             {
             case ReadFileOper:
-                ret = ReadFile(m_hFile, pBuffer, nNumberOfElems*sizeof(T), NULL, &m_olap);
+                ret = ReadFile(m_hFile, pBuffer, nNumberOfElems*sizeof(T), NULL, &tpio->m_olap);
                 break;
             case WriteFileOper:
-                ret = WriteFile(m_hFile, pBuffer, nNumberOfElems*sizeof(T), NULL, &m_olap);
+                ret = WriteFile(m_hFile, pBuffer, nNumberOfElems*sizeof(T), NULL, &tpio->m_olap);
                 break;
             default:
                 assert(false);
@@ -126,23 +130,32 @@ public:
             return -1;
         }
     }
-};
-
-class IOCallback {
-private:
-    HANDLE m_hFile;
-    CRITICAL_SECTION *m_cs;
 
 public:
-    IOCallback(HANDLE hFile) : m_hFile(hFile)
+    IOCallback(HANDLE hFile, int numTP, TPIO **tpio) : m_hFile(hFile)
     {
         m_cs = new CRITICAL_SECTION;
+        m_ptp = CreateThreadpoolIo(hFile, IOCallback::Callback, this, NULL);
+        m_numTp = numTP;
+        m_tpio = tpio;
+        if (nullptr == m_ptp)
+        {
+            int e = GetLastError();
+            printf("Last error: 0x%x", e);
+            throw "Fail to initialize threadpool I/O error";
+        }
         InitializeCriticalSection(m_cs);
     }
 
     ~IOCallback()
     {
         Close(); // in case we didn't call close
+        if (m_ptp)
+        {
+            WaitForThreadpoolIoCallbacks(m_ptp, TRUE);
+            CloseThreadpoolIo(m_ptp);
+            m_ptp = nullptr;
+        }
         DeleteCriticalSection(m_cs);
         delete m_cs;
         m_cs = NULL;
@@ -151,7 +164,7 @@ public:
     template <class T>
     __forceinline int ReadFileAsync(TPIO *tpio, T *pBuffer, DWORD nNum, CallbackFn *pfn, void *state, __int64 pos=-1LL)
     {
-        return tpio->OperFile<T, ReadFileOper>(pBuffer, nNum, pfn, state, pos);
+        return OperFile<T, ReadFileOper>(tpio, pBuffer, nNum, pfn, state, pos);
     }
 
     template <class T>
@@ -171,7 +184,7 @@ public:
     template <class T>
     __forceinline int WriteFileAsync(TPIO *tpio, T *pBuffer, DWORD nNum, CallbackFn *pfn, void *state, __int64 pos=-1LL)
     {
-        return tpio->OperFile<T, WriteFileOper>(pBuffer, nNum, pfn, state, pos);
+        return OperFile<T, WriteFileOper>(tpio, pBuffer, nNum, pfn, state, pos);
     }
 
     template <class T>
@@ -604,7 +617,6 @@ namespace Native {
             m_ioLock = gcnew Object();
             m_tpioColl = gcnew BlockingCollection<IntPtr>();
 
-            m_cb = new IOCallback(h);
             m_numTPIO = maxIO;
             m_tpio = new TPIO*[m_numTPIO];
             for (i = 0; i < maxIO; i++)
@@ -612,6 +624,7 @@ namespace Native {
                 m_tpio[i] = new TPIO(h);
                 m_tpioColl->Add((IntPtr)m_tpio[i]);
             }
+            m_cb = new IOCallback(h, m_numTPIO, m_tpio);
         }
 
         // destructor (e.g. Dispose with bDisposing = true), automatically adds suppressfinalize call
@@ -764,7 +777,7 @@ namespace Native {
                 break;
             }   
             IntPtr h = (IntPtr)CreateFile(pName, accessMode, FILE_SHARE_READ, nullptr, creation, dwFlags, nullptr);
-            AsyncStreamIO ^io = gcnew AsyncStreamIO((HANDLE)h, 1);
+            AsyncStreamIO ^io = gcnew AsyncStreamIO((HANDLE)h, 5);
             io->m_bBufferless = bBufferLess;
             io->m_position = 0LL;
             pin_ptr<__int64> pLen = &io->m_length;
@@ -814,7 +827,7 @@ namespace Native {
             IOState<T> ^ioState = gcnew IOState<T>();
             IntPtr tpio = m_tpioColl->Take();
             IntPtr pBuf = cbFn->Set(ptr, state, pBuffer, offset, cb, tpio, ioState);
-            printf("Write first elem: %d\n", *(int*)pBuf.ToPointer());
+            //printf("Write first elem: %d\n", *(int*)pBuf.ToPointer());
             int ret = m_cb->WriteFileAsync<byte>((TPIO*)tpio.ToPointer(), (byte*)pBuf.ToPointer(), nNum*cbFn->TypeSize(), cbFn->CbFn(), ioState->SelfPtr(), position*cbFn->TypeSize());
             if (-1 == ret || ret > 0)
             {   // > 0 not really an error, but finished sync, so no callback
