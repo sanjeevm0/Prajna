@@ -1272,7 +1272,7 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
 
     // return is in units of bytes
     static member internal SrcDstBlkCopy<'T1,'T2,'T1Elem,'T2Elem when 'T1 :> Array and 'T2 :>Array>
-        (src : 'T1, srcOffset : int64 byref, srcLen : int64 byref,
+        (src : 'T1, srcOffset : int64 byref, srcLen : int64 byref, 
          dst : 'T2, dstOffset : int64 byref, dstLen : int64 byref) =
         let toCopy = Math.Min(int srcLen*sizeof<'T1Elem>, int dstLen*sizeof<'T2Elem>) // in units of bytes
         let numSrc = toCopy / sizeof<'T1Elem>
@@ -1290,28 +1290,6 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
         let numSrc = toCopy / sizeof<'T1Elem>
         let numDst = toCopy / sizeof<'T2Elem>
         if (toCopy > 0) then
-            srcOffset <- srcOffset + int64 numSrc
-            srcLen <- srcLen - int64 numSrc
-            dstOffset <- dstOffset + int64 numDst
-            dstLen <- dstLen - int64 numDst
-        (numSrc, numDst)
-
-    // return is in units of bytes - only copy sufficient so that dst alignment is "align"
-    // that is after copy (total length of dst - alignOffset) should be divisible by align (in units of bytes)
-    static member internal SrcDstBlkCopyAlign<'T1,'T2,'T1Elem,'T2Elem when 'T1 :> Array and 'T2 :>Array>
-        (src : 'T1, srcOffset : int64 byref, srcLen : int64 byref,
-         dst : 'T2, dstOffset : int64 byref, dstLen : int64 byref,
-         alignOffset : int, align : int) =
-        let mutable toCopy = Math.Min(int srcLen*sizeof<'T1Elem>, int dstLen*sizeof<'T2Elem>) // in units of bytes
-        // adjust for alignment
-        if (toCopy < int srcLen*sizeof<'T1Elem>) then
-            // constrained by destination buffer size, then align
-            let finalDstLen = int dstOffset + toCopy - alignOffset
-            toCopy <- finalDstLen/align*align
-        let numSrc = toCopy / sizeof<'T1Elem>
-        let numDst = toCopy / sizeof<'T2Elem>
-        if (toCopy > 0) then
-            Buffer.BlockCopy(src, int srcOffset*sizeof<'T1Elem>, dst, int dstOffset*sizeof<'T2Elem>, toCopy)
             srcOffset <- srcOffset + int64 numSrc
             srcLen <- srcLen - int64 numSrc
             dstOffset <- dstOffset + int64 numDst
@@ -1526,22 +1504,23 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
         position <- position + amt
         length <- Math.Max(length, position)
         if (0L = bufRemWrite) then
-            Interlocked.Increment(rbufPart.NumWrite) |> ignore // increment before saying finished
             rbufPart.FinishedWrite <- true
 
     member internal x.MoveForwardAfterWrite(amt : int64) =
         bufPos <- bufPos + amt
         bufRemWrite <- bufRemWrite - amt
-        bufRem <- Math.Max(0L, bufRem - amt)
-        rbufPart.Count <- Math.Max(rbufPart.Count, int64 (bufPos - bufBeginPos))
-        position <- position + int64 amt
-        length <- Math.Max(length, position)
+        x.MoveForwardAfterWriteArr(amt)
+
+    member internal x.MoveForwardAfterReadArr(amt : int64) =
+        bufRemWrite <- bufRemWrite - amt
+        position <- position + amt
+        if (0L = bufRem) then
+            rbufPart.FinishedRead <- true
 
     member internal x.MoveForwardAfterRead(amt : int64) =
         bufPos <- bufPos + amt
         bufRem <- bufRem - amt
-        bufRemWrite <- bufRemWrite - amt
-        position <- position + amt
+        x.MoveForwardAfterReadArr(amt)
 
     override x.Seek(offset : int64, origin : SeekOrigin) =
         let mutable offset = offset
@@ -1609,6 +1588,11 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
         bufRemWrite <- 0L
         bufRem <- 0L
 
+    member internal x.SealWriteBufferConcurrent() =
+        lock (ioLock) (fun _ ->
+            x.SealWriteBuffer()
+        )
+
     member x.WriteOne(b : 'T) =
         x.MoveToNextBuffer(true, int bufRemWrite) |> ignore
         rbuf.Buffer.[int bufPos] <- b
@@ -1627,40 +1611,54 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
             let (srcCopy, dstCopy) = BufferListStream<'T>.SrcDstBlkCopy<'TS[],'T[],'TS,'T>(buf, &bOffset, &bCount, rbuf.Buffer, &bufPos, &bufRemWrite)
             x.MoveForwardAfterWriteArr(int64 dstCopy)
 
+    // align in units of 'T
     member x.WriteArrAlign<'TS>(buf : 'TS[], offset : int, count : int, align : int) =
         let mutable bOffset = int64 offset
         let mutable bCount = int64 count
         while (bCount > 0L) do
             x.MoveToNextBuffer(true, int bufRemWrite) |> ignore
-            let bAlignOffset = 0 + (int bufPos)
-            let (srcCopy, dstCopy) = BufferListStream<'T>.SrcDstBlkCopyAlign<'TS[],'T[],'TS,'T>(buf, &bOffset, &bCount, rbuf.Buffer, &bufPos, &bufRemWrite, bAlignOffset, align)
-            x.MoveForwardAfterWriteArr(int64 dstCopy)
-            if (bCount > 0L) then // if still more to write, close this buffer
+            let mutable bufRemAlign = bufRemWrite / (int64 align) * (int64 align)
+            if (bufRemAlign = 0L) then
                 x.SealWriteBuffer()
+            else
+                let (srcCopy, dstCopy) = BufferListStream<'T>.SrcDstBlkCopy<'TS[],'T[],'TS,'T>(buf, &bOffset, &bCount, rbuf.Buffer, &bufPos, &bufRemAlign)
+                x.MoveForwardAfterWriteArr(int64 dstCopy)
+                bufRemWrite <- bufRemWrite - int64 dstCopy                
 
-    member private x.MoveWriteConcurrent<'TS>(count : int) =
+    member private x.MoveWriteConcurrent<'TS>(count : int, align : int) =
         let writeList = new List<RBufPart<'T>*int*int>()
         let pCount = ref (int64 count)
+        let pOffset = ref 0L
         lock (ioLock) (fun _ ->
             while (!pCount > 0L) do
                 x.MoveToNextBuffer(true, int bufRemWrite) |> ignore
-                let dstPos = bufPos
-                let (srcCopy, dstCopy) = BufferListStream<'T>.SrcDstBlkReserve<'TS,'T>(pCount, &bufPos, &bufRemWrite)
-                writeList.Add(rbufPart, int dstPos, dstCopy)
-                x.MoveForwardAfterWriteArr(int64 dstCopy)
+                let mutable bufRemAlign = bufRemWrite / (int64 align) * (int64 align)
+                if (bufRemAlign = 0L) then
+                    x.SealWriteBuffer()
+                else
+                    let dstPos = bufPos
+                    let (srcCopy, dstCopy) = BufferListStream<'T>.SrcDstBlkReserve<'TS,'T>(pOffset, pCount, &bufPos, &bufRemAlign)
+                    Interlocked.Increment(rbufPart.NumWrite) |> ignore
+                    writeList.Add(rbufPart, int dstPos, dstCopy)
+                    x.MoveForwardAfterWriteArr(int64 dstCopy)
+                    bufRemWrite <- bufRemWrite - int64 dstCopy
         )
         writeList
 
-    abstract WriteConcurrent<'TS> : 'TS[]*int*int -> unit
-    default x.WriteConcurrent<'TS>(buf : 'TS[], offset : int, count : int) =
-        let list = x.MoveWriteConcurrent(count)
+    abstract FlushWriteBuf : RBufPart<'T>->unit
+    default x.FlushWriteBuf(buf) =
+        ()
+    member x.WriteConcurrent<'TS>(buf : 'TS[], offset : int, count : int, align : int) =
+        let list = x.MoveWriteConcurrent(count, align)
         let mutable byteOffset = offset*sizeof<'TS>
         for l in list do
             let (dst, dstOffset, dstCount) = l
             let bytesCopy = dstCount*sizeof<'T>
             Buffer.BlockCopy(buf, byteOffset, dst.Elem.Buffer, dstOffset*sizeof<'T>, bytesCopy)
             byteOffset <- byteOffset + bytesCopy
-        Interlocked.Decrement(rbufPart.NumWrite) |> ignore
+            Interlocked.Decrement(dst.NumWrite) |> ignore
+            if (dst.FinishedWrite && !dst.NumWrite = 0) then
+                x.FlushWriteBuf(dst)
 
     member x.WriteArr<'TS>(buf : 'TS[]) =
         x.WriteArr<'TS>(buf, 0, buf.Length)
@@ -1675,10 +1673,7 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
         while (bCount > 0L) do
             x.MoveToNextBuffer(true, int bufRemWrite) |> ignore
             let (srcCopy, dstCopy) = BufferListStream<'T>.SrcDstBlkCopy<Array,'T[],byte,'T>(buf, &bOffset, &bCount, rbuf.Buffer, &bufPos, &bufRemWrite)
-            bufRem <- Math.Max(0L, bufRem - int64 dstCopy)
-            rbufPart.Count <- Math.Max(rbufPart.Count, int64(bufPos - bufBeginPos))
-            position <- position + int64 dstCopy
-            length <- Math.Max(length, position)
+            x.MoveForwardAfterWriteArr(int64 dstCopy)
 
     // Read functions
     member internal x.GetReadBuffer() =
@@ -1702,12 +1697,41 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
         while (bCount > 0L) do
             if (x.MoveToNextBuffer(false, int bufRem)) then
                 let (srcCopy, dstCopy) = BufferListStream<'T>.SrcDstBlkCopy<'T[],'TD[],'T,'TD>(rbuf.Buffer, &bufPos, &bufRem, buf, &bOffset, &bCount)
+                x.MoveForwardAfterReadArr(int64 srcCopy)
                 readAmt <- readAmt + dstCopy
-                bufRemWrite <- bufRemWrite - int64 srcCopy
-                position <- position + int64 srcCopy
             else
                 bCount <- 0L // quit, no more data
         readAmt
+
+    member private x.MoveReadConcurrent<'TS>(count : int) =
+        let readList = new List<RBufPart<'T>*int*int>()
+        let pCount = ref (int64 count)
+        let pOffset = ref 0L
+        lock (ioLock) (fun _ ->
+            while (!pCount > 0L) do
+                if (x.MoveToNextBuffer(false, int bufRem)) then
+                    let srcPos = bufPos
+                    let (srcCopy, dstCopy) = BufferListStream<'T>.SrcDstBlkReserve<'TS,'T>(&bufPos, &bufRem, pOffset, pCount)
+                    Interlocked.Increment(rbufPart.NumRead) |> ignore
+                    readList.Add(rbufPart, int srcPos, srcCopy)
+                    x.MoveForwardAfterReadArr(int64 srcCopy)
+        )
+        readList
+
+    abstract FlushReadBuf : RBufPart<'T>->unit
+    default x.FlushReadBuf(buf) =
+        ()
+    member x.ReadConcurrent<'TD>(buf : 'TD[], offset : int, count : int) =
+        let list = x.MoveReadConcurrent(count)
+        let mutable byteOffset = offset*sizeof<'TD>
+        for l in list do
+            let (src, srcOffset, srcCount) = l
+            let bytesCopy = srcCount*sizeof<'T>
+            Buffer.BlockCopy(src.Elem.Buffer, srcOffset*sizeof<'T>, buf, byteOffset, bytesCopy)
+            byteOffset <- byteOffset + bytesCopy
+            Interlocked.Decrement(src.NumRead) |> ignore
+            if (src.FinishedRead && !src.NumRead = 0) then
+                x.FlushReadBuf(src)
 
     member x.ReadArr<'TD>(buf : 'TD[]) =
         x.ReadArr<'TD>(buf, 0, buf.Length)
@@ -1723,9 +1747,8 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
         while (bCount > 0L) do
             if (x.MoveToNextBuffer(false, int bufRem)) then
                 let (srcCopy, dstCopy) = BufferListStream<'T>.SrcDstBlkCopy<'T[],Array,'T,byte>(rbuf.Buffer, &bufPos, &bufRem, buf, &bOffset, &bCount)
+                x.MoveForwardAfterReadArr(int64 srcCopy)
                 readAmt <- readAmt + dstCopy
-                bufRemWrite <- bufRemWrite - int64 srcCopy
-                position <- position + int64 srcCopy
             else
                 bCount <- 0L
         readAmt
@@ -1838,7 +1861,9 @@ type internal DiskIOFn<'T>() =
             file.ReadFilePos(elem.Elem.Ptr, elem.Elem.Buffer, elem.Elem.Offset, numRead, DiskIOFn<'T>.DoneIOReadDel, elem, pos) |> ignore
   
 [<AllowNullLiteral>]
-type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 'TP :> IRefCounter<string>> private (fileName : string, b : bool) as x =
+type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 'TP :> IRefCounter<string>> 
+    private (fileName : string, bConcurrent : bool) as x =
+
     inherit BufferListStream<'T>()
 
     let fileOpenLock = Object()
@@ -1853,8 +1878,8 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
         else
             x.BufList.Insert(i, elem)
 
-    internal new (fileName : string) as x =
-        new BufferListStreamWithCache<'T,'TP>(fileName, false)
+    internal new (fileName : string, bConcurrent : bool) as x =
+        new BufferListStreamWithCache<'T,'TP>(fileName, bConcurrent)
         then
             if (File.Exists(fileName)) then
                 x.OpenFile()
@@ -1866,14 +1891,14 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
             else
                 x.OpenFile()
 
-    internal new (fileName : string, pool : SharedPool<string,'TP>) as x =
-        new BufferListStreamWithCache<'T,'TP>(fileName)
+    internal new (fileName : string, bConcurrent : bool, pool : SharedPool<string,'TP>) as x =
+        new BufferListStreamWithCache<'T,'TP>(fileName, bConcurrent)
         then
             x.Pool <- pool
             x.GetNewWriteBuffer <- x.GetNewBuffer
 
-    internal new (bls : BufferListStreamWithCache<'T,'TP>) as x =
-        new BufferListStreamWithCache<'T,'TP>(bls.FileName)
+    internal new (bls : BufferListStreamWithCache<'T,'TP>, bConcurrent : bool) as x =
+        new BufferListStreamWithCache<'T,'TP>(bls.FileName, bConcurrent)
         then
             bls.WriteBuffers()
             x.Pool <- bls.Pool
@@ -1888,10 +1913,11 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
             //x.AppendNoCopy(bls, 0L, bls.Length)
 
     member private x.FileName with get() : string = fileName
+    member private x.Concurrent with get() : bool = bConcurrent
 
     override x.Replicate() =
         x.WriteBuffers()
-        new BufferListStreamWithCache<'T,'TP>(fileName, x.Pool) :> StreamBase<'T>
+        new BufferListStreamWithCache<'T,'TP>(fileName, x.Concurrent, x.Pool) :> StreamBase<'T>
 
     override x.Replicate(pos : int64, cnt : int64) =
         assert(false)
@@ -2115,6 +2141,12 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
                 rbuf.Type <- RBufPartType.Virtual
                 DiskIOFn.WriteBuffer(rbuf, file)
 
+    override x.FlushWriteBuf(buf : RBufPart<'T>) =
+        DiskIOFn.WriteBuffer(buf, file)
+
+    override x.FlushReadBuf(buf : RBufPart<'T>) =
+        
+
     // keep at most numKeep up to "i", don't split if it does not exist
     // keep "maxI-numKeep", ..., "maxI-2", "maxI-1" 
     // make virtual: "0", ..., "maxI-(numKeep+2)", "maxI-(numKeep+1)"
@@ -2126,10 +2158,18 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
                 let rbufNew = RBufPart<'T>.GetVirtual(rbuf)
                 x.BufList.[i] <- rbufNew
                 rbuf.Type <- RBufPartType.Virtual // free upon write
-                DiskIOFn.WriteBuffer(rbuf, file)
+                if (not bConcurrent) then
+                    // otherwise flush happens after write
+                    DiskIOFn.WriteBuffer(rbuf, file)
                 i <- x.MergeVirtual(i)
             else if (rbuf.Type = RBufPartType.Valid) then
-                rbuf.MakeVirtual() // immediate release          
+                if (not bConcurrent) then
+                    rbuf.MakeVirtual() // immediate release
+                else
+                    // existing rbuf will get flushed after all reads finish
+                    rbuf.Type <- RBufPartType.Virtual
+                    let rbufNew = RBufPart<'T>.GetVirtual(rbuf)
+                    x.BufList.[i] <- rbufNew
                 i <- x.MergeVirtual(i)
             i <- i + 1
 
