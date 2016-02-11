@@ -166,12 +166,6 @@ public:
     ~IOCallback()
     {
         Close(); // in case we didn't call close
-        if (m_ptp)
-        {
-            WaitForThreadpoolIoCallbacks(m_ptp, TRUE);
-            CloseThreadpoolIo(m_ptp);
-            m_ptp = nullptr;
-        }
         DeleteCriticalSection(m_cs);
         delete m_cs;
         m_cs = NULL;
@@ -263,6 +257,12 @@ public:
         //printf("InClose - Close handle %llx\n", (__int64)m_hFile);
         EnterCriticalSection(m_cs);
         //printf("InClose - Enter\n");
+        if (m_ptp)
+        {
+            WaitForThreadpoolIoCallbacks(m_ptp, TRUE); // wait for stuff to complete
+            CloseThreadpoolIo(m_ptp);
+            m_ptp = nullptr;
+        }
         if (m_hFile != NULL)
         {
             //printf("Closing handle %llx\n", (__int64)m_hFile);
