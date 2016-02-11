@@ -559,6 +559,11 @@ type [<AllowNullLiteral>] RBufPart<'T> =
     [<DefaultValue>] val mutable StreamPos : int64
     // for read/write IO
     [<DefaultValue>] val mutable IOEvent : MEvent
+    // # of concurrent read/writes happening on this buffer
+    [<DefaultValue>] val mutable NumRead : int ref
+    [<DefaultValue>] val mutable NumWrite : int ref
+    [<DefaultValue>] val mutable FinishedWrite : bool
+    [<DefaultValue>] val mutable FinishedRead : bool
 
     // following is used when getting element from pool
     new() as x =
@@ -587,6 +592,24 @@ type [<AllowNullLiteral>] RBufPart<'T> =
             x.Offset <- offset
             x.Count <- count
 
+    static member GetVirtual() : RBufPart<'T> =
+        let x = new RBufPart<'T>()
+        x.Init()
+        x.Offset <- 0
+        x.Count <- 0L
+        x.StreamPos <- 0L
+        x.Type <- RBufPartType.Virtual
+        x
+
+    static member GetVirtual(e : RBufPart<'T>) =
+        let x = new RBufPart<'T>()
+        x.Init()
+        x.Offset <- 0
+        x.Count <- e.Count
+        x.StreamPos <- e.StreamPos
+        x.Type <- RBufPartType.Virtual
+        x
+
     member x.SetIOEvent() =
         if (Utils.IsNull x.IOEvent) then
             x.IOEvent <- MEvent(true)
@@ -599,22 +622,6 @@ type [<AllowNullLiteral>] RBufPart<'T> =
         else
             x.IOEvent.Reset()
 
-    static member GetVirtual() : RBufPart<'T> =
-        let x = new RBufPart<'T>()
-        x.Offset <- 0
-        x.Count <- 0L
-        x.StreamPos <- 0L
-        x.Type <- RBufPartType.Virtual
-        x
-
-    static member GetVirtual(e : RBufPart<'T>) =
-        let x = new RBufPart<'T>()
-        x.Offset <- 0
-        x.Count <- e.Count
-        x.StreamPos <- e.StreamPos
-        x.Type <- RBufPartType.Virtual
-        x
-
     member x.MakeVirtual() =
         x.ReleaseElem(Some(false))
         x.Type <- RBufPartType.Virtual
@@ -622,6 +629,10 @@ type [<AllowNullLiteral>] RBufPart<'T> =
     member x.Init() =
         x.Type <- RBufPartType.Valid
         x.IOEvent <- null
+        x.NumRead <- ref 0
+        x.NumWrite <- ref 0
+        x.FinishedWrite <- false
+        x.FinishedRead <- false
         ()
 
     override x.InitElem(e) =
@@ -1078,6 +1089,8 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
     static let mutable memStack : SharedMemoryPool<RefCntBuf<'T>,'T> = null
     static let memStackInitLock = Object()
 
+    let ioLock = Object()
+
     let bReleased = ref 0
 
     let mutable stackTrace = ""
@@ -1266,6 +1279,17 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
         let numDst = toCopy / sizeof<'T2Elem>
         if (toCopy > 0) then
             Buffer.BlockCopy(src, int srcOffset*sizeof<'T1Elem>, dst, int dstOffset*sizeof<'T2Elem>, toCopy)
+            srcOffset <- srcOffset + int64 numSrc
+            srcLen <- srcLen - int64 numSrc
+            dstOffset <- dstOffset + int64 numDst
+            dstLen <- dstLen - int64 numDst
+        (numSrc, numDst)
+
+    static member internal SrcDstBlkReserve<'T1Elem,'T2Elem>(srcOffset : int64 byref, srcLen : int64 byref, dstOffset : int64 byref, dstLen : int64 byref) =
+        let toCopy = Math.Min(int srcLen*sizeof<'T1Elem>, int dstLen*sizeof<'T2Elem>) // in units of bytes
+        let numSrc = toCopy / sizeof<'T1Elem>
+        let numDst = toCopy / sizeof<'T2Elem>
+        if (toCopy > 0) then
             srcOffset <- srcOffset + int64 numSrc
             srcLen <- srcLen - int64 numSrc
             dstOffset <- dstOffset + int64 numDst
@@ -1496,6 +1520,15 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
         else
             true
 
+    member internal x.MoveForwardAfterWriteArr(amt : int64) =
+        bufRem <- Math.Max(0L, bufRem - amt)
+        rbufPart.Count <- Math.Max(rbufPart.Count, int64(bufPos - bufBeginPos))
+        position <- position + amt
+        length <- Math.Max(length, position)
+        if (0L = bufRemWrite) then
+            Interlocked.Increment(rbufPart.NumWrite) |> ignore // increment before saying finished
+            rbufPart.FinishedWrite <- true
+
     member internal x.MoveForwardAfterWrite(amt : int64) =
         bufPos <- bufPos + amt
         bufRemWrite <- bufRemWrite - amt
@@ -1585,35 +1618,49 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
         x.SealWriteBuffer()
         x.GetWriteBuffer()
 
-    member x.WriteArr<'TS>(buf : 'TS[], offset : int, count : int) =
+    abstract WriteArr<'TS> : 'TS[]*int*int -> unit
+    default x.WriteArr<'TS>(buf : 'TS[], offset : int, count : int) =
         let mutable bOffset = int64 offset
         let mutable bCount = int64 count
         while (bCount > 0L) do
             x.MoveToNextBuffer(true, int bufRemWrite) |> ignore
             let (srcCopy, dstCopy) = BufferListStream<'T>.SrcDstBlkCopy<'TS[],'T[],'TS,'T>(buf, &bOffset, &bCount, rbuf.Buffer, &bufPos, &bufRemWrite)
-            bufRem <- Math.Max(0L, bufRem - int64 dstCopy)
-            rbufPart.Count <- Math.Max(rbufPart.Count, int64(bufPos - bufBeginPos))
-            position <- position + int64 dstCopy
-            length <- Math.Max(length, position)
+            x.MoveForwardAfterWriteArr(int64 dstCopy)
 
     member x.WriteArrAlign<'TS>(buf : 'TS[], offset : int, count : int, align : int) =
-        let alignOffset = 0
-        let mutable bAlignOffset = 0
         let mutable bOffset = int64 offset
         let mutable bCount = int64 count
         while (bCount > 0L) do
             x.MoveToNextBuffer(true, int bufRemWrite) |> ignore
-            bAlignOffset <-  alignOffset + int bufPos
+            let bAlignOffset = 0 + (int bufPos)
             let (srcCopy, dstCopy) = BufferListStream<'T>.SrcDstBlkCopyAlign<'TS[],'T[],'TS,'T>(buf, &bOffset, &bCount, rbuf.Buffer, &bufPos, &bufRemWrite, bAlignOffset, align)
-            if (bCount > 0L) then
-                // if still more to write, close this buffer
-                bufRemWrite <- 0L
-                bufRem <- 0L
-            else
-                bufRem <- Math.Max(0L, bufRem - int64 dstCopy)
-            rbufPart.Count <- Math.Max(rbufPart.Count, int64(bufPos - bufBeginPos))
-            position <- position + int64 dstCopy
-            length <- Math.Max(length, position)        
+            x.MoveForwardAfterWriteArr(int64 dstCopy)
+            if (bCount > 0L) then // if still more to write, close this buffer
+                x.SealWriteBuffer()
+
+    member private x.MoveWriteConcurrent<'TS>(count : int) =
+        let writeList = new List<RBufPart<'T>*int*int>()
+        let pCount = ref (int64 count)
+        lock (ioLock) (fun _ ->
+            while (!pCount > 0L) do
+                x.MoveToNextBuffer(true, int bufRemWrite) |> ignore
+                let dstPos = bufPos
+                let (srcCopy, dstCopy) = BufferListStream<'T>.SrcDstBlkReserve<'TS,'T>(pCount, &bufPos, &bufRemWrite)
+                writeList.Add(rbufPart, int dstPos, dstCopy)
+                x.MoveForwardAfterWriteArr(int64 dstCopy)
+        )
+        writeList
+
+    abstract WriteConcurrent<'TS> : 'TS[]*int*int -> unit
+    default x.WriteConcurrent<'TS>(buf : 'TS[], offset : int, count : int) =
+        let list = x.MoveWriteConcurrent(count)
+        let mutable byteOffset = offset*sizeof<'TS>
+        for l in list do
+            let (dst, dstOffset, dstCount) = l
+            let bytesCopy = dstCount*sizeof<'T>
+            Buffer.BlockCopy(buf, byteOffset, dst.Elem.Buffer, dstOffset*sizeof<'T>, bytesCopy)
+            byteOffset <- byteOffset + bytesCopy
+        Interlocked.Decrement(rbufPart.NumWrite) |> ignore
 
     member x.WriteArr<'TS>(buf : 'TS[]) =
         x.WriteArr<'TS>(buf, 0, buf.Length)
