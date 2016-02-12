@@ -591,6 +591,9 @@ type [<AllowNullLiteral>] RBufPart<'T> =
             x.Offset <- offset
             x.Count <- count
 
+    static member inline GetDefaultNew() =
+        new RBufPart<'T>() :> SafeRefCnt<RefCntBuf<'T>>
+
     static member GetVirtual() : RBufPart<'T> =
         let x = new RBufPart<'T>()
         x.Init()
@@ -610,6 +613,10 @@ type [<AllowNullLiteral>] RBufPart<'T> =
         x.NumUser := 0
         x.Type <- RBufPartType.Virtual
         x
+
+    static member internal GetFromPool(pool : SharedPool<string,'TP>) =
+        let (event, elem) = SafeRefCnt<RefCntBuf<'T>>.GetFromPool("RBufPart:Generic", pool, RBufPart<'T>.GetDefaultNew)
+        (event, elem :?> RBufPart<'T>)
 
     member x.Init() =
         x.Type <- RBufPartType.Valid
@@ -1653,6 +1660,7 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
             let bytesCopy = dstCount*sizeof<'T>
             Buffer.BlockCopy(buf, byteOffset, dst.Elem.Buffer, dstOffset*sizeof<'T>, bytesCopy)
             byteOffset <- byteOffset + bytesCopy
+            // if block copy was async (e.g. from a async file read), then following executes in callback
             let numUser = Interlocked.Decrement(dst.NumUser)
             if (dst.Finished && 0 = numUser) then
                 x.FlushBuf(dst)
@@ -1815,7 +1823,7 @@ type internal DiskIOFn<'T>() =
             if (int rbuf.Elem.Length*sizeof<'T> <> bytesTransferred) then
                 raise (new Exception("I/O failed "))
             if (rbuf.Count < int64 rbuf.Elem.Length) then
-                file.AdjustFilePosition(int(rbuf.Count - int64 rbuf.Elem.Length))
+                file.AdjustFilePosition<'T>(int(rbuf.Count - int64 rbuf.Elem.Length))
         else
             if (int rbuf.Count*sizeof<'T> <> bytesTransferred) then
                 raise (new Exception("I/O failed "))
@@ -2121,6 +2129,7 @@ type BufferListStreamWithPool<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and '
 // 4. Option for no file buffering to avoid OS file cache if desired
 // 5. Integration with shared memory pool to allow for zero-copy pipeline, e.g. can read directly to another BufferListStream
 [<AllowNullLiteral>]
+[<AbstractClass>]
 type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 'TP :> IRefCounter<string>> internal (pool) as x =
     inherit BufferListStreamWithPool<'T,'TP>(pool)
 
@@ -2135,17 +2144,18 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
 
     member val MaxNumValid = 1 with get, set
     member val NumPrefetch = 1 with get, set
-    member val BufferLess = false with get, set
-    member val SequentialRead = true with get, set
-    member val SequentialWrite = true with get, set
     member val Alignment = 1 with get, set
+
+    abstract OpenStream : unit->unit
 
     member x.SetPrefetch(numPrefetch : int) =
         x.NumPrefetch <- numPrefetch
+        x.OpenStream()
         x.TryPrefetch(x.NumPrefetch) |> ignore
 
     member x.StartPrefetch(numPrefetch : int) =
         x.NumPrefetch <- numPrefetch
+        x.OpenStream()
         x.DoBackgroundPrefetch null false
 
     member x.StopPrefetch() =
@@ -2179,8 +2189,8 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
             if (elem.Type = RBufPartType.Virtual) then
                 x.SplitAndMergeVirtual(x.ElemPos, elem.StreamPos)
 
-    member val FillWithRead : RBufPart<'T>->unit = (fun _ -> ()) with get, set
-    member val FlushToBackingStream : RBufPart<'T>->unit = (fun _ -> ()) with get, set
+    member val FillWithRead : RBufPart<'T>->unit = (fun _ -> failwith "FillWithRead not implemented") with get, set
+    member val FlushToBackingStream : RBufPart<'T>->unit = (fun _ -> failwith "FlushToBackingStream not implemented") with get, set
 
     // split virtual element "i" to create a (virtual, valid, virtual) or (valid, virtual)
     member private x.SplitVirtual(i : int, pos : int64, elemUse : Option<RBufPart<'T>>) =
@@ -2476,22 +2486,23 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
 
     member x.Init() =
         x.FillWithRead <- x.ReadBuffer
-        x.FlushToBackingStream <- (fun r -> DiskIOFn<'T>.WriteBuffer(r, file))
-        x.OpenFile()
-        if (x.File.Length > x.Length) then
-            use elem = RBufPart<'T>.GetVirtual()
-            elem.StreamPos <- x.Length
-            elem.Count <- x.File.Length - x.Length
-            x.AddExistingBuffer(elem)
-
-    member private x.FileName with get() : string = fileName
-    // bufList consists of "pre", "numValid", and "post" list (i.e. NumValid + 2 elements at most)
-    member private x.File with get() : AsyncStreamIO = file
+        x.FlushToBackingStream <- (fun r -> 
+            x.OpenFile()
+            DiskIOFn<'T>.WriteBuffer(r, file)
+        )
 
     override x.DisposeInternal() =
         x.WriteBuffers()
         if (Utils.IsNotNull file) then
             file.Dispose()
+
+    member private x.FileName with get() : string = fileName
+    // bufList consists of "pre", "numValid", and "post" list (i.e. NumValid + 2 elements at most)
+    member private x.File with get() : AsyncStreamIO = file
+
+    member val BufferLess = false with get, set
+    member val SequentialRead = true with get, set
+    member val SequentialWrite = true with get, set
 
     override x.Replicate() =
         x.WriteBuffers()
@@ -2513,6 +2524,9 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
             //elem.Elem.ReadIO.Set()
             elem.SetIOEvent()
 
+    override x.OpenStream() =
+        x.OpenFile()
+
     member x.Flush(bFlushFileCache : bool) =
         if (bFlushFileCache) then
             x.Flush()
@@ -2520,7 +2534,7 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
         else
             x.Flush()
 
-    member private x.OpenFile() =
+    member x.OpenFile() =
         if (null = file) then
             lock (fileOpenLock) (fun _ ->
                 if (null = file) then
@@ -2530,4 +2544,9 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
                     if x.SequentialWrite then
                         fOpt <- fOpt ||| FileOptions.WriteThrough
                     file <- DiskIO.OpenFile(fileName, fOpt, x.BufferLess)
+                    if (x.File.Length > x.Length) then
+                        use elem = RBufPart<'T>.GetVirtual()
+                        elem.StreamPos <- x.Length
+                        elem.Count <- x.File.Length - x.Length
+                        x.AddExistingBuffer(elem)
             )
