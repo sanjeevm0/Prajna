@@ -80,6 +80,8 @@
     <WarningLevel>3</WarningLevel>
     <DocumentationFile>bin\Debugx64\Prajna.Tools.XML</DocumentationFile>
     <PlatformTarget>x64</PlatformTarget>
+    <OtherFlags>
+    </OtherFlags>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x64' ">
     <DebugType>pdbonly</DebugType>

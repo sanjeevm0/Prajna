@@ -297,29 +297,29 @@ type SafeRefCnt<'T when 'T:null and 'T :> IRefCounter<string>> (infoStr : string
 
     abstract ReleaseElem : Option<bool>->unit
     default x.ReleaseElem(bFinalize : Option<bool>) =
-        if (Interlocked.CompareExchange(bRelease, 1, 0) = 0) then
-            if (Utils.IsNotNull elem) then
-                let bFinalize = defaultArg bFinalize false
+        if (Utils.IsNotNull elem) then
+            let bFinalize = defaultArg bFinalize false
 #if DEBUGALLOCS
-                x.Element.Allocs.TryRemove(x.info) |> ignore
-                Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Releasing %s with id %d elemId %s finalize %b - refcount %d" infoStr id x.RC.Key bFinalize x.Element.GetRef)
+            x.Element.Allocs.TryRemove(x.info) |> ignore
+            Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Releasing %s with id %d elemId %s finalize %b - refcount %d" infoStr id x.RC.Key bFinalize x.Element.GetRef)
 #endif
-                let newCount = x.RC.DecRef()
-                if (0L = newCount) then
-                    x.RC.Release(x.RC)
-                else if (newCount < 0L) then
-                    failwith (sprintf "RefCount object %s has Illegal ref count of %d" x.RC.Key x.RC.GetRef)
+            let newCount = x.RC.DecRef()
+            if (0L = newCount) then
+                x.RC.Release(x.RC)
+            else if (newCount < 0L) then
+                failwith (sprintf "RefCount object %s has Illegal ref count of %d" x.RC.Key x.RC.GetRef)
 
-    member x.Release(?bFinalize : bool) =
-        x.ReleaseElem(bFinalize)
+    member private x.ReleaseInternal(?bFinalize : bool) =
+        if (Interlocked.CompareExchange(bRelease, 1, 0) = 0) then
+            x.ReleaseElem(bFinalize)
 
     override x.Finalize() =
-        x.Release(true)
+        x.ReleaseInternal(true)
         // base.Finalize // should be called if deriving from another class which has Finalize
 
     interface IDisposable with
         member x.Dispose() =
-            x.Release(false)
+            x.ReleaseInternal(false)
             GC.SuppressFinalize(x)
 
     member private x.Element with get() = elem and set(v) = elem <- v
@@ -365,7 +365,8 @@ type [<AbstractClass>] [<AllowNullLiteral>] RefCountBase() =
         override x.DecRef() =
             Interlocked.Decrement(x.RefCount)
 
-type IdCounter() =
+// id counter for class 'T
+type IdCounter<'T>() =
     static let id = ref -1L
     static member GetNext() =
         Interlocked.Increment(id)
@@ -551,6 +552,9 @@ type RBufPartType =
 type [<AllowNullLiteral>] RBufPart<'T> =
     inherit SafeRefCnt<RefCntBuf<'T>>
 
+#if DEBUGALLOCS
+    [<DefaultValue>] val mutable AllocString : string
+#endif
     // is virtual RBufPart (without any element)
     [<DefaultValue>] val mutable Type : RBufPartType
     [<DefaultValue>] val mutable Offset : int
@@ -619,6 +623,9 @@ type [<AllowNullLiteral>] RBufPart<'T> =
         (event, elem :?> RBufPart<'T>)
 
     member x.Init() =
+#if DEBUGALLOCS
+        x.AllocString <- Environment.StackTrace
+#endif
         x.Type <- RBufPartType.Valid
         x.IOEvent <- null
         x.NumUser <- ref 1 // self is user
@@ -644,7 +651,8 @@ type [<AllowNullLiteral>] RBufPart<'T> =
         x.StreamPos <- 0L
 
     override x.ReleaseElem(b) =
-        base.ReleaseElem(b)
+        if (x.Type <> RBufPartType.Virtual && x.ElemNoCheck <> null) then
+            base.ReleaseElem(b)
 
 type [<AllowNullLiteral>] internal SharedMemoryPool<'T,'TBase when 'T :> RefCntBuf<'TBase> and 'T: (new : unit -> 'T)> =
     inherit SharedPool<string,'T>
@@ -704,7 +712,7 @@ type [<AllowNullLiteral>] internal SharedMemoryPool<'T,'TBase when 'T :> RefCntB
 // put counter in separate class as classes without primary constructor do not allow let bindings
 // and static val fields cannot be easily initialized, also makes it independent of type 'T
 type StreamBaseCounter() =
-    inherit IdCounter()
+    inherit IdCounter<StreamBaseCounter>()
 type [<AllowNullLiteral>] [<AbstractClass>] StreamBase<'T> =
     inherit MemoryStream
 
@@ -716,6 +724,7 @@ type [<AllowNullLiteral>] [<AbstractClass>] StreamBase<'T> =
     [<DefaultValue>] val mutable Id : int64
     [<DefaultValue>] val mutable private info : string
     [<DefaultValue>] val mutable debugInfo : string
+    [<DefaultValue>] val mutable internal disposer : DoOnce
 #if DEBUGALLOCS
     [<DefaultValue>] val mutable allocs : ConcurrentDictionary<string, string>
 #endif
@@ -814,6 +823,14 @@ type [<AllowNullLiteral>] [<AbstractClass>] StreamBase<'T> =
         override x.DecRef() =
             Interlocked.Decrement(x.RefCount)
 
+    abstract DisposeInternal : bool->unit
+    default x.DisposeInternal(bDisposing) =
+        base.Dispose(bDisposing)
+    interface IDisposable with
+        override x.Dispose() =
+            x.disposer.Run(fun () -> x.DisposeInternal(true))
+            GC.SuppressFinalize(x)
+
     abstract member GetNew : unit -> StreamBase<'T>
     abstract member GetNew : int -> StreamBase<'T>
     abstract member GetNew : 'T[]*int*int*bool*bool -> StreamBase<'T>
@@ -851,6 +868,7 @@ type [<AllowNullLiteral>] [<AbstractClass>] StreamBase<'T> =
         x.Visible <- true
         x.info <- ""
         x.debugInfo <- ""
+        x.disposer <- new DoOnce()
 
     member x.ComputeSHA512(offset : int64, len : int64) =
         use sha512 = new Security.Cryptography.SHA512Managed() // has dispose
@@ -951,7 +969,6 @@ type StreamReader<'T>(_bls : StreamBase<'T>, _bufPos : int64, _maxLen : int64) =
             let retCnt = Math.Min(int64 rbuf.Count, maxLen)
             maxLen <- maxLen - retCnt
             let ret = new RBufPart<'T>(rbuf, rbuf.Offset, retCnt)
-            rbuf.Release()
             ret
         else
             null
@@ -1070,7 +1087,7 @@ type RefCntList<'T,'TBase when 'T :> SafeRefCnt<'TBase> and 'TBase:null and 'TBa
     let mutable list : List<'T> = List<'T>(defaultInitNumElem)
     let releaseList(_) =
         for l in list do
-            l.Release()
+            (l :> IDisposable).Dispose()
         //list.Clear()
 
     member x.List with get() = list
@@ -1309,19 +1326,14 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
             let b = ref Unchecked.defaultof<BufferListStream<'T>>
             streamsInUse.TryRemove(x.Id, b) |> ignore
             Interlocked.Decrement(streamsInUseCnt) |> ignore
-            bufListRef.Release() // only truly releases when refcount goes to zero
+            (bufListRef :> IDisposable).Dispose() // only truly releases when refcount goes to zero
 
-    override x.Dispose(bDisposing : bool) =
+    override x.DisposeInternal(bDisposing : bool) =
         x.Release(not bDisposing)
-        base.Dispose(bDisposing)
-
-    interface IDisposable with
-        override x.Dispose() =
-            x.Dispose(true)
-            GC.SuppressFinalize(x)
+        base.DisposeInternal(bDisposing)
 
     override x.Finalize() =
-        x.Dispose(false)
+        x.DisposeInternal(false)
 
     member x.GetNewWriteBuffer with set(v) = getNewWriteBuffer <- v
 
@@ -1384,9 +1396,8 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
         if (pos >= length) then
             (null, 0, 0)
         else
-            let part = x.GetMoreBufferPart(&elemPos, &pos)
+            use part = x.GetMoreBufferPart(&elemPos, &pos)
             let ret = (part.Elem.Buffer, part.Offset, int part.Count)
-            part.Release()
             ret
 
     override val CanRead = true with get
@@ -1591,6 +1602,7 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
         // forces move to next buffer
         bufRemWrite <- 0L
         bufRem <- 0L
+        rbufPart.Finished <- true
 
     member internal x.SealWriteBufferConcurrent() =
         lock (ioLock) (fun _ ->
@@ -1773,7 +1785,7 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
             use rbuf = sr.GetMoreBufferPart()
             if (Utils.IsNotNull rbuf) then
                 x.WriteRBufNoCopy(rbuf)
-                rbuf.Release()
+                (rbuf :> IDisposable).Dispose()
             else
                 bDone <- true
 
@@ -1781,87 +1793,6 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
         use rbufAdd = new RBufPart<'T>(rbuf, int offset, count)
         x.WriteRBufNoCopy(rbufAdd)
 
-open Prajna.Tools.Native
-
-type RWHQueue() =
-    static let count = ref 0
-    static let q = ConcurrentQueue<RegisteredWaitHandle*WaitHandle>()
-
-    static member private Release() =
-        let elem = ref Unchecked.defaultof<RegisteredWaitHandle*WaitHandle>
-        let mutable bCont = true
-        while bCont do
-            let ret = q.TryDequeue(elem)
-            if (ret) then
-                let (rwh, wh) = !elem
-                rwh.Unregister(wh) |> ignore
-            bCont <- (Interlocked.Decrement(count) > 0)
-
-    static member Add(rwh : RegisteredWaitHandle, wh : WaitHandle) =
-        q.Enqueue(rwh, wh)
-        if (Interlocked.Increment(count) = 1) then
-            PoolTimer.AddTimer(RWHQueue.Release, 1000L)
-
-type internal DiskIO() =
-    static let fileKey = ConcurrentDictionary<char, Object>()
-
-    static member private GetFileKey(fileName : string) =
-        let c = fileName.ToLower().[0]
-        fileKey.GetOrAdd(c, fun _ -> Object())
-
-    static member val GetLockObj : string->Object = DiskIO.GetFileKey with get, set
-
-    static member OpenFile(fileName : string, fOpt : FileOptions, bufferLess : bool) =
-        let file = AsyncStreamIO.OpenFile(fileName, FileAccess.ReadWrite, fOpt, bufferLess)
-        file.SetLock(DiskIO.GetLockObj(Path.GetFullPath(fileName)))
-        file
-
-type internal DiskIOFn<'T>() =
-    static member private DoneIOWrite (ioResult : int) (state : obj) (buffer : 'T[]) (offset : int) (bytesTransferred : int) =
-        let (rbuf, file) = state :?> (RBufPart<'T>*AsyncStreamIO)
-        if (file.BufferLess()) then
-            if (int rbuf.Elem.Length*sizeof<'T> <> bytesTransferred) then
-                raise (new Exception("I/O failed "))
-            if (rbuf.Count < int64 rbuf.Elem.Length) then
-                file.AdjustFilePosition<'T>(int(rbuf.Count - int64 rbuf.Elem.Length))
-        else
-            if (int rbuf.Count*sizeof<'T> <> bytesTransferred) then
-                raise (new Exception("I/O failed "))
-        Console.WriteLine("Finish streampos: {0} {1}", rbuf.StreamPos, rbuf.Type)
-        rbuf.IOEvent.Set()
-        if (rbuf.Type = Virtual) then
-            rbuf.ReleaseElem(Some(false))
-    static member val private DoneIOWriteDel = IOCallbackDel<'T>(DiskIOFn<'T>.DoneIOWrite)
-
-    static member WriteBuffer(elem : RBufPart<'T>, file : AsyncStreamIO, ?pos : int64) =
-        //elem.Elem.WriteIO.Reset()
-        elem.ResetIOEvent()
-        let pos = defaultArg pos elem.StreamPos
-        Console.WriteLine("Writing element pos: {0} length: {1}", elem.StreamPos, elem.Count)
-        if (file.BufferLess()) then
-            file.WriteFilePos(elem.Elem.Ptr, elem.Elem.Buffer, elem.Offset, elem.Elem.Length, DiskIOFn<'T>.DoneIOWriteDel, (elem, file), pos) |> ignore
-        else
-            file.WriteFilePos(elem.Elem.Ptr, elem.Elem.Buffer, elem.Offset, int elem.Count, DiskIOFn<'T>.DoneIOWriteDel, (elem, file), pos) |> ignore
-
-    static member private DoneIORead (ioResult : int) (state : obj) (buffer : 'T[]) (offset : int) (bytesTransferred : int) =
-        let rbuf = state :?> RBufPart<'T>
-        if (int rbuf.Count*sizeof<'T> <> bytesTransferred) then
-            raise (new Exception("I/O failed "))
-        rbuf.IOEvent.Set()
-        //rbuf.Elem.ReadIO.Set()
-    static member val private DoneIOReadDel = IOCallbackDel<'T>(DiskIOFn<'T>.DoneIORead)
-
-    static member ReadBuffer(elem : RBufPart<'T>, file : AsyncStreamIO, ?numRead : int, ?pos : int64) =
-        //elem.Elem.ReadIO.Reset()
-        elem.ResetIOEvent()
-        let pos = defaultArg pos elem.StreamPos
-        if (file.BufferLess()) then
-            // read full alignment, return should be less
-            file.ReadFilePos(elem.Elem.Ptr, elem.Elem.Buffer, elem.Elem.Offset, elem.Elem.Length, DiskIOFn<'T>.DoneIOReadDel, elem, pos) |> ignore
-        else
-            let numRead = defaultArg numRead (int elem.Count)
-            file.ReadFilePos(elem.Elem.Ptr, elem.Elem.Buffer, elem.Elem.Offset, numRead, DiskIOFn<'T>.DoneIOReadDel, elem, pos) |> ignore
-  
 // MemoryStream which is essentially a collection of RefCntBuf
 // Not GetBuffer is not supported by this as it is not useful
 [<AllowNullLiteral>]
@@ -2122,6 +2053,29 @@ type BufferListStreamWithPool<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and '
         buf.Elem.UserToken <- box(x)
         buf :?> RBufPart<'T>
 
+// ===============================================================
+
+open Prajna.Tools.Native
+
+type RWHQueue() =
+    static let count = ref 0
+    static let q = ConcurrentQueue<RegisteredWaitHandle*WaitHandle>()
+
+    static member private Release() =
+        let elem = ref Unchecked.defaultof<RegisteredWaitHandle*WaitHandle>
+        let mutable bCont = true
+        while bCont do
+            let ret = q.TryDequeue(elem)
+            if (ret) then
+                let (rwh, wh) = !elem
+                rwh.Unregister(wh) |> ignore
+            bCont <- (Interlocked.Decrement(count) > 0)
+
+    static member Add(rwh : RegisteredWaitHandle, wh : WaitHandle) =
+        q.Enqueue(rwh, wh)
+        if (Interlocked.Increment(count) = 1) then
+            PoolTimer.AddTimer(RWHQueue.Release, 1000L)
+
 // This is sort of like .Net FileStream / NetStream, however has following support
 // 1. Async I/O using I/O Completion ports
 // 2. Support for reading / writing to arbirary 'T instead of just byte
@@ -2141,6 +2095,11 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
             x.BufList.Add(elem)
         else
             x.BufList.Insert(i, elem)
+
+    let removeFromList(i : int) =
+        let itemRemove = x.BufList.[i]
+        x.BufList.RemoveAt(i)
+        (itemRemove :> IDisposable).Dispose()
 
     member val MaxNumValid = 1 with get, set
     member val NumPrefetch = 1 with get, set
@@ -2172,16 +2131,28 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
         )
     member private x.BackgroundPrefetch = new WaitOrTimerCallback(x.DoBackgroundPrefetch)
 
-    abstract DisposeInternal : unit->unit
-    default x.DisposeInternal() =
-        x.WriteBuffers()
-
-    override x.Dispose(bDisposing) =
-        disposer.Run(x.DisposeInternal)
-        base.Dispose(bDisposing)
+    member val internal FinalFlush = false with get, set
+    override x.DisposeInternal(bDisposing : bool) =
+        if (not x.FinalFlush) then
+            x.WaitForIOFinish()
+            x.Flush()
+            x.FinalFlush <- true
+        base.DisposeInternal(bDisposing)
 
     override x.Flush() =
-        x.WriteBuffers() // flush internal buffers to OS file (or file cache)
+        x.WriteBuffers() // flush internal buffers to backing stream
+
+    member internal x.ReplicateFrom(bls : BufferListStreamWithBackingStream<'T,'TP>) =
+        bls.WriteBuffers()
+        x.Pool <- bls.Pool
+        x.GetNewWriteBuffer <- x.GetNewBuffer
+        // now copy over data
+        for b in bls.BufList do
+            let elem = new RBufPart<'T>(b)
+            x.BufList.Add(elem)
+        x.ReplicateInfoFrom(bls)
+        x.ElemPos <- 0
+        x.Position <- 0L
 
     member private x.PrefetchNextRead() =
         if (x.ElemLen > x.ElemPos) then
@@ -2189,11 +2160,12 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
             if (elem.Type = RBufPartType.Virtual) then
                 x.SplitAndMergeVirtual(x.ElemPos, elem.StreamPos)
 
+    member val WaitForIOFinish : unit->unit = (fun _ -> failwith "WaitForIOFinish not implemented") with get, set
     member val FillWithRead : RBufPart<'T>->unit = (fun _ -> failwith "FillWithRead not implemented") with get, set
     member val FlushToBackingStream : RBufPart<'T>->unit = (fun _ -> failwith "FlushToBackingStream not implemented") with get, set
 
     // split virtual element "i" to create a (virtual, valid, virtual) or (valid, virtual)
-    member private x.SplitVirtual(i : int, pos : int64, elemUse : Option<RBufPart<'T>>) =
+    member private x.SplitVirtual(i : int, pos : int64, elemUse :RBufPart<'T>) =
         // first remove the "i"th element
         let vElem = x.BufList.[i]
         x.BufList.RemoveAt(i)
@@ -2215,7 +2187,11 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
             bFirstVirtual <- true
 
         // the valid element
-        let elem = defaultArg elemUse (x.GetNewBufferWait())
+        let elem = 
+            if (Utils.IsNull elemUse) then
+                x.GetNewBufferWait()
+            else
+                elemUse
         // split, take portion of virtual count
         elem.StreamPos <- streamPos
         elem.Count <- Math.Min(int64 elem.Elem.Length, remCount)
@@ -2233,7 +2209,7 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
             insertIntoList(vElem, i + num)
             num <- num + 1
         else
-            vElem.Release() // already virtual, so won't do much
+            (vElem :> IDisposable).Dispose() // won't do much, but will prevent finalizer from kicking in
 
         x.ElemLen <- x.ElemLen + num - 1
         if (x.ElemPos-1 > i) then
@@ -2249,7 +2225,7 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
             // forward
             while (x.BufList.Count > i+1 && x.BufList.[i+1].Type=RBufPartType.Virtual) do
                 x.BufList.[i].Count <- x.BufList.[i].Count + x.BufList.[i+1].Count
-                x.BufList.RemoveAt(i+1)
+                removeFromList(i+1)
                 x.ElemLen <- x.ElemLen - 1
                 if (x.ElemPos-1 > i) then
                     x.ElemPos <- x.ElemPos - 1
@@ -2257,7 +2233,7 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
             let mutable i = i
             while (i-1 >= 0 && x.BufList.[i-1].Type=RBufPartType.Virtual) do
                 x.BufList.[i-1].Count <- x.BufList.[i-1].Count + x.BufList.[i].Count
-                x.BufList.RemoveAt(i)
+                removeFromList(i)
                 x.ElemLen <- x.ElemLen - 1
                 if (x.ElemPos-1 >= i) then
                     x.ElemPos <- x.ElemPos - 1
@@ -2267,7 +2243,7 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
             i
 
     member private x.SplitAndMergeVirtual(i : int, pos : int64) =
-        let num = x.SplitVirtual(i, pos, None)
+        let num = x.SplitVirtual(i, pos, null)
         for cnt = 1 to num do
             if (x.BufList.[i+num-cnt].Type = RBufPartType.Virtual) then
                 x.MergeVirtual(i+num-cnt) |> ignore
@@ -2275,7 +2251,7 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
     member private x.TrySplitAndMergeVirtual(i : int, pos : int64) =
         let (event, elem) = x.TryGetNewBuffer()
         if (Utils.IsNotNull elem) then
-            let num = x.SplitVirtual(i, pos, Some(elem))
+            let num = x.SplitVirtual(i, pos, elem)
             for cnt = 1 to num do
                 if (x.BufList.[i+num-cnt].Type = RBufPartType.Virtual) then
                     x.MergeVirtual(i+num-cnt) |> ignore
@@ -2290,13 +2266,18 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
 
     member internal x.WriteBuffers() =
         lock (x.IOLock) (fun _ ->
+            x.SealWriteBuffer() // seal current write buffer
             for i = 0 to x.BufList.Count-1 do
                 let rbuf = x.BufList.[i]
                 if (rbuf.Type = RBufPartType.ValidWrite) then
+                    // replace with an equivalent element
                     let rbufNew = new RBufPart<'T>(rbuf)
                     rbufNew.Type <- RBufPartType.Valid // don't write again
                     x.BufList.[i] <- rbufNew
-                    x.FlushBuf(rbuf)
+                    // now flush if needed
+                    let numUser = Interlocked.Decrement(rbuf.NumUser)
+                    if (0 = numUser) then
+                        x.FlushBuf(rbuf)
         )
 
     override x.FlushBuf(rbuf : RBufPart<'T>) =
@@ -2304,8 +2285,8 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
             rbuf.Type <- RBufPartType.Virtual // free upon write
             x.FlushToBackingStream(rbuf)
         else if (rbuf.Type = RBufPartType.Valid) then
-            // simply release
-            rbuf.ReleaseElem(Some(false))
+            // simply dispose
+            (rbuf :> IDisposable).Dispose()
 
     // for concurrent read/write, this must occur inside ioLock block
     member x.MakeElemVirtual(i : int) =
@@ -2391,7 +2372,7 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
         x.ElemPos <- x.ElemLen
         x.VirtualizeOldElem(0)
         for e in x.BufList do
-            e.Release() // already done in make virtual
+            (e :> IDisposable).Dispose()
         x.BufList.Clear()
         let elem = RBufPart<'T>.GetVirtual()
         elem.Count <- x.Length
@@ -2450,6 +2431,67 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
             x.MoveForwardAfterRead(cnt)
             new RBufPart<'T>(x.BufList.[x.ElemPos-1], x.BufList.[x.ElemPos-1].Offset + offset, cnt)
 
+// ======================================================================================
+
+type internal DiskIO() =
+    static let fileKey = ConcurrentDictionary<char, Object>()
+
+    static member private GetFileKey(fileName : string) =
+        let c = fileName.ToLower().[0]
+        fileKey.GetOrAdd(c, fun _ -> Object())
+
+    static member val GetLockObj : string->Object = DiskIO.GetFileKey with get, set
+
+    static member OpenFile(fileName : string, fOpt : FileOptions, bufferLess : bool) =
+        let file = AsyncStreamIO.OpenFile(fileName, FileAccess.ReadWrite, fOpt, bufferLess)
+        file.SetLock(DiskIO.GetLockObj(Path.GetFullPath(fileName)))
+        file
+
+type internal DiskIOFn<'T>() =
+    static member private DoneIOWrite (ioResult : int) (state : obj) (buffer : 'T[]) (offset : int) (bytesTransferred : int) =
+        let (rbuf, file) = state :?> (RBufPart<'T>*AsyncStreamIO)
+        if (file.BufferLess()) then
+            if (int rbuf.Elem.Length*sizeof<'T> <> bytesTransferred) then
+                raise (new Exception("I/O failed "))
+        else
+            if (int rbuf.Count*sizeof<'T> <> bytesTransferred) then
+                raise (new Exception("I/O failed "))
+        Console.WriteLine("Finish streampos: {0} {1}", rbuf.StreamPos, rbuf.Type)
+        rbuf.IOEvent.Set()
+        if (rbuf.Type = Virtual) then
+            (rbuf :> IDisposable).Dispose()
+    static member val private DoneIOWriteDel = IOCallbackDel<'T>(DiskIOFn<'T>.DoneIOWrite)
+
+    static member WriteBuffer(elem : RBufPart<'T>, file : AsyncStreamIO, ?pos : int64) =
+        //elem.Elem.WriteIO.Reset()
+        elem.ResetIOEvent()
+        let pos = defaultArg pos elem.StreamPos
+        Console.WriteLine("Writing element pos: {0} length: {1}", elem.StreamPos, elem.Count)
+        if (file.BufferLess()) then
+            file.WriteFilePos(elem.Elem.Ptr, elem.Elem.Buffer, elem.Offset, elem.Elem.Length, DiskIOFn<'T>.DoneIOWriteDel, (elem, file), pos) |> ignore
+        else
+            file.WriteFilePos(elem.Elem.Ptr, elem.Elem.Buffer, elem.Offset, int elem.Count, DiskIOFn<'T>.DoneIOWriteDel, (elem, file), pos) |> ignore
+
+    static member private DoneIORead (ioResult : int) (state : obj) (buffer : 'T[]) (offset : int) (bytesTransferred : int) =
+        let rbuf = state :?> RBufPart<'T>
+        if (int rbuf.Count*sizeof<'T> <> bytesTransferred) then
+            raise (new Exception("I/O failed "))
+        rbuf.IOEvent.Set()
+        //rbuf.Elem.ReadIO.Set()
+    static member val private DoneIOReadDel = IOCallbackDel<'T>(DiskIOFn<'T>.DoneIORead)
+
+    static member ReadBuffer(elem : RBufPart<'T>, file : AsyncStreamIO, ?numRead : int, ?pos : int64) =
+        //elem.Elem.ReadIO.Reset()
+        elem.ResetIOEvent()
+        let pos = defaultArg pos elem.StreamPos
+        if (file.BufferLess()) then
+            // read full alignment, return should be less
+            file.ReadFilePos(elem.Elem.Ptr, elem.Elem.Buffer, elem.Elem.Offset, elem.Elem.Length, DiskIOFn<'T>.DoneIOReadDel, elem, pos) |> ignore
+        else
+            let numRead = defaultArg numRead (int elem.Count)
+            file.ReadFilePos(elem.Elem.Ptr, elem.Elem.Buffer, elem.Elem.Offset, numRead, DiskIOFn<'T>.DoneIOReadDel, elem, pos) |> ignore
+  
+
 [<AllowNullLiteral>]
 type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 'TP :> IRefCounter<string>>
     private (fileName : string, pool : SharedPool<string,'TP>, bPrivate : bool) =
@@ -2472,16 +2514,7 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
     internal new (bls : BufferListStreamWithCache<'T,'TP>) as x =
         new BufferListStreamWithCache<'T,'TP>(bls.FileName, null, false)
         then
-            bls.WriteBuffers()
-            x.Pool <- bls.Pool
-            x.GetNewWriteBuffer <- x.GetNewBuffer
-            // now copy over data
-            for b in bls.BufList do
-                let elem = new RBufPart<'T>(b)
-                x.BufList.Add(elem)
-            x.ReplicateInfoFrom(bls)
-            x.ElemPos <- 0
-            x.Position <- 0L
+            x.ReplicateFrom(bls)
             x.Init()
 
     member x.Init() =
@@ -2490,11 +2523,20 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
             x.OpenFile()
             DiskIOFn<'T>.WriteBuffer(r, file)
         )
+        x.WaitForIOFinish <- (fun _ ->
+            file.WaitForIOFinish()
+        )
 
-    override x.DisposeInternal() =
-        x.WriteBuffers()
+    override x.DisposeInternal(bDisposing : bool) =
+        if (not x.FinalFlush) then
+            x.WaitForIOFinish()
+            x.Flush()
+            x.FinalFlush <- true
         if (Utils.IsNotNull file) then
+            if (file.BufferLess() && file.Length > x.Length) then
+                file.SetFileLength<'T>(x.Length)
             file.Dispose()
+        base.DisposeInternal(bDisposing)
 
     member private x.FileName with get() : string = fileName
     // bufList consists of "pre", "numValid", and "post" list (i.e. NumValid + 2 elements at most)

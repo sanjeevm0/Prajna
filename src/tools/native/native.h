@@ -251,6 +251,12 @@ public:
         }
     }
 
+    void WaitForIoComplete()
+    {
+        if (m_ptp)
+            WaitForThreadpoolIoCallbacks(m_ptp, FALSE);
+    }
+
     __forceinline BOOL Close()
     {
         BOOL ret = TRUE;
@@ -259,7 +265,7 @@ public:
         //printf("InClose - Enter\n");
         if (m_ptp)
         {
-            WaitForThreadpoolIoCallbacks(m_ptp, TRUE); // wait for stuff to complete
+            WaitForThreadpoolIoCallbacks(m_ptp, FALSE); // wait for stuff to complete
             CloseThreadpoolIo(m_ptp);
             m_ptp = nullptr;
         }
@@ -943,11 +949,28 @@ namespace Native {
         {
             Lock lock(m_ioLock);
             Int64 newPos;
-            m_position = m_position + amt;
+            m_position += amt*sizeof(T);
             if (FALSE == m_cb->SeekFile(amt*sizeof(T), (Int32)SeekOrigin::Current, &newPos))
                 throw gcnew IOException("Unable to seek");
+        }
+
+        generic <class T> void SetFileLength(Int64 length)
+        {
+            Int64 newPos;
+            // wait for callbacks to complete
+            m_cb->WaitForIoComplete();
+            m_position = m_length = length*sizeof(T);
+            if (FALSE == m_cb->SeekFile(length*sizeof(T), (Int32)SeekOrigin::Begin, &newPos))
+                throw gcnew IOException("Unable to seek to end");
             if (FALSE == m_cb->SetFileEnd())
                 throw gcnew IOException("Unable to set end of file");
+        }
+
+        void WaitForIOFinish()
+        {
+            Lock lock(this);
+            if (nullptr != m_cb)
+                m_cb->WaitForIoComplete();
         }
     };
 }

@@ -334,7 +334,7 @@ and [<AllowNullLiteral>] GenericConn() as x =
                 x
             else
                 let (x, xERecvSA) = e.UserToken :?> GenericConn*RBufPart<byte>
-                xERecvSA.Release()
+                (xERecvSA :> IDisposable).Dispose()
                 let (event, sa) = RBufPart<byte>.GetFromPool("RecvSA", x.Net.BufStackRecv, fun _ -> new RBufPart<byte>() :> SafeRefCnt<RefCntBuf<byte>>)
                 let xERecvSA = sa :?> RBufPart<byte>
                 let saE = sa.Elem :?> RefCntBufSA
@@ -507,7 +507,7 @@ and [<AllowNullLiteral>] GenericConn() as x =
             x.FinishSendCounter <- x.FinishSendCounter + 1L
             //Logger.LogF( LogLevel.MildVerbose, fun _ -> sprintf "Finish send %d bytes to %s" e.Count x.ConnKey )
             x.AfterSendCallback(e) // callback prior to release
-            x.ESendSA.Release()
+            (x.ESendSA :> IDisposable).Dispose()
             x.SendFinished.Set() |> ignore
 
     // for connecting with GenericConn ======================
@@ -548,7 +548,7 @@ and [<AllowNullLiteral>] GenericConn() as x =
     /// Release SA being processed on receiver side
     /// <param name="rb"> The element to be released
     member x.RecvRelease(rb : RBufPart<byte> ref) =
-        (!rb).Release()
+        ((!rb) :> IDisposable).Dispose()
 
     /// Generic function for recv dequeue to be used by users of GenericConn class
     /// <param name="dequeueAction">The action used to dequeue a SocketAsyncEventArgs to process</param>
