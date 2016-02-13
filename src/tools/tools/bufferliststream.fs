@@ -1133,7 +1133,6 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
     let mutable bufRemWrite = 0L // remaining elements that can be written
     let mutable elemPos = 0 // position in list
     let mutable elemLen = 0 // total length of list
-    let mutable finalWriteElem = 0 // last element into which we have written
     let mutable length = 0L // total length of stream
     let mutable position = 0L // current position in stream
     let mutable bSimpleBuffer = false // simple buffer read (one input buffer)
@@ -1192,13 +1191,11 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
     member internal x.ElemLen with get() = elemLen and set(v) = elemLen <- v
     member internal x.ElemPos with get() = elemPos and set(v) = elemPos <- v
     member internal x.RBufPart with get() = rbufPart
-    member private x.FinalWriteElem with get() = finalWriteElem
     member private x.SimpleBuffer with get() = bSimpleBuffer
     member internal x.ReplicateInfoFrom(src : BufferListStream<'T>) =
         elemLen <- src.ElemLen
         length <- src.Length
         capacity <- src.Capacity64
-        finalWriteElem <- src.FinalWriteElem
         bSimpleBuffer <- src.SimpleBuffer
 
     override x.Replicate() =
@@ -1228,6 +1225,17 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
 
     override x.GetNew(buf : 'T[], offset : int, count : int, a : bool, b : bool) =
         new BufferListStream<'T>(buf, offset, count) :> StreamBase<'T>
+
+    member internal x.InsertIntoList(elem : RBufPart<'T>, i : int) =
+        if (i = bufList.Count) then
+            bufList.Add(elem)
+        else
+            bufList.Insert(i, elem)
+
+    member internal x.RemoveFromList(i : int) =
+        let itemRemove = bufList.[i]
+        bufList.RemoveAt(i)
+        (itemRemove :> IDisposable).Dispose()
 
     override x.Info
         with get() =
@@ -1423,22 +1431,25 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
             capacity
         and set(v) =
             while (capacity < v) do
-                x.AddNewBuffer()
+                x.CreateBuffer()
 
     //override x.Capacity with get() = int x.Capacity64 and set(v) = x.Capacity64 <- int64 v
     override x.Capacity with get() = Int32.MaxValue and set(v) = ()
 
-    // add new buffer to pool
-    member internal x.AddNewBuffer() =
+    member internal x.CreateBuffer() =
         let rbufPartNew = getNewWriteBuffer()
         rbufPartNew.StreamPos <- position
         bufList.Add(rbufPartNew)
         capacity <- capacity + int64 rbufPartNew.Elem.Length
+
+    // add new buffer to pool
+    member internal x.AddNewBuffer() =
+        if (bufList.Count = elemLen) then
+            x.CreateBuffer()
         elemLen <- elemLen + 1
 
     // add existing buffer to pool, don't adjust position
-    abstract AddExistingBuffer : RBufPart<'T> -> unit
-    default x.AddExistingBuffer(rbuf : RBufPart<'T>) =
+    member internal x.AddExistingBuffer(rbuf : RBufPart<'T>) =
         // if use linked list instead of list, then theoretically could insert if bufRemWrite = 0 also
         // then condition would be if (position <> length && bufRemWrite <> 0) then
         if (position <> length) then
@@ -1446,23 +1457,21 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
         else
             let rbufPartNew = new RBufPart<'T>(rbuf) // make a copy
             rbufPartNew.StreamPos <- position
-            bufList.Add(rbufPartNew)
+            if (elemLen > 0) then
+                x.SealWriteBuffer()
+            x.InsertIntoList(rbufPartNew, elemLen)
             length <- length + int64 rbuf.Count
             capacity <- capacity + int64 rbuf.Count
             elemLen <- elemLen + 1
-            for i = finalWriteElem to elemLen-1 do
-                if (i <> 0) then
-                    bufList.[i].StreamPos <- bufList.[i-1].StreamPos + int64 bufList.[i-1].Count
-            finalWriteElem <- elemLen
             bufRem <- 0L
             bufRemWrite <- 0L
             bufPos <- int64 rbufPartNew.Offset + rbufPartNew.Count
             bufBeginPos <- int64 rbufPartNew.Offset
+            rbufPartNew.Finished <- true
 
     member internal x.SetPosToI(i : int) =
         rbufPart <- bufList.[i]
         elemPos <- i + 1
-        finalWriteElem <- Math.Max(finalWriteElem, elemPos)
         rbuf <- rbufPart.ElemNoCheck
         bufBeginPos <- int64 rbufPart.Offset
         bufPos <- int64 rbufPart.Offset
@@ -1561,7 +1570,7 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
                     position <- 0L
                 | SeekOrigin.End ->
                     // seek to end
-                    x.MoveToBufferI(false, finalWriteElem-1) |> ignore
+                    x.MoveToBufferI(false, elemLen-1) |> ignore
                     bufPos <- bufPos + rbufPart.Count
                     bufRem <- bufRem - rbufPart.Count
                     bufRemWrite <- bufRemWrite - rbufPart.Count
@@ -1588,12 +1597,12 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
         position
 
     // write functions - ONLY difference between this and AddExistingBuffer is that this adjusts position also
-    member private x.WriteRBufNoCopy(rbuf : RBufPart<'T>) =
+    abstract WriteRBufNoCopy : RBufPart<'T> -> unit
+    default x.WriteRBufNoCopy(rbuf : RBufPart<'T>) =
         x.AddExistingBuffer(rbuf)
         position <- position + int64 rbuf.Count
         elemPos <- Math.Max(elemLen, elemPos)
         length <- Math.Max(length, position)
-        finalWriteElem <- Math.Max(finalWriteElem, elemPos)
 
     // write directly into part
     member internal x.GetWritePart() =
@@ -1817,7 +1826,7 @@ type MemoryStreamB(defaultBufSize : int, toAvoidConfusion : byte) =
         then
             x.SetDefaults(true)
             while (x.Capacity64 < int64 size) do
-                x.AddNewBuffer() // add until size reached
+                x.CreateBuffer() // add until size reached
 
     new() as x =
         new MemoryStreamB(64000, 0uy)
@@ -2095,22 +2104,11 @@ type RWHQueue() =
 // 5. Integration with shared memory pool to allow for zero-copy pipeline, e.g. can read directly to another BufferListStream
 [<AllowNullLiteral>]
 [<AbstractClass>]
-type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 'TP :> IRefCounter<string>> internal (pool) as x =
+type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 'TP :> IRefCounter<string>> internal (pool) =
     inherit BufferListStreamWithPool<'T,'TP>(pool)
 
     let mutable doFetching = true
     let disposer = new DoOnce()
-
-    let insertIntoList(elem : RBufPart<'T>, i : int) =
-        if (i = x.BufList.Count) then
-            x.BufList.Add(elem)
-        else
-            x.BufList.Insert(i, elem)
-
-    let removeFromList(i : int) =
-        let itemRemove = x.BufList.[i]
-        x.BufList.RemoveAt(i)
-        (itemRemove :> IDisposable).Dispose()
 
     member val MaxNumValid = 1 with get, set
     member val NumPrefetch = 1 with get, set
@@ -2193,7 +2191,7 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
             vElemPrev.Count <- (int64 pos) - vElem.StreamPos
             streamPos <- streamPos + vElemPrev.Count
             remCount <- remCount - vElemPrev.Count
-            insertIntoList(vElemPrev, i + num)
+            x.InsertIntoList(vElemPrev, i + num)
             num <- num + 1
             bFirstVirtual <- true
 
@@ -2209,7 +2207,7 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
         streamPos <- streamPos + elem.Count
         remCount <- remCount - elem.Count
         elem.Type <- RBufPartType.Valid
-        insertIntoList(elem, i + num)
+        x.InsertIntoList(elem, i + num)
         num <- num + 1
         x.FillWithRead(elem)
 
@@ -2217,7 +2215,7 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
         if (remCount > 0L) then
             vElem.StreamPos <- streamPos
             vElem.Count <- remCount
-            insertIntoList(vElem, i + num)
+            x.InsertIntoList(vElem, i + num)
             num <- num + 1
         else
             (vElem :> IDisposable).Dispose() // won't do much, but will prevent finalizer from kicking in
@@ -2236,7 +2234,7 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
             // forward
             while (x.BufList.Count > i+1 && x.BufList.[i+1].Type=RBufPartType.Virtual) do
                 x.BufList.[i].Count <- x.BufList.[i].Count + x.BufList.[i+1].Count
-                removeFromList(i+1)
+                x.RemoveFromList(i+1)
                 x.ElemLen <- x.ElemLen - 1
                 if (x.ElemPos-1 > i) then
                     x.ElemPos <- x.ElemPos - 1
@@ -2244,7 +2242,7 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
             let mutable i = i
             while (i-1 >= 0 && x.BufList.[i-1].Type=RBufPartType.Virtual) do
                 x.BufList.[i-1].Count <- x.BufList.[i-1].Count + x.BufList.[i].Count
-                removeFromList(i)
+                x.RemoveFromList(i)
                 x.ElemLen <- x.ElemLen - 1
                 if (x.ElemPos-1 >= i) then
                     x.ElemPos <- x.ElemPos - 1
@@ -2318,7 +2316,7 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
     // keep at most numKeep up to "i", don't split if it does not exist
     // keep "maxI-numKeep", ..., "maxI-2", "maxI-1" 
     // make virtual: "0", ..., "maxI-(numKeep+2)", "maxI-(numKeep+1)"
-    member private x.VirtualizeOldElem(numKeep : int) =
+    member internal x.VirtualizeOldElem(numKeep : int) =
         let mutable i = 0
         while (i < x.ElemPos-numKeep) do
             i <- x.MakeElemVirtual(i)
@@ -2442,27 +2440,9 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
             x.MoveForwardAfterRead(cnt)
             new RBufPart<'T>(x.BufList.[x.ElemPos-1], x.BufList.[x.ElemPos-1].Offset + offset, cnt)
 
-    override x.AddExistingBuffer(rbuf : RBufPart<'T>) =
-        if (x.Position <> x.Length) then
-            failwith "Splicing RBuf in middle is not supported"
-        else
-            let rbufPartNew = new RBufPart<'T>(rbuf) // make a copy
-            rbufPartNew.StreamPos <- x.Position
-            // remove zero count RBufPart's
-            
-
-            x.bufList.Add(rbufPartNew)
-            length <- length + int64 rbuf.Count
-            capacity <- capacity + int64 rbuf.Count
-            elemLen <- elemLen + 1
-            for i = finalWriteElem to elemLen-1 do
-                if (i <> 0) then
-                    bufList.[i].StreamPos <- bufList.[i-1].StreamPos + int64 bufList.[i-1].Count
-            finalWriteElem <- elemLen
-            bufRem <- 0L
-            bufRemWrite <- 0L
-            bufPos <- int64 rbufPartNew.Offset + rbufPartNew.Count
-            bufBeginPos <- int64 rbufPartNew.Offset
+    override x.WriteRBufNoCopy(rbuf : RBufPart<'T>) =
+        base.WriteRBufNoCopy(rbuf)
+        x.SetCurPos(x.Position)
 
 // ======================================================================================
 

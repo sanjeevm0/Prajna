@@ -1195,7 +1195,6 @@ UnprocessedCmD:%d bytes Status:%A"
         if (Utils.IsNull buf) then
             if (sendLenRem <> 0L) then
                 failwith "Send Len not correct"
-            streamReader.Release()
             (true, 0=xCSend.Q.Count)
         else
             (false, false)
