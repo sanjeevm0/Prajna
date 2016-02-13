@@ -2442,7 +2442,8 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
 
     override x.WriteRBufNoCopy(rbuf : RBufPart<'T>) =
         base.WriteRBufNoCopy(rbuf)
-        x.SetCurPos(x.Position)
+        x.BufList.[x.ElemPos-1].SetIOEvent()
+        x.SetCurPos(x.Position) // only helps to clear out old 
 
 // ======================================================================================
 
