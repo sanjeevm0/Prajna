@@ -1436,8 +1436,9 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
         capacity <- capacity + int64 rbufPartNew.Elem.Length
         elemLen <- elemLen + 1
 
-    // add existing buffer to pool
-    member internal x.AddExistingBuffer(rbuf : RBufPart<'T>) =
+    // add existing buffer to pool, don't adjust position
+    abstract AddExistingBuffer : RBufPart<'T> -> unit
+    default x.AddExistingBuffer(rbuf : RBufPart<'T>) =
         // if use linked list instead of list, then theoretically could insert if bufRemWrite = 0 also
         // then condition would be if (position <> length && bufRemWrite <> 0) then
         if (position <> length) then
@@ -1586,7 +1587,7 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
                     diff <- 0L
         position
 
-    // write functions
+    // write functions - ONLY difference between this and AddExistingBuffer is that this adjusts position also
     member private x.WriteRBufNoCopy(rbuf : RBufPart<'T>) =
         x.AddExistingBuffer(rbuf)
         position <- position + int64 rbuf.Count
@@ -1594,9 +1595,19 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
         length <- Math.Max(length, position)
         finalWriteElem <- Math.Max(finalWriteElem, elemPos)
 
+    // write directly into part
+    member internal x.GetWritePart() =
+        x.MoveToNextBuffer(true, int bufRemWrite) |> ignore
+        (rbufPart, bufPos, bufRemWrite)
+
+    member internal x.UpdatePartCount(amt : int64) =
+        if (amt > bufRemWrite) then
+            failwith "Too much information written beyond count"
+        x.MoveForwardAfterWrite(amt)
+
     member internal x.GetWriteBuffer() =
         x.MoveToNextBuffer(true, int bufRemWrite) |> ignore
-        (rbuf, bufPos, bufRemWrite)
+        (rbuf.Buffer, bufPos, bufRemWrite)
 
     member internal x.SealWriteBuffer() =
         // forces move to next buffer
@@ -1877,7 +1888,7 @@ type MemoryStreamB(defaultBufSize : int, toAvoidConfusion : byte) =
         while (bCount > 0L) do
             let (buf, pos, amt) = x.GetWriteBuffer()
             let toRead = int (Math.Min(bCount, int64 amt))
-            let writeAmt = fh.Read(buf.Buffer, int pos, toRead)
+            let writeAmt = fh.Read(buf, int pos, toRead)
             bCount <- bCount - int64 writeAmt
             x.MoveForwardAfterWrite(int64 writeAmt)
             if (writeAmt <> toRead) then
@@ -1892,7 +1903,7 @@ type MemoryStreamB(defaultBufSize : int, toAvoidConfusion : byte) =
                 x.SealWriteBuffer()
             else
                 let toRead = Math.Min(bCount, bufRemAlign)
-                let writeAmt = fh.Read(buf.Buffer, int pos, int toRead)
+                let writeAmt = fh.Read(buf, int pos, int toRead)
                 bCount <- bCount - int64 writeAmt
                 x.MoveForwardAfterWrite(int64 writeAmt)
                 if (writeAmt <> int toRead) then
@@ -2430,6 +2441,28 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
             pos <- pos + int64 cnt
             x.MoveForwardAfterRead(cnt)
             new RBufPart<'T>(x.BufList.[x.ElemPos-1], x.BufList.[x.ElemPos-1].Offset + offset, cnt)
+
+    override x.AddExistingBuffer(rbuf : RBufPart<'T>) =
+        if (x.Position <> x.Length) then
+            failwith "Splicing RBuf in middle is not supported"
+        else
+            let rbufPartNew = new RBufPart<'T>(rbuf) // make a copy
+            rbufPartNew.StreamPos <- x.Position
+            // remove zero count RBufPart's
+            
+
+            x.bufList.Add(rbufPartNew)
+            length <- length + int64 rbuf.Count
+            capacity <- capacity + int64 rbuf.Count
+            elemLen <- elemLen + 1
+            for i = finalWriteElem to elemLen-1 do
+                if (i <> 0) then
+                    bufList.[i].StreamPos <- bufList.[i-1].StreamPos + int64 bufList.[i-1].Count
+            finalWriteElem <- elemLen
+            bufRem <- 0L
+            bufRemWrite <- 0L
+            bufPos <- int64 rbufPartNew.Offset + rbufPartNew.Count
+            bufBeginPos <- int64 rbufPartNew.Offset
 
 // ======================================================================================
 
