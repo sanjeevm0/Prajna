@@ -1,17 +1,17 @@
 NUGET
   remote: https://www.nuget.org/api/v2
   specs:
-    Extended.Wpf.Toolkit (2.4)
-    FAKE (4.11.3)
-    FSharp.Charting (0.90.9)
-    FSharp.Compiler.Service (1.4.0.6)
+    Extended.Wpf.Toolkit (2.6)
+    FAKE (4.20.0)
+    FSharp.Charting (0.90.13)
+    FSharp.Compiler.Service (2.0.0.4)
     FSharp.Data (2.2.5)
       Zlib.Portable (>= 1.10.0) - framework: portable-net40+sl50+wp80+win80
-    FSharp.Formatting (2.12.0)
-      FSharp.Compiler.Service (1.4.0.6)
-      FSharpVSPowerTools.Core (2.1.0)
-    FSharpVSPowerTools.Core (2.1.0)
-      FSharp.Compiler.Service (>= 1.4.0.6)
+    FSharp.Formatting (2.14.0)
+      FSharp.Compiler.Service (>= 2.0.0.3 < 2.1.0)
+      FSharpVSPowerTools.Core (>= 2.3.0 < 2.4.0)
+    FSharpVSPowerTools.Core (2.3.0)
+      FSharp.Compiler.Service (>= 2.0.0.3)
     Hyak.Common (1.0.3)
       Microsoft.Bcl (>= 1.1.9) - framework: portable-net403+win+wpa81
       Microsoft.Bcl.Async (>= 1.0.168) - framework: portable-net403+win+wpa81
@@ -49,16 +49,17 @@ NUGET
     Newtonsoft.Json (7.0.1) - framework: portable-net45+wp80+wpa81+win, >= net40, >= net45
     NUnit (2.6.4)
     NUnit.Runners (2.6.4)
-    Octokit (0.17.0)
+    Octokit (0.18.0)
       Microsoft.Net.Http
     SourceLink.Fake (1.1.0)
     Zlib.Portable (1.11.0) - framework: portable-net40+sl50+wp80+win80
 GITHUB
   remote: fsharp/FAKE
   specs:
-    modules/Octokit/Octokit.fsx (29cd4ee57792f0f35e18bd97d4517eb8c94de569)
+    modules/Octokit/Octokit.fsx (43c4800c5f132d2c2d6832a3a59232a64d83d4c0)
       Octokit
 HTTP
-  remote: https://download.sysinternals.com
+  remote: https://live.sysinternals.com
   specs:
-    Handle.zip (/files/Handle.zip)
+    handle.zip (/files/handle.zip)
+

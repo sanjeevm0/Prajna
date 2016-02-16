@@ -439,7 +439,7 @@ type internal RefCntBufAlign<'T>() =
         base.DisposeInternal()
 
 [<AllowNullLiteral>]
-type internal RefCntBufChunkAlign<'T>() =
+type RefCntBufChunkAlign<'T>() =
     inherit RefCntBuf<'T>()
 
     static let mutable currentChunk : ArrAlign<'T> = null
