@@ -66,13 +66,13 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
 
     static member val Current : Remote = Unchecked.defaultof<Remote> with get, set
 
-    member val AllocCache : ConcurrentQueue<_> = ConcurrentQueue<ArrAlign<byte>>() with get
-    member val SubPartitionN = ConcurrentDictionary<uint32, (int64*int64 ref*ArrAlign<byte>)[]>() with get
+    member val internal AllocCache : ConcurrentQueue<_> = ConcurrentQueue<ArrAlign<byte>>() with get
+    member val internal SubPartitionN = ConcurrentDictionary<uint32, (int64*int64 ref*ArrAlign<byte>)[]>() with get
 
     // only for disk
     member val CacheSegement = new ConcurrentDictionary<int64, int ref*int ref*ManualResetEvent*ManualResetEvent*BufIOEvent[]>() with get
-    //member val WriteRange = ConcurrentDictionary<int64, int*int64 ref*int64*ManualResetEvent>() with get
-    member val SortFile = ConcurrentDictionary<uint32, ArrAlign<byte>>() with get
+    member val WriteRange = ConcurrentDictionary<int64, int*int64 ref*int64*ManualResetEvent>() with get
+    member val internal SortFile = ConcurrentDictionary<uint32, ArrAlign<byte>>() with get
     member val DiskIO : StrmIOReq<string, char> = Unchecked.defaultof<StrmIOReq<string, char>> with get, set
 
     // init and start of remote instance ===================   
@@ -139,9 +139,9 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
                 //    let (a,b,d,e1) = r.Value
                 //    e1.Dispose()
                 for r in x.CacheSegement do
-                    let (a,b,c,d) = r.Value
+                    let (a,b,c,d,d1) = r.Value
                     c.Dispose()
-                    for e in d do
+                    for e in d1 do
                         (e :> IDisposable).Dispose()
                     //x.CacheSegement.[r.Key] <- (a,b,null)
                 x.CacheSegement.Clear()
@@ -204,13 +204,13 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
     static member FurtherPartitionCacheInRAMAndDisposeN ms =
         Remote.Current.FurtherPartitionCacheInRAMAndDisposeN(ms)
 
-    member x.GetCacheMemSubPartN(parti : int) : seq<_> =
+    member internal x.GetCacheMemSubPartN(parti : int) : seq<_> =
         if (x.SubPartitionN.ContainsKey(uint32 parti)) then 
             Seq.ofArray(x.SubPartitionN.[uint32 parti])
         else
             Seq.empty
 
-    static member GetCacheMemSubPartN parti =
+    static member internal GetCacheMemSubPartN parti =
         Remote.Current.GetCacheMemSubPartN(parti)
 
     member x.ClearCacheMemSubPartN(parti : uint32) =
@@ -258,8 +258,8 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
         fh.EndWrite(ar)
         fh.Close()
         canWrite.Set() |> ignore
-        x.WriteSemaphore.[dirIndex].Release() |> ignore
-        Interlocked.Increment(x.SemaphoreCount.[dirIndex]) |> ignore
+//        x.WriteSemaphore.[dirIndex].Release() |> ignore
+ //       Interlocked.Increment(x.SemaphoreCount.[dirIndex]) |> ignore
 
 //    member x.AddElement (segIndex : int64) (arr : ArrAlign<byte>) (dirIndex : int) (vec : byte[]) (copied : int64 ref) (finish : ManualResetEventSlim) () =
 //        let (rangeIndex, copyStart, boundary, canWrite) = x.WriteRange.[segIndex]
@@ -308,21 +308,21 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
 //                
 //            )
 
-            Interlocked.Add(cnt, int64 alignLen) |> ignore
-            let mutable copyEnd = Interlocked.Add(rangeCopy, alignLen)
-            let mutable copyStart = copyEnd - alignLen
-            while (copyEnd >= cache.[!rangeIndex].cnt) do
-                if (copyStart < cache.[!rangeIndex].cnt) then
-                    // this thread moves the cache segment forward
-                    Interlocked.Increment(rangeIndex) |> ignore
-                    rangeCopy := ref 0
-                    eventWrite.WaitOne() |> ignore
-                    eventWrite.Reset() |> ignore
-                    eventCopy.Set() |> ignore
-                eventCopy.WaitOne() |> ignore
-                eventCopy.Reset() |> ignore
-                copyEnd <- Interlocked.Add(rangeCopy, alignLen)
-                copyStart <- copyEnd - alignLen
+//            Interlocked.Add(cnt, int64 alignLen) |> ignore
+//            let mutable copyEnd = Interlocked.Add(rangeCopy, alignLen)
+//            let mutable copyStart = copyEnd - alignLen
+//            while (copyEnd >= cache.[!rangeIndex].cnt) do
+//                if (copyStart < cache.[!rangeIndex].cnt) then
+//                    // this thread moves the cache segment forward
+//                    Interlocked.Increment(rangeIndex) |> ignore
+//                    rangeCopy := ref 0
+//                    eventWrite.WaitOne() |> ignore
+//                    eventWrite.Reset() |> ignore
+//                    eventCopy.Set() |> ignore
+//                eventCopy.WaitOne() |> ignore
+//                eventCopy.Reset() |> ignore
+//                copyEnd <- Interlocked.Add(rangeCopy, alignLen)
+//                copyStart <- copyEnd - alignLen
 
 
             Interlocked.Add(toCopy, int64 alignLen) |> ignore
@@ -331,10 +331,10 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
             //else if (copyEnd >= cache.[!rangeIndex].cnt) then
             
 
-            finish.Reset() |> ignore
-            x.ST.[parti].ExecQ(x.AddElement segIndex arr dirIndex vec copied finish)
-            finish.Wait() |> ignore
-        (ms :> IDisposable).Dispose()
+//            finish.Reset() |> ignore
+//            x.ST.[parti].ExecQ(x.AddElement segIndex arr dirIndex vec copied finish)
+//            finish.Wait() |> ignore
+//        (ms :> IDisposable).Dispose()
 
     static member FurtherPartitionCacheInRAMAndWrite ms =
         Remote.Current.FurtherPartitionCacheInRAMAndWrite(ms)
@@ -366,7 +366,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
 
     // ================================================================================
     member val private ReadCnt = ref -1 with get
-    member val private DiskDir : (string*int)[] = [|("c", maxWritePerDrive); ("d", maxWritePerDrive); ("e", maxWritePerDrive); ("f", maxWritePerDrive)|] with get, set
+    member val private DiskDir : (char*int)[] = [|('c', maxWritePerDrive); ('d', maxWritePerDrive); ('e', maxWritePerDrive); ('f', maxWritePerDrive)|] with get, set
     member val private RawDataDir : string[] = [|@"c:\sort\raw"; @"d:\sort\raw"; @"e:\sort\raw"; @"f:\sort\raw"|] with get, set
     member val PartDataDir : string[] = [|@"c:\sort\part"; @"d:\sort\part"; @"e:\sort\part"; @"f:\sort\part"|] with get, set
     member val SortDataDir : string[] = [|@"c:\sort\sort"; @"d:\sort\sort"; @"e:\sort\sort"; @"f:\sort\sort"|] with get, set
@@ -433,7 +433,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
                 let partstream = Array.init<StreamBase<byte>> (int(totalOutPartitions)) (fun i -> null)
                 let t1 = DateTime.UtcNow
                 let bHasBuf = ref true
-                use sr = new StreamReader<byte>(buffer, 0L)
+                let sr = new StreamReader<byte>(buffer, 0L)
 
                 while !bHasBuf do
                     let (buf, pos, len) = sr.GetMoreBuffer()
@@ -453,7 +453,6 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
                         bHasBuf := false
 
                 (buffer :> IDisposable).Dispose()
-                sr.Release()
                 let t2 = DateTime.UtcNow
 
                 for i = 0 to int(totalOutPartitions) - 1 do
@@ -504,7 +503,7 @@ let repartitionFn (ms : StreamBase<byte>) =
     let index = ms.ReadUInt32()
     int index
 
-let doSortN (alignLen : int) (segIndex : int64, cnt : int64 ref, buf : ArrAlign<byte>) : int64 ref*IntPtr =
+let internal doSortN (alignLen : int) (segIndex : int64, cnt : int64 ref, buf : ArrAlign<byte>) : int64 ref*IntPtr =
     let num = int(!cnt/(int64 alignLen))
     NativeSort.Sort.AlignSort64(buf.Ptr, alignLen>>>3, num)
     (cnt, buf.Ptr)

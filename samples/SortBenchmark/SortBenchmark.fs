@@ -523,7 +523,7 @@ type RemoteFunc( filePartNum:int, records:int64, _dim:int , partNumS1:int, partN
                             remainLen := len
                     else
                         bHasBuf := false
-                sr.Release()
+                //sr.Release()
 
                 (buffer :> IDisposable).Dispose()
                 let t2 = DateTime.UtcNow
@@ -563,7 +563,7 @@ type RemoteFunc( filePartNum:int, records:int64, _dim:int , partNumS1:int, partN
                 let partstream = Array.init<StreamBase<byte>> nump (fun i -> null)
                 let t1 = DateTime.UtcNow
                 let bHasBuf = ref true
-                use sr = new StreamReader<byte>(buffer,0L)
+                let sr = new StreamReader<byte>(buffer,0L)
 
                 while !bHasBuf do
                     let (buf, pos, len) = sr.GetMoreBuffer()
@@ -583,7 +583,7 @@ type RemoteFunc( filePartNum:int, records:int64, _dim:int , partNumS1:int, partN
                         bHasBuf := false
 
                 (buffer :> IDisposable).Dispose()
-                sr.Release()
+                //sr.Release()
                 let t2 = DateTime.UtcNow
 
                 for i = 0 to nump - 1 do
@@ -966,7 +966,7 @@ type RemoteFunc( filePartNum:int, records:int64, _dim:int , partNumS1:int, partN
                                     filesize <- snd (!elem1)
                             if len = 0 then
                                 bHasBuf := false
-                        sr.Release()
+                        //sr.Release()
                         ((!ms) :> IDisposable).Dispose()
                 RemoteFunc.repartitionBuf.Push(fp,filesize)
 
