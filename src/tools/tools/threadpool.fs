@@ -295,6 +295,8 @@ and Wait private () =
                     x.TotalWaitAvail <- x.TotalWaitAvail - int64 waitPerThread
                     w.Value.Stop()
                     x.Threads.TryRemove(w.Key) |> ignore
+                else
+                    bDone <- true
             peakWaits <- !x.TotalWaitUsed
             countSinceLastCheck <- 0                        
 

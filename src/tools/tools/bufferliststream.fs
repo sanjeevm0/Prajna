@@ -77,56 +77,6 @@ type [<AllowNullLiteral>] internal ArrAlign<'T>(size : int, alignBytes : int) =
     member x.Ptr with get() = IntPtr.Add(handle.AddrOfPinnedObject(), int offsetBytes)
     member x.Size with get() = alignSize
 
-// =====================================================
-
-type internal DoOnce() =
-    let lockObj = new Object()
-    let mutable bDone = false
-    member x.Run(fn : unit->unit) =
-        if (not bDone) then
-            lock (lockObj) (fun _ ->
-                if (not bDone) then
-                    fn()
-                    bDone <- true
-            )
-
-// ==============================================
-
-[<AllowNullLiteral>]
-type MEvent(initState : bool) =
-    let lockObj = new Object()
-    let setLock = new Object() // without this, potentially only one thread would wake up
-    let mutable signalled = initState
-
-    member x.Wait() =
-        lock (lockObj) (fun _ ->
-            while (not signalled) do
-                Monitor.Wait(lockObj) |> ignore
-        )
-        // alternately can write (same thing)
-//        try
-//            Monitor.Enter(lockObj)
-//            while (not signalled) do
-//                Monitor.Wait(lockObj) |> ignore
-//        finally
-//            Monitor.Exit(lockObj)
-
-    member x.Reset() =
-        lock (setLock) (fun _ ->
-            //Thread.MemoryBarrier()
-            signalled <- false
-            //Thread.MemoryBarrier()
-        )
-
-    member x.Set() =
-        lock (setLock) (fun _ ->
-            //Thread.MemoryBarrier() // write cannot move earlier in thread
-            signalled <- true
-            lock (lockObj) (fun _ ->
-                Monitor.PulseAll(lockObj)
-            )
-        )
-
 // ==============================================
 
 // Helper classes for ref counted objects & shared memory pool
@@ -489,7 +439,7 @@ type internal RefCntBufAlign<'T>() =
         base.DisposeInternal()
 
 [<AllowNullLiteral>]
-type RefCntBufChunkAlign<'T>() =
+type internal RefCntBufChunkAlign<'T>() =
     inherit RefCntBuf<'T>()
 
     static let mutable currentChunk : ArrAlign<'T> = null
@@ -544,7 +494,7 @@ type RefCntBufChunkAlign<'T>() =
             x.BufAlign <- null
         base.DisposeInternal()
 
-type RBufPartType =
+type internal RBufPartType =
     | Virtual
     | Valid
     | ValidWrite
@@ -556,13 +506,13 @@ type [<AllowNullLiteral>] RBufPart<'T> =
     [<DefaultValue>] val mutable AllocString : string
 #endif
     // is virtual RBufPart (without any element)
-    [<DefaultValue>] val mutable Type : RBufPartType
+    [<DefaultValue>] val mutable internal Type : RBufPartType
     [<DefaultValue>] val mutable Offset : int
     [<DefaultValue>] val mutable Count : int64
     // the beginning element's position in the stream 
     [<DefaultValue>] val mutable StreamPos : int64
     // for read/write IO
-    [<DefaultValue>] val mutable IOEvent : MEvent
+    [<DefaultValue>] val mutable internal IOEvent : MEvent
     // # of concurrent read/writes happening on this buffer
     [<DefaultValue>] val mutable NumUser : int ref
     [<DefaultValue>] val mutable Finished : bool
@@ -2444,6 +2394,35 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
         base.WriteRBufNoCopy(rbuf)
         x.BufList.[x.ElemPos-1].SetIOEvent()
         x.SetCurPos(x.Position) // only helps to clear out old 
+
+    member x.Transfer(fillWithReadAndSetCount : RBufPart<'T>->unit) =
+        let mutable bCont = true
+        while bCont do
+            let rbufNew = x.GetNewBufferWait()
+            rbufNew.ResetIOEvent()
+            fillWithReadAndSetCount(rbufNew)
+            rbufNew.IOEvent.Wait() // wait for fill to complete
+            if (0L = rbufNew.Count) then
+                bCont <- false
+            else
+                x.WriteRBufNoCopy(rbufNew)
+        x.Flush()
+        x.FinalFlush <- true
+
+//    member private x.ContinueTransfer(state : obj) (bTimeOut : bool) =
+//        let (rbufToAdd, fillWithReadAndSetCount) = state :?> RBufPart<'T>*(RBufPart<'T>->unit)
+//        if (Utils.IsNotNull rbufToAdd && 0L = rbufToAdd.Count) then
+//            x.Flush() // some sync (wait for callbacks to complete), but only at end
+//            x.FinalFlush <- true
+//        else
+//            if (Utils.IsNotNull rbufToAdd) then
+//                x.WriteRBufNoCopy(rbufToAdd) // all async
+//                x.VirtualizeOldElem(0)
+//            let (event, rbufNew) = x.TryGetNewBuffer()
+//            if (Utils.IsNotNull rbufNew) then
+//                rbufNew.ResetIOEvent()
+//                fillWithReadAndSetCount(rbufNew)
+//                RWHQueue.Add(ThreadPool.RegisterWaitForSingleObject(rbuf) // need WaitHandle to use this
 
 // ======================================================================================
 
