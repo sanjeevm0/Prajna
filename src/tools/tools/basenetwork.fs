@@ -551,7 +551,7 @@ type Network() =
     /// The state passed into connection initialization.  When connection is created, conn.Init(socket, state) is called.
     /// </param>
     member x.Connect<'T when 'T :> IConn and  'T : (new: unit->'T)>(addr : IPAddress, port : int, state : obj) =
-        let sock = new Socket(SocketType.Stream, ProtocolType.Tcp)
+        let sock = new System.Net.Sockets.Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp)
         let conn = new 'T() :> IConn
         let ep = IPEndPoint(addr, port)
         try
@@ -573,7 +573,7 @@ type Network() =
         let mutable success = false
         let mutable sock =null 
         try
-            sock <- new Socket(SocketType.Stream, ProtocolType.Tcp)
+            sock <- new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp)
             let conn = new 'T() :> IConn
             try
                 // use IP v4 address, randomly pick one for local, use 0 for port since don't care
@@ -591,7 +591,7 @@ type Network() =
                 conn
             with e ->
                 try
-                    sock <- new Socket(SocketType.Stream, ProtocolType.Tcp)
+                    sock <- new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp)
                     sock.Connect(addrStr, port)
                     x.InitConn(conn, sock, state)
                     success <- true
@@ -618,7 +618,7 @@ type Network() =
             let mutable success = false
             let mutable sock = null
             try
-                sock <- new Socket(SocketType.Stream, ProtocolType.Tcp)
+                sock <- new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp)
                 let conn = new 'T() :> IConn
                 let addr = (Dns.GetHostAddresses(bind)).[0]
                 try
@@ -635,7 +635,7 @@ type Network() =
                     conn
                 with e->
                     try
-                        sock <- new Socket(SocketType.Stream, ProtocolType.Tcp)
+                        sock <- new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp)
                         sock.Bind(IPEndPoint(addr, 0))
                         sock.Connect(addrStr, port)
                         x.InitConn(conn, sock, state)
@@ -787,6 +787,7 @@ and [<AllowNullLiteral>] internal SharedComponentState() =
 /// - If processing is occuring on own thread, then that thread blocks for event to fire
 /// There is also support for multiple processing steps to take place in a single item
 type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
+    static let systemwideProcess = ConcurrentDictionary<string, ('T->ManualResetEvent)*bool>(StringComparer.Ordinal)
     let compBase = ComponentBase()
     let bRelease = ref 0
     let item : 'T ref = ref null
@@ -823,6 +824,9 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
     // accessors
     member internal x.Item with get() = item
     member internal x.Closed with get() = bIsClosed and set(v) = bIsClosed <- v
+    // Systemwide processor for component
+    static member internal SystemwideProcessors with get() = systemwideProcess
+
     member internal x.Processors with get() = processors
     member internal x.WaitTimeMs with get() = waitTimeMs
 
@@ -1068,9 +1072,9 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
         if (ret) then
             value.AllowClose <- true
             if (value.Items.Count = 0) then
-               threadPool.HandleDoneExecution.Set() |> ignore
+               threadPool.Cancel() 
         else
-            threadPool.HandleDoneExecution.Set() |> ignore
+            threadPool.Cancel()
 
     static member internal ThreadPoolWait (tp : ThreadPoolWithWaitHandles<'TP>) =
         tp.WaitForAll( -1 ) // use with EnqueueRepeatableFunction in AddWorkItem
@@ -1087,16 +1091,16 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
                                       (infoFunc : 'TP -> string) =
         let compBase = ComponentBase()
         compBase.SharedStateObj <- SharedComponentState.Add(compBase.ComponentId, compBase, threadPool)
-        let finishCb : Option<unit->unit> =
-            if (Utils.IsNull threadPool) then
-                None
-            else
-                threadPool.HandleDoneExecution.Reset() |> ignore
-                let fnFinish() =
-                    let bDone = SharedComponentState.Remove(compBase.ComponentId, compBase.SharedStateObj)
-                    if (bDone) then
-                        threadPool.HandleDoneExecution.Set() |> ignore
-                Some(fnFinish)
+//        let finishCb : Option<unit->unit> =
+//            if (Utils.IsNull threadPool) then
+//                None
+//            else
+//                threadPool.HandleDoneExecution.Reset() |> ignore
+//                let fnFinish() =
+//                    let bDone = SharedComponentState.Remove(compBase.ComponentId, compBase.SharedStateObj)
+//                    if (bDone) then
+//                        threadPool.HandleDoneExecution.Set() |> ignore
+//                Some(fnFinish)
         //Component<'T>.StartOnSystemThreadPool func finishCb
         threadPool.EnqueueRepeatableFunction func cts tpKey infoFunc
         //Component<'T>.StartProcessOnOwnThread func tpKey finishCb infoFunc

@@ -814,19 +814,19 @@ type BackEndInstance< 'StartParamType
                 let bExist, tuple = x.StatisticsCollection.TryGetValue( reqID )
                 let _, _, _, statisticsHolderRef = tuple
                 statisticsHolderRef := Some ( "Timeout", elapse, 0 )
-    member internal x.SendReply numItems numSlotsAvailable ticks timeInQueueMS reqID remoteSignature (replyObject:Object) =
+    member internal x.SendReply capacity numSlotsAvailable ticks timeInQueueMS reqID remoteSignature (replyObject:Object) =
         let queue = Cluster.Connects.LookforConnectBySignature( remoteSignature ) 
         let bHealth, health = x.FrontEndHealth.TryGetValue( remoteSignature )
         if bHealth && not (Utils.IsNull queue) then 
             let ticksCur = (PerfADateTime.UtcNowTicks())
             let timeInProcessingMS = int (( ticksCur - ticks ) / TimeSpan.TicksPerMillisecond)
-            let qPerf = SingleQueryPerformance( InQueue = timeInQueueMS, InProcessing = timeInProcessingMS, 
+            let qPerf = SingleRequestPerformance( InQueue = timeInQueueMS, InProcessing = timeInProcessingMS, 
                                                 NumSlotsAvailable = numSlotsAvailable, 
-                                                NumItemsInQueue = numItems )
+                                                Capacity = capacity )
             use msReply = new MemStream( ) 
             health.WriteHeader( msReply )         
             msReply.WriteBytes( reqID.ToByteArray() ) 
-            SingleQueryPerformance.Pack( qPerf, msReply )
+            SingleRequestPerformance.Pack( qPerf, msReply )
             msReply.SerializeObjectWithTypeName( replyObject ) 
             health.WriteEndMark( msReply ) 
             Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "query %s has been served and returned with a reply of %dB (%s)" (reqID.ToString()) (msReply.Length) (qPerf.BackEndInfo()) ))
