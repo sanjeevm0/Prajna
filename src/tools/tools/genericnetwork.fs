@@ -702,6 +702,10 @@ and [<AllowNullLiteral>] GenericConn() as x =
     interface IDisposable with
         /// Releases all resources used by the current instance.
         member x.Dispose() = 
+            if (Utils.IsNotNull eSendSA) then
+                (eSendSA :> IDisposable).Dispose()
+            if (Utils.IsNotNull eRecvSA) then
+                (eRecvSA :> IDisposable).Dispose()
             (xSendC :> IDisposable).Dispose()
             (xRecvC :> IDisposable).Dispose()
             cts.Dispose()

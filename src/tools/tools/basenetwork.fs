@@ -915,7 +915,10 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
                 nextComponent.Closed <- true
                 // force a dequeue
                 if (Utils.IsNotNull nextComponent.Q) then
-                    nextComponent.Q.Full.Set() |> ignore
+                    try
+                        nextComponent.Q.Full.Set() |> ignore
+                    with
+                        | :? System.ObjectDisposedException -> ()
             match triggerNext with
                 | None -> ()
                 | Some(nextClose) -> nextClose()
@@ -961,7 +964,10 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
         x.Closed <- true
         // force a dequeue
         if (Utils.IsNotNull x.Q) then
-            x.Q.Full.Set() |> ignore
+            try
+                x.Q.Full.Set() |> ignore
+            with
+                | :? System.ObjectDisposedException -> ()
 
     /// Self terminate the component and start terminating the pipeline
     abstract SelfTerminate : unit->unit
@@ -986,7 +992,10 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
         // take handle snapshot as it may change in other thread and become null
         let handle = x.ProcWaitHandle
         if (Utils.IsNotNull handle) then
-            handle.Set() |> ignore
+            try
+                handle.Set() |> ignore
+            with
+                | :? ObjectDisposedException as ex -> ()
 
     static member internal WaitAndExecOnSystemTP(event : WaitHandle, timeOut : int) (fn : obj->bool->unit, state : obj) =
         if (Utils.IsNotNull event) then

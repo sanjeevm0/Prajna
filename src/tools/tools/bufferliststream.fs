@@ -95,10 +95,11 @@ type [<AllowNullLiteral>] IRefCounter<'K> =
         abstract DecRef : unit->int64
     end
 
-#if DEBUG
 type internal BufferListDebugging =
     static member DebugLeak = false
-#endif
+    static member DumpStreamLogLevel = LogLevel.WildVerbose
+    static member DumpPoolLogLevel = LogLevel.WildVerbose
+    static member PoolAllocLogLevel = LogLevel.WildVerbose
 
 // A shared pool of RefCounters
 //type [<AllowNullLiteral>] internal SharedPool<'K,'T when 'T :> IRefCounter and 'T:(new:unit->'T)> private () =
@@ -118,8 +119,9 @@ type [<AllowNullLiteral>] internal SharedPool<'K,'T when 'T :> IRefCounter<'K> a
     member x.GetStack with get() = stack
     member x.StackSize with get() = stack.Count()
 
-    member x.DumpInUse(level : LogLevel) : unit =
+    member x.DumpInUse(?level : LogLevel) : unit =
 #if DEBUG
+        let level = defaultArg level BufferListDebugging.DumpPoolLogLevel
         if (BufferListDebugging.DebugLeak) then
             Logger.LogF(level, fun _ -> sprintf "SharedPool %A has %d objects in use" info usedList.Count)
             Logger.LogF(level, fun _ ->
@@ -208,7 +210,7 @@ type SafeRefCnt<'T when 'T:null and 'T :> IRefCounter<string>> (infoStr : string
             x.info <- infoStr + ":" + x.Id.ToString()
 #if DEBUGALLOCS
             x.Element.Allocs.[x.info] <- Environment.StackTrace
-            Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Also using %s for id %d - refcount %d" x.Element.Key x.Id x.Element.GetRef)
+            Logger.LogF(BufferListDebugging.PoolAllocLogLevel, fun _ -> sprintf "Also using %s for id %d - refcount %d" x.Element.Key x.Id x.Element.GetRef)
 #endif
 
     member x.SetElement(e : 'T) =
@@ -217,7 +219,7 @@ type SafeRefCnt<'T when 'T:null and 'T :> IRefCounter<string>> (infoStr : string
         x.info <- infoStr + ":" + x.Id.ToString()
 #if DEBUGALLOCS
         x.Element.Allocs.[x.info] <- Environment.StackTrace
-        Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Using element %s for id %d - refcount %d" x.Element.Key x.Id x.Element.GetRef)
+        Logger.LogF(BufferListDebugging.PoolAllocLogLevel, fun _ -> sprintf "Using element %s for id %d - refcount %d" x.Element.Key x.Id x.Element.GetRef)
 #endif
     
     static member internal GetFromPool<'TP when 'TP:null and 'TP:(new:unit->'TP) and 'TP :> IRefCounter<string>>
@@ -235,7 +237,7 @@ type SafeRefCnt<'T when 'T:null and 'T :> IRefCounter<string>> (infoStr : string
             x.info <- infoStr + ":" + x.Id.ToString()
 #if DEBUGALLOCS
             x.Element.Allocs.[x.info] <- Environment.StackTrace
-            Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Using pool element %s for id %d - refcount %d" x.Element.Key x.Id x.Element.GetRef)
+            Logger.LogF(BufferListDebugging.PoolAllocLogLevel, fun _ -> sprintf "Using pool element %s for id %d - refcount %d" x.Element.Key x.Id x.Element.GetRef)
 #endif
             (event, x)
         else
@@ -251,7 +253,7 @@ type SafeRefCnt<'T when 'T:null and 'T :> IRefCounter<string>> (infoStr : string
             let bFinalize = defaultArg bFinalize false
 #if DEBUGALLOCS
             x.Element.Allocs.TryRemove(x.info) |> ignore
-            Logger.LogF(LogLevel.MildVerbose, fun _ -> sprintf "Releasing %s with id %d elemId %s finalize %b - refcount %d" infoStr id x.RC.Key bFinalize x.Element.GetRef)
+            Logger.LogF(BufferListDebugging.PoolAllocLogLevel, fun _ -> sprintf "Releasing %s with id %d elemId %s finalize %b - refcount %d" infoStr id x.RC.Key bFinalize x.Element.GetRef)
 #endif
             let newCount = x.RC.DecRef()
             if (0L = newCount) then
@@ -780,6 +782,13 @@ type [<AllowNullLiteral>] [<AbstractClass>] StreamBase<'T> =
         override x.Dispose() =
             x.disposer.Run(fun () -> x.DisposeInternal(true))
             GC.SuppressFinalize(x)
+    // following is needed in case someone calls x.Dispose() method on stream, which calls Close followed
+    // by x.Dispose(true)
+    override x.Dispose(b) =
+        if (b) then
+            (x :> IDisposable).Dispose()
+        else
+            x.Finalize()
 
     abstract member GetNew : unit -> StreamBase<'T>
     abstract member GetNew : int -> StreamBase<'T>
@@ -1198,7 +1207,7 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
     static member DumpStreamsInUse() =
 #if DEBUG
         if (BufferListDebugging.DebugLeak) then
-            Logger.LogF (LogLevel.MildVerbose, fun _ ->
+            Logger.LogF (BufferListDebugging.DumpStreamLogLevel, fun _ ->
                 let sb = System.Text.StringBuilder()
                 sb.AppendLine(sprintf "Num streams in use: %d" streamsInUse.Count) |> ignore
                 for s in streamsInUse do
@@ -1224,12 +1233,12 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
             lock (memStackInitLock) (fun _ -> 
                 if Utils.IsNull memStack then
                     memStack <- new SharedMemoryPool<RefCntBuf<'T>,'T>(numBufs, -1, bufSize, BufferListStream<'T>.InitFunc, "Memory Stream")
-            )
 #if DEBUG
-            if (BufferListDebugging.DebugLeak) then
-                // start monitor timer
-                PoolTimer.AddTimer(BufferListStream<'T>.DumpStreamsInUse, 10000L, 10000L)
+                if (BufferListDebugging.DebugLeak) then
+                    // start monitor timer
+                    PoolTimer.AddTimer(BufferListStream<'T>.DumpStreamsInUse, 10000L, 10000L)
 #endif
+            )
 
     static member InitSharedPool() =
         BufferListStream<'T>.InitMemStack(128, 64000)
@@ -1399,20 +1408,22 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
         elemLen <- elemLen + 1
 
     // add existing buffer to pool, don't adjust position
-    member internal x.AddExistingBuffer(rbuf : RBufPart<'T>) =
+    member internal x.AddExistingBuffer(rbufAdd : RBufPart<'T>) =
         // if use linked list instead of list, then theoretically could insert if bufRemWrite = 0 also
         // then condition would be if (position <> length && bufRemWrite <> 0) then
         if (position <> length) then
             failwith "Splicing RBuf in middle is not supported"
         else
-            let rbufPartNew = new RBufPart<'T>(rbuf) // make a copy
+            let rbufPartNew = new RBufPart<'T>(rbufAdd) // make a copy
             rbufPartNew.StreamPos <- position
             if (elemLen > 0) then
                 x.SealWriteBuffer()
             x.InsertIntoList(rbufPartNew, elemLen)
-            length <- length + int64 rbuf.Count
-            capacity <- capacity + int64 rbuf.Count
+            length <- length + int64 rbufAdd.Count
+            capacity <- capacity + int64 rbufAdd.Count
             elemLen <- elemLen + 1
+            rbufPart <- rbufAdd
+            rbuf <- rbufPart.ElemNoCheck
             bufRem <- 0L
             bufRemWrite <- 0L
             bufPos <- int64 rbufPartNew.Offset + rbufPartNew.Count
@@ -1787,7 +1798,8 @@ type MemoryStreamB(defaultBufSize : int, toAvoidConfusion : byte) =
         new MemoryStreamB()
         then
             x.SimpleBuffer <- true
-            x.AddExistingBuffer(new RBufPart<byte>(buf, index, int64 count))
+            use addBuf = new RBufPart<byte>(buf, index, int64 count)
+            x.AddExistingBuffer(addBuf)
 
     new(buf : byte[]) =
         new MemoryStreamB(buf, 0, buf.Length)

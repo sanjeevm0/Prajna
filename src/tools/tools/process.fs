@@ -1277,13 +1277,13 @@ type internal ThreadPoolWait() =
             ThreadPoolWait.WaitForHandle infoFunc handle continuation unblockHandle
     static member WaitForHandle (infoFunc: unit-> string) (handle:WaitHandle) (continuation:unit->unit) (unblockHandle:EventWaitHandle) =
         if handle.WaitOne(0) then 
-            Logger.LogF( LogLevel.MildVerbose, fun _ -> sprintf "WaitHandle %s has already fired before wait, execute continuation on the current thread" (infoFunc()) )
+            Logger.LogF( LogLevel.WildVerbose, fun _ -> sprintf "WaitHandle %s has already fired before wait, execute continuation on the current thread" (infoFunc()) )
             continuation() 
             if Utils.IsNotNull unblockHandle then 
                 // If there is an unblock handle, set it. 
                 unblockHandle.Set() |> ignore
         else
-            Logger.LogF( LogLevel.MildVerbose, fun _ -> sprintf "Wait for WaitHandle %s via RegisterWaitForSingleObject ..." (infoFunc()) )
+            Logger.LogF( LogLevel.WildVerbose, fun _ -> sprintf "Wait for WaitHandle %s via RegisterWaitForSingleObject ..." (infoFunc()) )
             /// Uniquely identify this async job and its resource removal. 
             let jobObject = Object()
             let rwh = ThreadPool.RegisterWaitForSingleObject( handle, new WaitOrTimerCallback(ThreadPoolWait.CallBack), (infoFunc,handle,continuation,unblockHandle,jobObject) , -1, true )
@@ -1294,7 +1294,7 @@ type internal ThreadPoolWait() =
             if not timeout then
                 try
                     let infoFunc,handle,continuation,unblockHandle,jobObject = state :?> ((unit->string)*WaitHandle*(unit->unit)*EventWaitHandle*Object)
-                    Logger.LogF( LogLevel.MildVerbose, fun _ -> sprintf "WaitHandle %s fired, execute continuation..." (infoFunc()) )
+                    Logger.LogF( LogLevel.WildVerbose, fun _ -> sprintf "WaitHandle %s fired, execute continuation..." (infoFunc()) )
                     continuation() 
                     if Utils.IsNotNull unblockHandle  then 
                         // If there is an unblock handle, set it. 
