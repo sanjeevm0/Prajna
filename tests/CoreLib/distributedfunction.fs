@@ -41,6 +41,7 @@ open NUnit.Framework
 
 open Prajna.Core
 open Prajna.Tools
+open Prajna.Tools.Network
 
 open Prajna.Tools.FSharp
 open Prajna.Service
@@ -60,11 +61,12 @@ type DistributedFunctionTest() =
 //    let storeName = "TestKV"
 //    let serverInfo = ContractServersInfo( Cluster = cluster )
     do 
-        let provider = DistributedFunctionProvider(
-                            PublicID = Guid("{630C8E4D-69A4-4493-BFCD-03A548581631}"), 
-                            PrivateID = Guid( "{049EE851-3190-42BB-BBCF-589ED56E048E}") 
-                       )
-        DistributedFunctionStore.Current.RegisterProvider( provider )
+//        let provider = DistributedFunctionProvider(
+//                            PublicID = Guid("{630C8E4D-69A4-4493-BFCD-03A548581631}"), 
+//                            PrivateID = Guid( "{049EE851-3190-42BB-BBCF-589ED56E048E}") 
+//                       )
+//        DistributedFunctionStore.Current.RegisterProvider( provider )
+        ()
 
     static member IncrementAction() = 
         let countRef = ref 0
@@ -208,3 +210,51 @@ type DistributedFunctionTest() =
         Logger.LogF( LogLevel.Info, fun _ -> sprintf "Number of distributed functions registered is %d(before) and %d (after)." cnt0 cnt1 )
         Assert.Greater( cnt1, cnt0 )
 
+    static member val WaitForConnectedContainersInMilliseconds = 2000 with get
+
+    static member WaitForContainerLaunch() = 
+        let startTime = Prajna.Test.Common.TestEnvironment.Environment.Value.StartTime
+        let curTime = DateTime.UtcNow
+        let elapse = curTime.Subtract( startTime ).TotalMilliseconds
+        let waitTime = Math.Max( 0, DistributedFunctionTest.WaitForConnectedContainersInMilliseconds - int elapse )
+        if waitTime > 0 then 
+            Logger.LogF( LogLevel.Info, fun _ -> sprintf "Wait for %d ms for the containers to get started" waitTime )
+            Thread.Sleep( waitTime )
+
+    [<Test(Description = "Test: Builtin Function: GetContainers")>]
+    member x.DistributedFunctionGetConnectedContainers() = 
+        DistributedFunctionTest.WaitForContainerLaunch()
+        Logger.LogF( LogLevel.Info, fun _ -> sprintf "Start to execute GetConnectedContainers()"  )
+        let numTries = 5 
+        let mutable bValidMeasure = false 
+        for i = 0 to numTries do 
+            let containers = DistributedFunctionBuiltIn.GetConnectedContainers() |> Seq.toArray
+            Assert.AreEqual( TestSetup.SharedCluster.NumNodes, containers.Length )
+            Logger.LogF( LogLevel.Info, fun _ -> sprintf "Number of connected containers is %d: %A" containers.Length containers )
+            let perfArray = DistributedFunctionBuiltIn.GetBuiltInFunctionPerformance()
+            Assert.AreEqual( TestSetup.SharedCluster.NumNodes, perfArray.Length )
+            for entry in perfArray do 
+                let signature, perf = entry
+                Logger.LogF( LogLevel.Info, fun _ -> sprintf "Performance of containers %s: %s, latency = %s" 
+                                                        (LocalDNS.GetHostInfoInt64(signature))
+                                                        (perf.QueueInfo()) 
+                                                        (perf.ExpectedLatencyInfo()) )
+                if not bValidMeasure then 
+                    /// We have got some measurement 
+                    bValidMeasure <- perf.ExpectedLatencyInMS<>ServiceEndpointPerformance.DefaultExpectedLatencyInMS
+        Assert.IsTrue( bValidMeasure )                
+
+    [<Test(Description = "Test: Builtin Function: TriggerRemoteException")>]
+    member x.DistributedFunctionTriggerRemoteException() = 
+        DistributedFunctionTest.WaitForContainerLaunch()
+        let exRemote = ref null
+        try 
+            let string = DistributedFunctionBuiltIn.TriggerRemoteException() 
+            // The function should not peacecully exit, a remote exception should be triggered and thrown 
+            ()
+        with 
+        | ex -> 
+            exRemote := ex
+        Assert.IsNotNull( exRemote ) 
+        Logger.LogF( LogLevel.Info, fun _ -> sprintf "Expected remote exception of %A" !exRemote)
+        ()
