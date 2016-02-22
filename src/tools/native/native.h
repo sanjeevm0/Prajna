@@ -57,7 +57,7 @@ public:
 
 template <bool bUniversalCb>
 class IOCallback {
-private:
+protected:
     HANDLE m_hFile;
     PTP_IO m_ptp;
     CRITICAL_SECTION *m_cs;
@@ -163,7 +163,7 @@ public:
         InitializeCriticalSection(m_cs);
     }
 
-    ~IOCallback()
+    virtual ~IOCallback()
     {
         Close(); // in case we didn't call close
         DeleteCriticalSection(m_cs);
@@ -448,13 +448,13 @@ namespace Native {
 
     generic <class T> public delegate void IOCallbackDel(int ioResult, Object ^pState, array<T> ^pBuffer, int offset, int bytesTransferred);
 
-    private interface class IIO
+    public interface class IIO
     {
     public:
         virtual void UpdateIO(IntPtr tpio, __int64 amt);
     };
 
-    private ref class IOStateBase
+    public ref class IOStateBase
     {
     protected:
         Dictionary<Int64, IOStateBase^> ^m_olapMap;
@@ -610,7 +610,7 @@ namespace Native {
 
     public ref class AsyncStreamIO : public IIO, public Stream
     {
-    private:
+    protected:
         IOCallback<true> *m_cb;
         TPIO **m_tpio;
         int m_numTPIO;
@@ -674,26 +674,29 @@ namespace Native {
         }
 
     public:
-        AsyncStreamIO(HANDLE h, int maxIO) : m_cb(nullptr)
+        AsyncStreamIO() : m_cb(nullptr)
         {
-            int i;
-
             m_cbCreate = gcnew Func<Type^, Object^>(this, &AsyncStreamIO::GetNewCb);
 
             //m_cbFns = gcnew ConcurrentDictionary<Type^, Object^>();
             m_ioLock = gcnew Object();
             m_tpioColl = gcnew BlockingCollection<IntPtr>();
 
-            m_numTPIO = maxIO;
-            m_tpio = new TPIO*[m_numTPIO];
-            for (i = 0; i < maxIO; i++)
-            {
-                m_tpio[i] = new TPIO(h);
-                m_tpioColl->Add((IntPtr)m_tpio[i]);
-            }
             m_stateDictionary = IOStateBase::CreateDictionary();
-            //m_cb = new IOCallback<false>(h, m_numTPIO, m_tpio, nullptr, nullptr);
-            m_cb = new IOCallback<true>(h, m_numTPIO, m_tpio, IOState<byte>::CbFn(), m_stateDictionary->SelfPtr());
+        }
+
+        AsyncStreamIO(HANDLE h, Int32 maxIO) : AsyncStreamIO()
+        {
+            InitTPIO(h, maxIO);
+            InitNativeClass(h);
+        }
+
+        AsyncStreamIO(String^ name, FileAccess access, FileOptions fOpt, bool bBufferLess) : AsyncStreamIO()
+        {
+            HANDLE h = (HANDLE)AsyncStreamIO::OpenFileHandle(name, access, fOpt, bBufferLess);
+            InitTPIO(h, 5);
+            InitNativeClass(h);
+            InitIO(access, fOpt, bBufferLess);
         }
 
         // destructor (e.g. Dispose with bDisposing = true), automatically adds suppressfinalize call
@@ -707,6 +710,80 @@ namespace Native {
         !AsyncStreamIO()
         {
             Free();
+        }
+
+        static IntPtr OpenFileHandle(String^ name, FileAccess access, FileOptions fOpt, bool bBufferLess)
+        {
+            array<Char> ^nameArr = name->ToCharArray();
+            pin_ptr<Char> namePtr = &nameArr[0];
+            Char *pName = (Char*)namePtr;
+            int dwFlags = (int)fOpt;
+            if (bBufferLess)
+                dwFlags |= FILE_FLAG_NO_BUFFERING;
+            Int32 accessMode = 0;
+            Int32 creation = 0;
+            //if ((int)access & (int)FileAccess::Read)
+            //    accessMode |= GENERIC_READ;
+            //if ((int)access & (int)FileAccess::Write)
+            //    accessMode |= GENERIC_WRITE;
+            switch (access)
+            {
+            case FileAccess::Read:
+                accessMode = GENERIC_READ;
+                creation = OPEN_EXISTING;
+                break;
+            case FileAccess::Write:
+                accessMode = GENERIC_WRITE;
+                creation = CREATE_ALWAYS;
+                break;
+            case FileAccess::ReadWrite:
+                accessMode = GENERIC_READ | GENERIC_WRITE;
+                creation = OPEN_ALWAYS;
+                break;
+            }
+            return (IntPtr)CreateFile(pName, accessMode, FILE_SHARE_READ, nullptr, creation, dwFlags, nullptr);
+        }
+
+        void InitIO(FileAccess access, FileOptions fOpt, bool bBufferLess)
+        {
+            m_bBufferless = bBufferLess;
+            m_position = 0LL;
+            pin_ptr<__int64> pLen = &m_length;
+            int ret = m_cb->FileSize((__int64*)pLen);
+            if (!ret)
+                throw gcnew IOException("Unable to get file length");
+            //m_canRead = ((accessMode & GENERIC_READ) != 0);
+            //m_canWrite = ((accessMode & GENERIC_WRITE) != 0);
+            m_canRead = (access == FileAccess::Read || access == FileAccess::ReadWrite);
+            m_canWrite = (access == FileAccess::Write || access == FileAccess::ReadWrite);
+            m_canSeek = true;
+        }
+
+        void InitTPIO(HANDLE h, Int32 maxIO)
+        {
+            int i;
+
+            m_numTPIO = maxIO;
+            m_tpio = new TPIO*[m_numTPIO];
+            for (i = 0; i < maxIO; i++)
+            {
+                m_tpio[i] = new TPIO(h);
+                m_tpioColl->Add((IntPtr)m_tpio[i]);
+            }
+        }
+
+        void InitNativeClass(HANDLE h)
+        {
+            //m_cb = new IOCallback<false>(h, m_numTPIO, m_tpio, nullptr, nullptr);
+            m_cb = new IOCallback<true>(h, m_numTPIO, m_tpio, IOState<byte>::CbFn(), m_stateDictionary->SelfPtr());
+        }
+
+        static AsyncStreamIO^ OpenFile(String^ name, FileAccess access, FileOptions fOpt, bool bBufferLess)
+        {
+            IntPtr h = AsyncStreamIO::OpenFileHandle(name, access, fOpt, bBufferLess);
+            AsyncStreamIO ^io = gcnew AsyncStreamIO((HANDLE)h, 5);
+            io->InitIO(access, fOpt, bBufferLess);
+            return io;
         }
 
         // Since Stream class implements IDisposable, it automatically calls close first prior to the virtual Dispose method, i.e. in Stream class
@@ -815,48 +892,6 @@ namespace Native {
         //    FileStream ^fs = gcnew FileStream(sh, FileAccess::Write, 4096, true);
         //    return fs;
         //}
-
-        static AsyncStreamIO^ OpenFile(String^ name, FileAccess access, FileOptions fOpt, bool bBufferLess)
-        {
-            array<Char> ^nameArr = name->ToCharArray();
-            pin_ptr<Char> namePtr = &nameArr[0];
-            Char *pName = (Char*)namePtr;
-            int dwFlags = (int)fOpt;
-            if (bBufferLess) dwFlags |= FILE_FLAG_NO_BUFFERING;
-            Int32 accessMode = 0;
-            Int32 creation = 0;
-            //if ((int)access & (int)FileAccess::Read)
-            //    accessMode |= GENERIC_READ;
-            //if ((int)access & (int)FileAccess::Write)
-            //    accessMode |= GENERIC_WRITE;
-            switch (access)
-            {
-            case FileAccess::Read:
-                accessMode = GENERIC_READ;
-                creation = OPEN_EXISTING;
-                break;
-            case FileAccess::Write:
-                accessMode = GENERIC_WRITE;
-                creation = CREATE_ALWAYS;
-                break;
-            case FileAccess::ReadWrite:
-                accessMode = GENERIC_READ | GENERIC_WRITE;
-                creation = OPEN_ALWAYS;
-                break;
-            }   
-            IntPtr h = (IntPtr)CreateFile(pName, accessMode, FILE_SHARE_READ, nullptr, creation, dwFlags, nullptr);
-            AsyncStreamIO ^io = gcnew AsyncStreamIO((HANDLE)h, 5);
-            io->m_bBufferless = bBufferLess;
-            io->m_position = 0LL;
-            pin_ptr<__int64> pLen = &io->m_length;
-            int ret = io->m_cb->FileSize((__int64*)pLen);
-            if (!ret)
-                throw gcnew IOException("Unable to get file length");
-            io->m_canRead = ((accessMode & GENERIC_READ) != 0);
-            io->m_canWrite = ((accessMode & GENERIC_WRITE) != 0);
-            io->m_canSeek = true;
-            return io;
-        }
 
         generic <class T> int ReadFilePos(IntPtr ptr, array<T> ^pBuffer, int offset, int nNum, IOCallbackDel<T> ^cb, Object ^state, Int64 position)
         {
