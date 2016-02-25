@@ -45,6 +45,7 @@ module internal AssemblyProperties =
     [<assembly: InternalsVisibleTo("NetTest")>]
     [<assembly: InternalsVisibleTo("MemStreamTest")>]
     [<assembly: InternalsVisibleTo("ProgTest")>]
+    [<assembly: InternalsVisibleTo("commonfsharp")>]
 
     [<assembly: InternalsVisibleTo("Prajna")>]
 
