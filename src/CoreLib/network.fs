@@ -1168,10 +1168,8 @@ UnprocessedCmD:%d bytes Status:%A"
             xgc.CompSend.SelfTerminate()
             xgc.CompRecv.SelfTerminate()
             // in case in middle of sending, callback does not execute
-            try
+            if (Utils.IsNotNull xgc.SendFinished) then
                 xgc.SendFinished.Set() |> ignore
-            with
-                | :? System.ObjectDisposedException -> ()
 
     member private x.OnSocketClose (conn : IConn) (o : obj) =
         if (Utils.IsNotNull x.ONet) then
