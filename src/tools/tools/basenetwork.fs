@@ -801,7 +801,7 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
     let processors = ConcurrentDictionary<string, ('T->ManualResetEvent)*bool>(StringComparer.Ordinal)
     let processorCount = ref -1
     let waitTimeMs = 0
-    let lockObj = Object()
+    let lockStart = Object()
     let lockProc = Object()
     let mutable bStartedProcessing = false
     let mutable bMultipleInit = false
@@ -1140,7 +1140,7 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
                                   (cts : CancellationToken)
                                   (tpKey : 'TP)
                                   (infoFunc : 'TP -> string) : unit =
-        lock (lockObj) (fun _ ->
+        lock (lockStart) (fun _ ->
             proc <- x.Process item x.Dequeue x.Proc x.IsClosed x.Close tpKey infoFunc
             compBase.SharedStateObj <- SharedComponentState.Add(compBase.ComponentId, compBase, threadPool)
             Component<'T>.StartOnSystemThreadPool tpKey proc None
@@ -1199,7 +1199,7 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
     member private x.CheckAndInitMultipleProcess() =
         // avoid frequent lock with first check
         if (bMultipleInit = false) then
-            lock (lockObj) (fun() ->
+            lock (lockStart) (fun() ->
                 if (bStartedProcessing && bMultipleInit = false) then
                     x.InitMultipleProcess()
                     bMultipleInit <- true
