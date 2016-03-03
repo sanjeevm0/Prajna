@@ -1,25 +1,19 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
-<Project ToolsVersion="4.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+<Project ToolsVersion="14.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
-    <Platform Condition=" '$(Platform)' == '' ">x64</Platform>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
     <SchemaVersion>2.0</SchemaVersion>
-    <ProjectGuid>{1ABC2F87-7756-44CA-847C-E244EF463FA9}</ProjectGuid>
-    <OutputType>Exe</OutputType>
-    <RootNamespace>DKVCopy</RootNamespace>
-    <AssemblyName>DKVCopy</AssemblyName>
+    <ProjectGuid>a5530418-917b-4a90-b095-fa837d385aae</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <RootNamespace>Nano</RootNamespace>
+    <AssemblyName>Nano</AssemblyName>
     <TargetFrameworkVersion>v4.5</TargetFrameworkVersion>
-    <Name>DKVCopy</Name>
     <TargetFSharpCoreVersion>4.3.1.0</TargetFSharpCoreVersion>
-    <SccProjectName>
-    </SccProjectName>
-    <SccProvider>
-    </SccProvider>
-    <SccAuxPath>
-    </SccAuxPath>
-    <SccLocalPath>
-    </SccLocalPath>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <Name>Nano</Name>
+    <TargetFrameworkProfile />
   </PropertyGroup>
   <PropertyGroup>
     <MinimumVisualStudioVersion Condition="'$(MinimumVisualStudioVersion)' == ''">11</MinimumVisualStudioVersion>
@@ -32,10 +26,8 @@
     <OutputPath>bin\Debugx64\</OutputPath>
     <DefineConstants>DEBUG;TRACE</DefineConstants>
     <WarningLevel>3</WarningLevel>
-    <DocumentationFile>bin\Debugx64\DKVCopy.XML</DocumentationFile>
-    <Prefer32Bit>true</Prefer32Bit>
+    <DocumentationFile>bin\Debugx64\Nano.XML</DocumentationFile>
     <PlatformTarget>x64</PlatformTarget>
-    <StartArguments>-cluster C:\onenet\cluster\cluster01-04.lst -localdir e:\test\skynettest\images2 -remote sanjeevm\onenettest -in -rep 3 -balancer 1 -verbose 4 -rec -log c:\OneNet\writeDKV.log -con</StartArguments>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x64' ">
     <DebugType>pdbonly</DebugType>
@@ -44,43 +36,49 @@
     <OutputPath>bin\Releasex64\</OutputPath>
     <DefineConstants>TRACE</DefineConstants>
     <WarningLevel>3</WarningLevel>
-    <DocumentationFile>bin\Releasex64\DKVCopy.XML</DocumentationFile>
-    <Prefer32Bit>true</Prefer32Bit>
+    <DocumentationFile>bin\Releasex64\Nano.XML</DocumentationFile>
     <PlatformTarget>x64</PlatformTarget>
   </PropertyGroup>
   <Choose>
     <When Condition="'$(VisualStudioVersion)' == '11.0'">
-      <PropertyGroup>
+      <PropertyGroup Condition="Exists('$(MSBuildExtensionsPath32)\..\Microsoft SDKs\F#\3.0\Framework\v4.0\Microsoft.FSharp.Targets')">
         <FSharpTargetsPath>$(MSBuildExtensionsPath32)\..\Microsoft SDKs\F#\3.0\Framework\v4.0\Microsoft.FSharp.Targets</FSharpTargetsPath>
       </PropertyGroup>
     </When>
     <Otherwise>
-      <PropertyGroup>
+      <PropertyGroup Condition="Exists('$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\FSharp\Microsoft.FSharp.Targets')">
         <FSharpTargetsPath>$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\FSharp\Microsoft.FSharp.Targets</FSharpTargetsPath>
       </PropertyGroup>
     </Otherwise>
   </Choose>
-  <Import Project="$(FSharpTargetsPath)" Condition="Exists('$(FSharpTargetsPath)')" />
+  <Import Project="$(FSharpTargetsPath)" />
   <ItemGroup>
-    <Compile Include="DKVCopy.fs" />
-    <None Include="App.config" />
+    <Compile Include="AssemblyInfo.fs" />
+    <Compile Include="QueueMultiplexer.fs" />
+    <Compile Include="BufferStreamConnection.fs" />
+    <Compile Include="Serialized.fs" />
+    <Compile Include="BaseADTs.fs" />
+    <Compile Include="Server.fs" />
+    <Compile Include="Client.fs" />
+    <Compile Include="Broadcast.fs" />
+    <None Include="Scripts\load-references-debug.fsx" />
+    <None Include="Scripts\load-project-debug.fsx" />
+    <None Include="Scripts\load-references-release.fsx" />
+    <None Include="Scripts\load-project-release.fsx" />
+    <None Include="Scripts\Experiment.fsx" />
+    <None Include="Scripts\Deploy.fsx" />
   </ItemGroup>
   <ItemGroup>
+    <Reference Include="mscorlib" />
     <Reference Include="FSharp.Core, Version=$(TargetFSharpCoreVersion), Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a">
       <Private>True</Private>
     </Reference>
-    <Reference Include="mscorlib" />
     <Reference Include="System" />
     <Reference Include="System.Core" />
     <Reference Include="System.Numerics" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\src\CoreLib\CoreLib.fsproj">
-      <Name>PrajnaLib</Name>
-      <Project>{b4a6b9fa-a35b-4adb-ac15-6cca66225921}</Project>
-      <Private>True</Private>
-    </ProjectReference>
-    <ProjectReference Include="..\..\src\tools\tools\Tools.fsproj">
+    <ProjectReference Include="..\tools\tools\Tools.fsproj">
       <Name>Tools (src\Tools\Tools)</Name>
       <Project>{159bb552-8346-4313-8e10-43b88beca63b}</Project>
       <Private>True</Private>
