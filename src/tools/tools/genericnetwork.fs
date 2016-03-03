@@ -418,18 +418,24 @@ and [<AllowNullLiteral>] GenericConn() as x =
         x.InitConnectionAndStart (sock, state) x.StartNetwork
 
     // use own CloseSocketDone reference as Socket close would also call this
-    member val private CloseSocketDone : int ref = ref -1
+    member val private CloseSocketDone = false with get, set
     member private x.CloseSocketConnection() =
-        if (Interlocked.Increment(x.CloseSocketDone) = 0) then
-            Logger.LogF( LogLevel.MildVerbose, (fun _ -> sprintf "SocketClosed Endpoint: %s" connKey))
-            bSocketClosed <- true
-            if (Utils.IsNotNull xConn.Socket) then
-                xConn.Socket.Close()
-            match x.OnSocketClose with
-                | None -> ()
-                | Some cb -> cb x x.OnSocketCloseState
-            // following automatically gets called when socket close takes place (see CloseConnection)
-            //xRecvC.SelfClose() // go backward 
+        lock (x) (fun _ ->
+            if (not x.CloseSocketDone) then
+                Logger.LogF( LogLevel.MildVerbose, (fun _ -> sprintf "SocketClosed Endpoint: %s" connKey))
+                bSocketClosed <- true
+                if (Utils.IsNotNull xConn.Socket) then
+                    xConn.Socket.Close()
+                match x.OnSocketClose with
+                    | None -> ()
+                    | Some cb -> cb x x.OnSocketCloseState
+                // following automatically gets called when socket close takes place (see CloseConnection)
+                //xRecvC.SelfClose() // go backward 
+                x.CloseSocketDone <- true
+        )
+
+    member x.CloseSocket() =
+        x.CloseSocketConnection()
 
     // upon socket close
     member private x.CloseConnection() =

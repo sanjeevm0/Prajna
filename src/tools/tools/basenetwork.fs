@@ -789,7 +789,7 @@ and [<AllowNullLiteral>] internal SharedComponentState() =
 type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
     static let systemwideProcess = ConcurrentDictionary<string, ('T->ManualResetEvent)*bool>(StringComparer.Ordinal)
     let compBase = ComponentBase()
-    let bRelease = ref 0
+    let mutable bRelease = false
     let item : 'T ref = ref null
     let mutable q : BaseQ<'T> = null
     let mutable bIsClosed = false
@@ -810,7 +810,7 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
 
     override x.Finalize() =
         /// Close All Active Connection, to be called when the program gets shutdown.
-        x.ReleaseAllItems(false)
+        x.SelfTerminate()
 
     /// Standard form for all class that use CleanUp service
     member val private Disposed = false with get, set
@@ -818,9 +818,9 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
         /// Close All Active Connection, to be called when the program gets shutdown.
         member x.Dispose() = 
             if (not x.Disposed) then
-                lock(lockProc) (fun _ ->
+                lock(x) (fun _ ->
                     if (not x.Disposed) then
-                        x.ReleaseAllItems(true)
+                        x.SelfTerminate()
                         if Utils.IsNotNull q then
                             (q :> IDisposable).Dispose()
                             q <- null
@@ -891,26 +891,21 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
     member private x.ProcCount with get() = procCount and set(v) = procCount <- v
     member private x.CompBase with get() = compBase
 
-    member private x.ReleaseAllItemsInternal() =
-        isTerminated <- true
-        let itemDQ : 'T ref = ref Unchecked.defaultof<'T>
-        if (Utils.IsNotNull !item) then
-            x.ReleaseItem(item)
-            item := null
-        if (Utils.IsNotNull x.Q) then
-            while (not x.Q.IsEmpty) do
-                let (success, event) = x.Q.DequeueWait(itemDQ)
-                if (success) then
-                    x.ReleaseItem(itemDQ)
-                    itemDQ := null
-    member x.ReleaseAllItems(bHaveLock : bool) =
-        if (Interlocked.CompareExchange(bRelease, 1, 0)=0) then
-            if (bHaveLock) then
-                x.ReleaseAllItemsInternal()
-            else
-                lock (lockProc) (fun _ ->
-                    x.ReleaseAllItemsInternal()
-                )
+    // must be called inside a lockProc
+    member private x.ReleaseAllItems() =
+        if (not bRelease) then
+            isTerminated <- true
+            let itemDQ : 'T ref = ref Unchecked.defaultof<'T>
+            if (Utils.IsNotNull !item) then
+                x.ReleaseItem(item)
+                item := null
+            if (Utils.IsNotNull x.Q) then
+                while (not x.Q.IsEmpty) do
+                    let (success, event) = x.Q.DequeueWait(itemDQ)
+                    if (success) then
+                        x.ReleaseItem(itemDQ)
+                        itemDQ := null
+            bRelease <- true
 
     // default CloseAction by setting next component to close in pipeline 
     // this gets called once bIsClosed is true && queue is empty, triggers next component to close
@@ -930,20 +925,20 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
                 | None -> ()
                 | Some(nextClose) -> nextClose()
 
-    // default terminate action, called immediately
-    /// A default "Terminate" function which can be used
-    /// <param name="self">A reference to the component</param>
-    /// <param name="nextComponent">A reference to next component in pipeline - can be set to null</param>
-    /// <param name="triggerNext">An option for code to execute after terminate done</param>
-    static member DefaultTerminate<'TN when 'TN:null and 'TN:equality>
-        (self : Component<'T>) (nextComponent : Component<'TN>) (triggerNext : Option<unit->unit>) () =
-        if (Interlocked.Increment(self.TerminateDone) = 0) then
-            if (Utils.IsNotNull nextComponent) then
-                nextComponent.ReleaseAllItems(false)
-                nextComponent.Terminate()
-            match triggerNext with
-                | None -> ()
-                | Some(nextTerminate) -> nextTerminate()
+//    // default terminate action, called immediately
+//    /// A default "Terminate" function which can be used
+//    /// <param name="self">A reference to the component</param>
+//    /// <param name="nextComponent">A reference to next component in pipeline - can be set to null</param>
+//    /// <param name="triggerNext">An option for code to execute after terminate done</param>
+//    static member DefaultTerminate<'TN when 'TN:null and 'TN:equality>
+//        (self : Component<'T>) (nextComponent : Component<'TN>) (triggerNext : Option<unit->unit>) () =
+//        if (Interlocked.Increment(self.TerminateDone) = 0) then
+//            if (Utils.IsNotNull nextComponent) then
+//                nextComponent.ReleaseAllItems()
+//                nextComponent.Terminate()
+//            match triggerNext with
+//                | None -> ()
+//                | Some(nextTerminate) -> nextTerminate()
 
     // default connect to next component
     // should not be internal, but can only be non-internalized if ThreadPoolWithWaitHandles is non-internalized
@@ -961,30 +956,29 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
         (nextComponent : Component<'TN>) (nextClose : Option<unit->unit>) (nextTerminate : Option<unit->unit>) =
         x.Dequeue <- q.DequeueWait
         x.Close <- Component<'T>.DefaultClose x nextComponent nextClose
-        x.Terminate <- Component<'T>.DefaultTerminate x nextComponent nextTerminate
+        //x.Terminate <- Component<'T>.DefaultTerminate x nextComponent nextTerminate
         compBase.Notify <- Component<_>.ChangeQTime threadPool x nextComponent adjustOwnEnqueue
 
     // self-close component (only use at ends of pipeline, intermediate components close automatically through CloseAction)
     /// Self close the component and start closing the pipeline
     abstract SelfClose : unit->unit
     default x.SelfClose() =
-        x.Closed <- true
-        // force a dequeue
-        if (Utils.IsNotNull x.Q) then
-            x.Q.Full.Set() |> ignore
+        lock (lockProc) (fun _ ->
+            x.Closed <- true
+            // force a dequeue
+            if (Utils.IsNotNull x.Q) then
+                x.Q.Full.Set() |> ignore
+        )
 
     /// Self terminate the component and start terminating the pipeline
     abstract SelfTerminate : unit->unit
     default x.SelfTerminate() =
-        // clear the queue
         lock (lockProc) (fun _ ->
-            x.ReleaseAllItems(true)
-            if (Utils.IsNotNull x.Q) then
-                x.Q.Clear()
-            isTerminated <- true
+            // clear the queue
+            x.ReleaseAllItems()
             // clear other queues down the line
-            x.Terminate()
-            x.SelfClose()
+            //x.Terminate()
+            //x.SelfClose()
             // if waiting for event, set it
             // other thread may execute Process again and handle may be incorrect, however
             //    it does not matter as "IsTerminated" has already been set to true
