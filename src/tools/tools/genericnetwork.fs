@@ -480,7 +480,8 @@ and [<AllowNullLiteral>] GenericConn() as x =
             x.ContinueReceive(null, false)
         else
             // no data received, call again with same SocketAsyncEventArgs after some time
-            PoolTimer.AddTimer(x.ReceiveAfterSomeTime e, 5L)
+            //PoolTimer.AddTimer(x.ReceiveAfterSomeTime e, 5L)
+            x.CloseConnection()
 
     /// The function to call to enqueue received SocketAsyncEventArgs
     member val RecvQEnqueue = xRecvC.Q.EnqueueWaitTime with get, set
@@ -699,19 +700,25 @@ and [<AllowNullLiteral>] GenericConn() as x =
             bDone <- false
         (bDone, event)
 
+    member val private Disposed = false with get, set
     interface IDisposable with
         /// Releases all resources used by the current instance.
         member x.Dispose() = 
-            if (Utils.IsNotNull eSendSA) then
-                (eSendSA :> IDisposable).Dispose()
-            if (Utils.IsNotNull eRecvSA) then
-                (eRecvSA :> IDisposable).Dispose()
-            (xSendC :> IDisposable).Dispose()
-            (xRecvC :> IDisposable).Dispose()
-            cts.Dispose()
-            tokenTimer.Dispose()
-            tokenWaitHandle.Dispose()
-            eSendStackWait.Dispose()
-            eSendFinished.Dispose()
-            eSendFinished <- null
-            GC.SuppressFinalize(x)
+            if (not x.Disposed) then
+                lock (x) (fun _ ->
+                    if (not x.Disposed) then
+                        if (Utils.IsNotNull eSendSA) then
+                            (eSendSA :> IDisposable).Dispose()
+                        if (Utils.IsNotNull eRecvSA) then
+                            (eRecvSA :> IDisposable).Dispose()
+                        (xSendC :> IDisposable).Dispose()
+                        (xRecvC :> IDisposable).Dispose()
+                        cts.Dispose()
+                        tokenTimer.Dispose()
+                        tokenWaitHandle.Dispose()
+                        eSendStackWait.Dispose()
+                        eSendFinished.Dispose()
+                        eSendFinished <- null
+                        GC.SuppressFinalize(x)
+                        x.Disposed <- true
+                )

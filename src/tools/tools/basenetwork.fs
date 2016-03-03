@@ -810,17 +810,23 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
 
     override x.Finalize() =
         /// Close All Active Connection, to be called when the program gets shutdown.
-        x.ReleaseAllItems()
+        x.ReleaseAllItems(false)
 
     /// Standard form for all class that use CleanUp service
+    member val private Disposed = false with get, set
     interface IDisposable with
         /// Close All Active Connection, to be called when the program gets shutdown.
         member x.Dispose() = 
-            x.ReleaseAllItems()
-            if Utils.IsNotNull q then
-                (q :> IDisposable).Dispose()
-                q <- null
-            GC.SuppressFinalize(x)
+            if (not x.Disposed) then
+                lock(lockProc) (fun _ ->
+                    if (not x.Disposed) then
+                        x.ReleaseAllItems(true)
+                        if Utils.IsNotNull q then
+                            (q :> IDisposable).Dispose()
+                            q <- null
+                        GC.SuppressFinalize(x)
+                        x.Disposed <- true
+                )
 
     // accessors
     member internal x.Item with get() = item
@@ -844,12 +850,14 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
 
         let setTime(timeMs) =
             let q : BaseQ<'T> = comp.Q
-            q.WaitTimeDequeueMs <- timeMs
-            if adjustOwnEnqueue then
-                q.WaitTimeEnqueueMs <- timeMs
+            if (Utils.IsNotNull q) then
+                q.WaitTimeDequeueMs <- timeMs
+                if adjustOwnEnqueue then
+                    q.WaitTimeEnqueueMs <- timeMs
             if Utils.IsNotNull compN then
                 let qN : BaseQ<'TN> = compN.Q
-                qN.WaitTimeEnqueueMs <- timeMs
+                if (Utils.IsNotNull qN) then
+                    qN.WaitTimeEnqueueMs <- timeMs
 
         if Utils.IsNotNull tpool then
             let count = s.Items.Count
@@ -883,21 +891,26 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
     member private x.ProcCount with get() = procCount and set(v) = procCount <- v
     member private x.CompBase with get() = compBase
 
-    member x.ReleaseAllItems() =
+    member private x.ReleaseAllItemsInternal() =
+        isTerminated <- true
+        let itemDQ : 'T ref = ref Unchecked.defaultof<'T>
+        if (Utils.IsNotNull !item) then
+            x.ReleaseItem(item)
+            item := null
+        if (Utils.IsNotNull x.Q) then
+            while (not x.Q.IsEmpty) do
+                let (success, event) = x.Q.DequeueWait(itemDQ)
+                if (success) then
+                    x.ReleaseItem(itemDQ)
+                    itemDQ := null
+    member x.ReleaseAllItems(bHaveLock : bool) =
         if (Interlocked.CompareExchange(bRelease, 1, 0)=0) then
-            lock (lockProc) (fun _ ->
-                isTerminated <- true
-                let itemDQ : 'T ref = ref Unchecked.defaultof<'T>
-                if (Utils.IsNotNull !item) then
-                    x.ReleaseItem(item)
-                    item := null
-                if (Utils.IsNotNull x.Q) then
-                    while (not x.Q.IsEmpty) do
-                        let (success, event) = x.Q.DequeueWait(itemDQ)
-                        if (success) then
-                            x.ReleaseItem(itemDQ)
-                            itemDQ := null
-            )
+            if (bHaveLock) then
+                x.ReleaseAllItemsInternal()
+            else
+                lock (lockProc) (fun _ ->
+                    x.ReleaseAllItemsInternal()
+                )
 
     // default CloseAction by setting next component to close in pipeline 
     // this gets called once bIsClosed is true && queue is empty, triggers next component to close
@@ -926,7 +939,7 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
         (self : Component<'T>) (nextComponent : Component<'TN>) (triggerNext : Option<unit->unit>) () =
         if (Interlocked.Increment(self.TerminateDone) = 0) then
             if (Utils.IsNotNull nextComponent) then
-                nextComponent.ReleaseAllItems()
+                nextComponent.ReleaseAllItems(false)
                 nextComponent.Terminate()
             match triggerNext with
                 | None -> ()
@@ -965,7 +978,7 @@ type [<AllowNullLiteral>] Component<'T when 'T:null and 'T:equality>() =
     default x.SelfTerminate() =
         // clear the queue
         lock (lockProc) (fun _ ->
-            x.ReleaseAllItems()
+            x.ReleaseAllItems(true)
             if (Utils.IsNotNull x.Q) then
                 x.Q.Clear()
             isTerminated <- true
