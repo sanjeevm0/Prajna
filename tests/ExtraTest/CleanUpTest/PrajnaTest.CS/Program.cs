@@ -37,13 +37,20 @@ namespace PrajnaTest.CS
 
         static void Main(string[] args)
         {
-            Logger.ParseArgs(args);
+            var parse = new Prajna.Tools.ArgumentParser(args);
+            var clusterFile = parse.ParseString("-cluster", "cluster.lst");
+            //Logger.ParseArgs(args);
+
+            string[] local = new string[2] {"a.bin", "b.bin"};
+            JobDependencies.Current.Add(local);
+            //var localRemote = new Tuple<string, string>(@"c:\sort\raw\raw.bin", "a.bin");
+            //JobDependencies.Current.AddLocalRemote(localRemote);
 
             Console.WriteLine("Init...");
             Prajna.Core.Environment.Init();
             Console.WriteLine("Init done.");
 
-            var cluster = new Cluster("cluster.lst");
+            var cluster = new Cluster(clusterFile);
             var nodes = cluster.Nodes;
             //var cluster = new Cluster("local[2]");
             Console.WriteLine($"nodes = {cluster.NumNodes}");
