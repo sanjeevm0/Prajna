@@ -1233,7 +1233,7 @@ type [<AllowNullLiteral>]
                     let cl = Cluster.Unpack( ms )
                     cl 
                 let cluster = ClusterFactory.GetOrAddCluster( clusterName, clusterVersion, addFunc )
-                for peeri = 0 to cluster.NumNodes do 
+                for peeri = 0 to cluster.NumNodes - 1 do 
                     let node = cluster.Nodes.[peeri]
                     lstServers.Add( node.MachineName, node.MachinePort)
                     x.ServerInCluster.GetOrAdd( node.MachineName, true ) |> ignore 
@@ -1297,7 +1297,7 @@ type [<AllowNullLiteral>]
                             let ch = NetworkConnections.Current.LookforConnectBySignature( oldEntry )
                             if Utils.IsNotNull ch then 
                                 // Close the outdated queue
-                                ch.Terminate() 
+                                ch.Close()
                             x.ResolvedServerNameToIP.TryRemove( serverEntry ) |> ignore 
                         if bReconnect then 
                             let sig64 = LocalDNS.IPv4AddrToInt64( addrList.[0], port)
