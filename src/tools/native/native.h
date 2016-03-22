@@ -147,6 +147,18 @@ protected:
     }
 
 public:
+    // no callback supported
+    IOCallback(HANDLE hFile) : m_hFile(hFile)
+    {
+        m_cs = new CRITICAL_SECTION;
+        m_ptp = nullptr;
+        m_numTp = 0;
+        m_tpio = nullptr;
+        m_pfn = nullptr;
+        m_state = nullptr;
+        InitializeCriticalSection(m_cs);
+    }
+
     // last two arguments can be null if universal state & callback is not being used
     IOCallback(HANDLE hFile, int numTP, TPIO **tpio, CallbackFn *pfn, void *pState) : m_hFile(hFile)
     {

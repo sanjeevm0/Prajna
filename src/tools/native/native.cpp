@@ -279,6 +279,11 @@ namespace Prajna {
                 int m_offset;
 
             public:
+                static IOState()
+                {
+                    IOState<T>::StaticInit();
+                }
+
                 IOState() : IOStateBase()
                 {
                     IOState<T>::StaticInit();
@@ -392,9 +397,12 @@ namespace Prajna {
                         m_cb->Close();
                         delete m_cb;
                         m_cb = nullptr;
-                        for (i = 0; i < m_numTPIO; i++)
-                            delete m_tpio[i];
-                        delete[] m_tpio;
+                        if (nullptr != m_tpio)
+                        {
+                            for (i = 0; i < m_numTPIO; i++)
+                                delete m_tpio[i];
+                            delete[] m_tpio;
+                        }
                     }
                     //ICollection<Object^>^ cb = (ICollection<Object^>^)m_cbFns;
                 }
@@ -438,12 +446,13 @@ namespace Prajna {
                     Free();
                 }
 
-                static IntPtr OpenFileHandle(String^ name, FileAccess access, FileOptions fOpt, bool bBufferLess)
+                static IntPtr OpenFileHandle(String^ name, FileAccess access, FileOptions fOpt, UInt32 otherFlags, FileShare share, bool bBufferLess)
                 {
                     array<Char> ^nameArr = name->ToCharArray();
                     pin_ptr<Char> namePtr = &nameArr[0];
                     Char *pName = (Char*)namePtr;
                     int dwFlags = (int)fOpt;
+                    dwFlags |= otherFlags;
                     if (bBufferLess)
                         dwFlags |= FILE_FLAG_NO_BUFFERING;
                     Int32 accessMode = 0;
@@ -467,7 +476,12 @@ namespace Prajna {
                         creation = OPEN_ALWAYS;
                         break;
                     }
-                    return (IntPtr)CreateFile(pName, accessMode, FILE_SHARE_READ, nullptr, creation, dwFlags, nullptr);
+                    return (IntPtr)CreateFile(pName, accessMode, (DWORD)share, nullptr, creation, dwFlags, nullptr);
+                }
+
+                static IntPtr OpenFileHandle(String^ name, FileAccess access, FileOptions fOpt, bool bBufferLess)
+                {
+                    return OpenFileHandle(name, access, fOpt, 0, FileShare::Read, bBufferLess);
                 }
 
                 void InitIO(FileAccess access, FileOptions fOpt, bool bBufferLess)
