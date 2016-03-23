@@ -495,6 +495,7 @@ type Network() =
         with e->
             ()
         if (Utils.IsNotNull socket) then
+            socket.NoDelay <- true
             // add connection to dictionary and start receiving on socket
             let conn = newFn()
             x.InitConn(conn, socket, state)

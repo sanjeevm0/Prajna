@@ -791,6 +791,7 @@ type internal Listener =
                 Logger.LogF( LogLevel.WildVerbose, (fun _ -> sprintf "Exception when repost BeginAccept: %A" e ) )
             try
                 let soc = x.Listener.EndAccept( ar )
+                soc.NoDelay <- true
                 let queue = x.ConnectsClient.AddPeerConnect( soc ) 
                 queue.CallOnClose.Add ( OnPeerClose( CallbackOnClose = x.RemoveConnectedQueue queue ) )
                 // add processing for command 

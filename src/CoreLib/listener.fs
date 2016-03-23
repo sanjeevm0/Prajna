@@ -75,6 +75,7 @@ type JobListener() =
            try 
                 let soc = x.Listener.Accept() 
                 if Utils.IsNotNull soc then 
+                    soc.NoDelay <- true
                     let queue = x.ConnectsClient.AddPeerConnect( soc ) 
                     x.OnAcceptedExecutor.Trigger( queue, fun _ -> sprintf "from %s" (LocalDNS.GetShowInfo(queue.RemoteEndPoint)) )
                     // Post another listening request. 
@@ -163,6 +164,7 @@ type JobListener() =
                 Logger.LogF( LogLevel.WildVerbose, (fun _ -> sprintf "Exception when repost BeginAccept: %A" e ))
             try
                 let soc = x.Listener.EndAccept( ar )
+                soc.NoDelay <- true
                 // add queue
                 let queue = x.ConnectsClient.AddPeerConnect( soc ) 
                 queue.Initialize()
