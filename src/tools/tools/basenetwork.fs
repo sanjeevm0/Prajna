@@ -326,7 +326,7 @@ type GenericBuf(conn : IConn, maxBufferSize : int) as x =
     /// The length of data to be read
     /// </param>
     member x.AsyncRecvBuf(callback : obj*byte[]*int*int->unit, state : obj, bufferOffset : int, bufferSize : int) =
-        if (bufferOffset + bufferSize <= maxBufferSize) then
+        if (bufferOffset + bufferSize <= maxBufferSize && bufferSize >= 0) then
             eRecvBuf.UserToken <- (callback, state, bufferOffset)
             recvBufferSize <- bufferSize
             eRecvBuf.SetBuffer(bufferOffset, bufferSize)
