@@ -44,7 +44,7 @@ type DSetTests () =
     member x.DSetSourceTest() =       
         let guid = Guid.NewGuid().ToString("D")
         let dset = DSet<_> ( Name = guid, Cluster = cluster)
-        let result = (dset |> DSet.source ( fun () -> seq { yield (sprintf "%i-%i" (System.Diagnostics.Process.GetCurrentProcess().Id) (Thread.CurrentThread.ManagedThreadId)) })).ToSeq() |> Array.ofSeq
+        let result = (dset |> DSet.source ( fun () -> seq { yield (sprintf "%i-%i-%i" (System.Diagnostics.Process.GetCurrentProcess().Id) (System.AppDomain.CurrentDomain.Id) (Thread.CurrentThread.ManagedThreadId)) })).ToSeq() |> Array.ofSeq
 
         Assert.IsNotEmpty(result)
         Assert.AreEqual(clusterSize, result.Length)
