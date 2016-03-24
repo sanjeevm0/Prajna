@@ -49,7 +49,7 @@ type DSetTests () =
         Assert.IsNotEmpty(result)
         Assert.AreEqual(clusterSize, result.Length)
         Console.WriteLine("0: {0} 1: {1}", result.[0], result.[1])
-        //Assert.IsTrue(result.[0] <> result.[1])
+        Assert.IsTrue(result.[0] <> result.[1])
 
     [<Test(Description = "Test for DSet.sourceN")>]
     member x.DSetSourceNTest() =       
