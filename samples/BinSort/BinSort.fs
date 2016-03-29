@@ -2,6 +2,7 @@
 open System.IO
 open System.Diagnostics
 open System.Runtime.InteropServices
+open System.Collections
 open System.Collections.Generic
 open System.Collections.Concurrent
 open System.Threading
@@ -66,7 +67,8 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
     member val internal InMemory : bool = false with get, set
     member val internal Allocate : bool = false with get, set
     member val internal MemoryPool : SharedMemoryPool<RefCntBufAlign<byte>,byte> = null with get, set
-    member val internal WriteStream = ConcurrentDictionary<int, BufferListStreamWithCache<byte,RefCntBufAlign<byte>>>() with get, set
+    member val internal WriteStream = ConcurrentDictionary<uint32, List<int>*Dictionary<int, int*BufferListStream<byte>>>() with get
+    member val internal SortEvent = ConcurrentDictionary<int, EventWaitHandle>() with get
 
     // init and start of remote instance ===================   
     member x.InitInstance(inMemory : bool) =
@@ -83,9 +85,6 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
                 segBoundary <- Array.init maxValPartition (fun i -> (int)(((int64 i)*(int64 furtherPartition))/(int64 maxValPartition)))
                 x.InMemory <- inMemory
         )
-
-    member x.GetNewBLS(fileName : string) (i) =
-        new BufferListStreamWithCache<byte,RefCntBufAlign<byte>>(fileName, x.MemoryPool)
 
     member x.StopInstance() =
         (x :> IDisposable).Dispose()
@@ -122,7 +121,6 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
         Remote.Current.GetCachePtr(parti)
 
     // ================================================================
-    // Make sure it is aligned by allocating 64-bit integer arrays
     member x.FurtherPartitionAndDispose(ms : StreamBase<byte>) =
         ms.Seek(0L, SeekOrigin.Begin) |> ignore
         let parti = ms.ReadUInt32()
@@ -131,26 +129,38 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
         while (ms.Read(vec, 0, dim) = dim) do
             let index0 = ((int vec.[0]) <<< 8) ||| (int vec.[1])
             let index1 = ((index0 - minSegVal.[int parti]) <<< 8) ||| (int vec.[2])
-            let segIndex = segBoundary.[index1]
-            let bls =
-                if (x.WriteStream.ContainsKey(segIndex)) then
-                    x.WriteStream.[segIndex]
-                else                                    
-                    lock (x.WriteStream) (fun _ ->
-                        x.SegmentCnt <- x.SegmentCnt + 1
-                        let dirIndex = segIndex % x.PartDataDir.Length
-                        let fileName = Path.Combine(x.PartDataDir.[dirIndex], sprintf "%d.bin" segIndex)
-                        x.GetNewBLS(fileName) segIndex    
-                    )
+            let segment = segBoundary.[index1]
+            let (segmentList, segmentDic) = x.WriteStream.GetOrAdd(parti, fun _ -> (List<int>(), Dictionary<int,(int*BufferListStream<byte>)>()))
+            let (segIndex, bls) =
+                if segmentDic.ContainsKey(index1) then
+                    segmentDic.[index1]
+                else
+                    segmentList.Add(index1)
+                    let segIndex = int(parti)*furtherPartition + index1
+                    let dirIndex = segIndex % x.PartDataDir.Length
+                    let fileName = Path.Combine(x.PartDataDir.[dirIndex], sprintf "%d.bin" segIndex)
+                    if (x.InMemory) then
+                        (segIndex, new BufferListStream<byte>())
+                    else
+                        let bls = new BufferListStreamWithCache<byte,RefCntBufAlign<byte>>(fileName) // does not open file
+                        bls.BufferLess <- true
+                        (segIndex, bls :> BufferListStream<byte>)
             bls.Write(vec, 0, vec.Length)
         (ms :> IDisposable).Dispose()
 
     static member FurtherPartitionAndDispose(ms) =
         Remote.Current.FurtherPartitionAndDispose ms
 
+    static member ToSeq(enum : IEnumerable) =
+        seq {
+            for e in enum do
+                yield e
+        }
+
     member internal x.GetCacheMemSubPartN(parti : int) : seq<_> =
-        if (x.SubPartitionN.ContainsKey(uint32 parti)) then 
-            Seq.ofArray(x.SubPartitionN.[uint32 parti])
+        if (x.WriteStream.ContainsKey(uint32 parti)) then 
+            //Remote.ToSeq(x.WriteStream.[uint32 parti])
+            seq (fst x.WriteStream.[uint32 parti])
         else
             Seq.empty
 
@@ -158,11 +168,12 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
         Remote.Current.GetCacheMemSubPartN(parti)
 
     member x.ClearCacheMemSubPartN(parti : uint32) =
-        if (x.SubPartitionN.ContainsKey(parti)) then 
-            if (Utils.IsNotNull x.SubPartitionN.[parti]) then
-                for elem in x.SubPartitionN.[parti] do
-                    let (segIndex, cnt, arr) = elem
-                    cnt := 0L
+        if (x.WriteStream.ContainsKey(parti)) then
+            if (Utils.IsNotNull x.WriteStream.[parti]) then
+                for elem in (snd x.WriteStream.[parti]) do
+                    let (segIndex, bls) = elem.Value
+                    (bls :> IDisposable).Dispose()
+            x.WriteStream.Clear()
 
     static member ClearCacheMemSubPartN parti =
         Remote.Current.ClearCacheMemSubPartN(parti)    
@@ -272,6 +283,28 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
 
     static member RepartitionMemStream (buffer) =
         Remote.Current.RepartitionMemStream (buffer)
+
+    // =========================================================
+
+
+
+    member x.BootstrapSort(parti : int, index1 : int) =
+        let (segList, segDic) = x.WriteStream.[uint32 parti]
+        if (index1 = segList.[0]) then
+            x.FlushReadSort(parti, index1, 0)
+
+    member x.FlushReadSort(parti : int, index1 : int, cnt : int) =
+        let (segList, segDic) = x.WriteStream.[uint32 parti]
+        let (segIndex, bls) = segDic.[index1]
+        match bls with
+            | :? BufferListStreamWithCache<byte,RefCntBufAlign<byte>> as blsC ->
+                blsC.Flush(true)
+                (blsC :> IDisposable).Dispose()
+            | _ -> () // keep in memory        
+
+    member x.SortIndex(parti : int, index1 : int, cnt : int) =
+        
+        
 
     member x.DoSortFile (parti : int, segIndex : int64, cnt : int64 ref) =
         x.FlushSegment(parti, segIndex)

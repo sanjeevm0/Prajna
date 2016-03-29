@@ -145,12 +145,12 @@ type [<AllowNullLiteral>] internal SharedPool<'K,'T when 'T :> IRefCounter<'K> a
         if (maxSize > 0) then
             x.Stack.MaxStackSize <- maxSize
 
-    member x.BaseAlloc (info : 'K) (elem : 'T) =
+    member internal x.SharedPoolAlloc (info : 'K) (elem : 'T) =
         elem.Release <- x.Release
 
     abstract Alloc : 'K->'T->unit
     default x.Alloc (info : 'K) (elem : 'T) =
-        x.BaseAlloc info elem
+        x.SharedPoolAlloc info elem
 
     abstract Release : IRefCounter<'K>->unit
     default x.Release(elem : IRefCounter<'K>) =
@@ -441,7 +441,7 @@ type RefCntBufAlign<'T>() =
         base.DisposeInternal()
 
 [<AllowNullLiteral>]
-type RefCntBufChunkAlign<'T>() =
+type RefCntBufChunkAlign<'T>() as x =
     inherit RefCntBuf<'T>()
 
     static let mutable currentChunk : ArrAlign<'T> = null
@@ -461,6 +461,11 @@ type RefCntBufChunkAlign<'T>() =
 
     member val private BufAlign : ArrAlign<'T> = null with get, set
 
+    member private x.NewChunk() =
+        new ArrAlign<'T>(RefCntBufChunkAlign<'T>.ChunkSize, RefCntBufChunkAlign<'T>.AlignBytes)
+
+    member val GetNextChunk = x.NewChunk with get, set
+
     override x.Ptr
         with get() =
             IntPtr.Add(x.BufAlign.GCHandle.AddrOfPinnedObject(), x.Offset*sizeof<'T>)
@@ -471,7 +476,7 @@ type RefCntBufChunkAlign<'T>() =
             lock (chunkLock) (fun _ ->
                 chunkOffset <- (chunkOffset + (align - 1))/align*align
                 if (null = currentChunk || chunkOffset + size > currentChunk.Size) then
-                    currentChunk <- new ArrAlign<'T>(RefCntBufChunkAlign<'T>.ChunkSize, RefCntBufChunkAlign<'T>.AlignBytes)
+                    currentChunk <- x.NewChunk()
                     chunkOffset <- 0
                     chunkCount <- ref 1
                 else
@@ -483,6 +488,8 @@ type RefCntBufChunkAlign<'T>() =
             )
         x.BufAlign <- xBuf
         x.SetBuffer(x.BufAlign.Arr, xOffset, size)
+
+    member x.CurrentChunk with get() = currentChunk
 
     override x.Alloc(size : int) =
         x.Alloc(size, RefCntBufChunkAlign<'T>.AlignBytes)
@@ -635,11 +642,14 @@ type [<AllowNullLiteral>] internal SharedMemoryPool<'T,'TBase when 'T :> RefCntB
         let x = new SharedMemoryPool<'T,'TBase>(initSize, maxSize, bufSize, RefCntBuf<'TBase>.InitForIO, infoStr)
         x
 
-    override x.Alloc (infoStr : string) (elem : 'T) =
-        x.BaseAlloc (infoStr) (elem)
+    member internal x.SharedMemoryPoolAlloc (infoStr : string) (elem : 'T) =
+        x.SharedPoolAlloc infoStr elem
         elem.Alloc(x.BufSize)
         elem.SetKey(infoStr + ":" + elem.Id.ToString())
         x.InitFunc(elem)
+
+    override x.Alloc (infoStr : string) (elem : 'T) =
+        x.SharedMemoryPoolAlloc infoStr elem
 
     override x.GetElem(infoStr : string) =
         let (event, elem) = base.GetElem(infoStr)
@@ -660,6 +670,36 @@ type [<AllowNullLiteral>] internal SharedMemoryPool<'T,'TBase when 'T :> RefCntB
     interface IDisposable with
         override x.Dispose() =
             x.disposer.Run(x.Dispose)
+
+type [<AllowNullLiteral>] internal SharedMemoryChunkPool<'TBase>
+    (initSize : int, maxSize : int, bufSize : int, initFn : RefCntBufChunkAlign<'TBase> -> unit, infoStr : string) =
+    inherit SharedMemoryPool<RefCntBufChunkAlign<'TBase>,'TBase>(initSize, maxSize, bufSize, initFn, infoStr)
+    let allocDic = ConcurrentQueue<ArrAlign<'TBase>>()
+    let usedDic = ConcurrentDictionary<ArrAlign<'TBase>,bool>()
+
+    member internal x.SharedMemoryChunkPoolAlloc (infoStr : string) (elem : RefCntBufChunkAlign<'TBase>) =
+        x.SharedMemoryPoolAlloc infoStr elem
+
+    member x.GetMem() =
+        let (ret, elem) = allocDic.TryDequeue()
+        if (ret) then
+            elem
+        else
+            new ArrAlign<'TBase>(RefCntBufChunkAlign<'TBase>.ChunkSize, RefCntBufChunkAlign<'TBase>.AlignBytes)
+
+    override x.Alloc (infoStr : string) (elem : RefCntBufChunkAlign<'TBase>) =
+        x.SharedMemoryChunkPoolAlloc infoStr elem
+        elem.GetNextChunk <- x.GetMem
+        usedDic.GetOrAdd(elem.CurrentChunk, true) |> ignore
+
+    member private x.UsedDic with get() = usedDic
+    member private x.AllocDic with get() = allocDic
+
+    static member ReusePool(poolUse : SharedMemoryChunkPool<'TBase>, initSize, maxSize, bufSize, initFn, infoStr) =
+        let x = new SharedMemoryChunkPool<'TBase>(initSize, maxSize, bufSize, initFn, infoStr)
+        for e in poolUse.UsedDic do
+            x.AllocDic.Enqueue(e.Key)
+        x
 
 // put counter in separate class as classes without primary constructor do not allow let bindings
 // and static val fields cannot be easily initialized, also makes it independent of type 'T
@@ -2139,6 +2179,15 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
     override x.Flush() =
         x.WriteBuffers() // flush internal buffers to backing stream
 
+    member x.GetBufferInto(buf : byte[], offset : int) : int =
+        x.Flush() // flush to backing stream
+        if (buf.Length - offset < int x.Length) then
+            failwith "Insufficient space in buffer"
+            0
+        else
+            x.FillBuffer(buf, offset)
+            int x.Length     
+
     member internal x.ReplicateFrom(bls : BufferListStreamWithBackingStream<'T,'TP>) =
         bls.WriteBuffers()
         x.Pool <- bls.Pool
@@ -2160,6 +2209,7 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
     member val WaitForIOFinish : unit->unit = (fun _ -> failwith "WaitForIOFinish not implemented") with get, set
     member val FillWithRead : RBufPart<'T>->unit = (fun _ -> failwith "FillWithRead not implemented") with get, set
     member val FlushToBackingStream : RBufPart<'T>->unit = (fun _ -> failwith "FlushToBackingStream not implemented") with get, set
+    member val FillBuffer : byte[]*int->unit = (fun _ -> failwith "FillBuffer not implemented") with get, set
 
     // split virtual element "i" to create a (virtual, valid, virtual) or (valid, virtual)
     member private x.SplitVirtual(i : int, pos : int64, elemUse :RBufPart<'T>) =

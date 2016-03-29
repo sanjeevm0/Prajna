@@ -56,6 +56,11 @@
       <Project>{b4a6b9fa-a35b-4adb-ac15-6cca66225921}</Project>
       <Private>True</Private>
     </ProjectReference>
+    <ProjectReference Include="..\..\src\tools\native\native.vcxproj">
+      <Name>native</Name>
+      <Project>{815dc1fb-2327-4f69-84ff-cfdc59617de7}</Project>
+      <Private>True</Private>
+    </ProjectReference>
     <ProjectReference Include="..\..\src\tools\tools\Tools.fsproj">
       <Name>Tools (src\Tools\Tools)</Name>
       <Project>{159bb552-8346-4313-8e10-43b88beca63b}</Project>
