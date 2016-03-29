@@ -43,7 +43,7 @@ open Prajna.Tools.FSharp
 /// An array which maintains alignment in memory (for use by native code)
 /// <param name="size">The number of elements of type 'T</param>
 /// <param name="align">The alignment required as number of bytes</param>
-type [<AllowNullLiteral>] internal ArrAlign<'T>(size : int, alignBytes : int) =
+type [<AllowNullLiteral>] ArrAlign<'T>(size : int, alignBytes : int) =
     do
         if (alignBytes/sizeof<'T>*sizeof<'T> <> alignBytes) then
             raise (Exception("Invalid alignment size - must be multiple of element size"))
@@ -405,7 +405,7 @@ type [<AllowNullLiteral>] RefCntBuf<'T>() =
             disposer.Run(x.DisposeInternal)
 
 [<AllowNullLiteral>]
-type internal RefCntBufAlign<'T>() =
+type RefCntBufAlign<'T>() =
     inherit RefCntBuf<'T>()
 
     let mutable bufAlign : ArrAlign<'T> = null
