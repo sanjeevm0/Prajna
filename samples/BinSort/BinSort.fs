@@ -31,9 +31,6 @@ let Usage = "
 [<Serializable>]
 // create an instance of this class at remote side
 type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode : int, furtherPartition : int, recordsPerNode : int64) =
-    static let readBlockRecords = 1000*1024
-    static let numWriteRange = 2
-
     let totalRecords = int64(numNodes) * recordsPerNode
     let totalInPartitions = int64(numNodes) * int64(numInPartPerNode)
     let totalOutPartitions = int64(numNodes) * int64(numOutPartPerNode)
@@ -50,8 +47,10 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
 
     // for file I/O
     let alignLen = (dim + 7)/8*8
-    // make it multiple of numWriteRange
-    let cacheLenPerSegment = ((1000000L/4L)/int64 numWriteRange*int64 numWriteRange) * int64(alignLen) / int64(dim)
+    let cacheLenPerSegment =  Remote.NumCacheRecords * int64(alignLen) / int64(dim)
+
+    static member val ReadRecords = 1000*1024 with get, set
+    static member val NumCacheRecords = (1000000L/4L) with get, set
 
     // properties
     member x.Dim with get() = dim
@@ -82,7 +81,10 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
                     else
                         cacheLenPerSegment
                 x.MemoryPool <- new SharedMemoryChunkPool<byte>(2*(int outSegmentsPerNode), 2*(int outSegmentsPerNode), int memoryPoolLen, (fun _ -> ()), "RepartitionPool")
-                x.SortPool <- SharedMemoryChunkPool<byte>.ReusePool(x.MemoryPool, numOutPartPerNode*2, numOutPartPerNode*2, int maxSubPartitionLen, (fun _ -> ()), "SortPool")
+                if (not x.InMemory) then
+                    // to reuse memory for sort pool, would have to close all streams first
+                    //x.SortPool <- SharedMemoryChunkPool<byte>.ReusePool(x.MemoryPool, numOutPartPerNode*2, numOutPartPerNode*2, int maxSubPartitionLen, (fun _ -> ()), "SortPool")
+                    x.SortPool <- new SharedMemoryChunkPool<byte>(numOutPartPerNode*2, numOutPartPerNode*2, int maxSubPartitionLen, (fun _ -> ()), "SortPool")
                 // boundaries for repartitioning (Shuffling)
                 partBoundary <- Array.init 65536 (fun i -> Math.Min(int(totalOutPartitions)-1,(int)(((int64 i)*(int64 totalOutPartitions))/65536L)))
                 // boundaries for further binning at each node
@@ -153,7 +155,8 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
                         bls.BufferLess <- true
                         bls.SequentialWrite <- true
                         (segIndex, bls :> BufferListStream<byte>)
-            bls.Write(vec, 0, vec.Length)
+            //bls.Write(vec, 0, vec.Length)
+            bls.WriteConcurrent(vec, 0, vec.Length, 1)
         (ms :> IDisposable).Dispose()
 
     static member FurtherPartitionAndDispose(ms) =
@@ -197,11 +200,13 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
     // ================================================================================
     member val private ReadCnt = ref -1 with get
     member val private RawDataDir : string[] = [|@"c:\sort\raw"; @"d:\sort\raw"; @"e:\sort\raw"; @"f:\sort\raw"|] with get, set
-    member val PartDataDir : string[] = [|@"c:\sort\part"; @"d:\sort\part"; @"e:\sort\part"; @"f:\sort\part"|] with get, set
-    member val SortDataDir : string[] = [|@"c:\sort\sort"; @"d:\sort\sort"; @"e:\sort\sort"; @"f:\sort\sort"|] with get, set
+    //member val PartDataDir : string[] = [|@"c:\sort\part"; @"d:\sort\part"; @"e:\sort\part"; @"f:\sort\part"|] with get, set
+    //member val SortDataDir : string[] = [|@"c:\sort\sort"; @"d:\sort\sort"; @"e:\sort\sort"; @"f:\sort\sort"|] with get, set
+    member val PartDataDir : string[] = [|@"e:\sort\part"; @"f:\sort\part"|] with get, set
+    member val SortDataDir : string[] = [|@"e:\sort\sort"; @"f:\sort\sort"|] with get, set
 
     member x.ReadFilesToMemStream dim parti =
-        let readBlockSize = readBlockRecords * dim
+        let readBlockSize = Remote.ReadRecords * dim
         let tbuf = Array.zeroCreate<byte> readBlockSize          
         let counter = ref 0
         let totalReadLen = ref 0L
@@ -228,7 +233,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
         Remote.Current.ReadFilesToMemStream dim parti
 
     member x.ReadFilesToMemStreamF dim parti =
-        let readBlockSize = readBlockRecords * dim
+        let readBlockSize = Remote.ReadRecords * dim
         let tbuf = Array.zeroCreate<byte> readBlockSize
         let rand = new Random()
         rand.NextBytes(tbuf)            
@@ -334,7 +339,9 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
             (rpart :> IDisposable).Dispose()
         else
             // write out to file which will dispose rpart
-            let filename = (bls :?> BufferListStreamWithCache<byte,RefCntBufAlign<byte>>).FileName + ".sorted"
+            //let filename = (bls :?> BufferListStreamWithCache<byte,RefCntBufAlign<byte>>).FileName + ".sorted"
+            let dirIndex = segIndex % x.PartDataDir.Length
+            let filename = Path.Combine(x.SortDataDir.[dirIndex], sprintf "%d.bin" segIndex)
             let diskIO = DiskIO.OpenFile(filename, FileOptions.Asynchronous ||| FileOptions.WriteThrough, true)
             rpart.Type <- RBufPartType.Virtual
             DiskIOFn<byte>.WriteBuffer(rpart, diskIO, 0L)
@@ -377,7 +384,7 @@ let fullSort(sort : Remote, remote : DSet<_>, inMemory : bool) =
 
     // Read Data into DSet
     let dset1 = 
-        if (inMemory) then
+        if (inMemory || true) then
             startDSet |> DSet.sourceI (int sort.InPartitions) (Remote.ReadFilesToMemStreamFS sort.Dim)
         else
             startDSet |> DSet.sourceI (int sort.InPartitions) (Remote.ReadFilesToMemStreamS sort.Dim)
@@ -423,14 +430,26 @@ let fullSort(sort : Remote, remote : DSet<_>, inMemory : bool) =
 let main orgargs = 
     let args = Array.copy orgargs
     let parse = ArgumentParser(args)
-    let PrajnaClusterFile = parse.ParseString( "-cluster", "c:\onenet\cluster\onenet21-25.inf" )
-    let nDim = parse.ParseInt( "-dim", 100 )
-    let recordsPerNode = parse.ParseInt64( "-records", 250000000L ) // records per node
+    //let PrajnaClusterFile = parse.ParseString( "-cluster", "c:\onenet\cluster\onenet21-25.inf" )
+    let PrajnaClusterFile = parse.ParseString("-cluster", "local[2]")
+    let mutable nDim = parse.ParseInt( "-dim", 100 )
+    let mutable recordsPerNode = parse.ParseInt64( "-records", 250000000L ) // records per node
     //let recordsPerNode = parse.ParseInt64("-records", 100000000L)
-    let numInPartPerNode = parse.ParseInt( "-nfile", 8 ) // number of partitions (input)
-    let numOutPartPerNode = parse.ParseInt( "-nump", 8 ) // number of partitions (output)
-    let furtherPartition = parse.ParseInt("-fnump", 2500) // further binning for improved sort performance
-    let inMemory = parse.ParseBoolean("-inmem", false)
+    let mutable numInPartPerNode = parse.ParseInt( "-nfile", 8 ) // number of partitions (input)
+    let mutable numOutPartPerNode = parse.ParseInt( "-nump", 8 ) // number of partitions (output)
+    let mutable furtherPartition = parse.ParseInt("-fnump", 2500) // further binning for improved sort performance
+    let mutable inMemory = parse.ParseBoolean("-inmem", false)
+
+    // simple test case
+    nDim <- 10
+    recordsPerNode <- 160L
+    numInPartPerNode <- 2
+    numOutPartPerNode <- 2
+    furtherPartition <- 4
+    inMemory <- false
+    Remote.ReadRecords <- 40
+    Remote.NumCacheRecords <- 5L
+    MemoryStreamB.InitMemStack(100, 50)
 
     let bAllParsed = parse.AllParsed Usage
     let mutable bExecute = false
