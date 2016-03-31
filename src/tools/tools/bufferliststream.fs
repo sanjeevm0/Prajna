@@ -462,7 +462,7 @@ type RefCntBufChunkAlign<'T>() as x =
     member val private BufAlign : ArrAlign<'T> = null with get, set
 
     member private x.NewChunk() =
-        new ArrAlign<'T>(RefCntBufChunkAlign<'T>.ChunkSize, RefCntBufChunkAlign<'T>.AlignBytes)
+        (new ArrAlign<'T>(RefCntBufChunkAlign<'T>.ChunkSize, RefCntBufChunkAlign<'T>.AlignBytes), ref 1)
 
     member val GetNextChunk = x.NewChunk with get, set
 
@@ -476,9 +476,10 @@ type RefCntBufChunkAlign<'T>() as x =
             lock (chunkLock) (fun _ ->
                 chunkOffset <- (chunkOffset + (align - 1))/align*align
                 if (null = currentChunk || chunkOffset + size > currentChunk.Size) then
-                    currentChunk <- x.NewChunk()
+                    let ret = x.GetNextChunk()
+                    currentChunk <- fst ret
+                    chunkCount <- snd ret
                     chunkOffset <- 0
-                    chunkCount <- ref 1
                 else
                     chunkCount := !chunkCount + 1
                 let xOffset = chunkOffset
@@ -489,7 +490,8 @@ type RefCntBufChunkAlign<'T>() as x =
         x.BufAlign <- xBuf
         x.SetBuffer(x.BufAlign.Arr, xOffset, size)
 
-    member x.CurrentChunk with get() = currentChunk
+    member x.CurrentCount with get() = refCount
+    member x.CurrentChunk with get() = x.BufAlign
 
     override x.Alloc(size : int) =
         x.Alloc(size, RefCntBufChunkAlign<'T>.AlignBytes)
@@ -674,8 +676,8 @@ type [<AllowNullLiteral>] internal SharedMemoryPool<'T,'TBase when 'T :> RefCntB
 type [<AllowNullLiteral>] internal SharedMemoryChunkPool<'TBase>
     (initSize : int, maxSize : int, bufSize : int, initFn : RefCntBufChunkAlign<'TBase> -> unit, infoStr : string) =
     inherit SharedMemoryPool<RefCntBufChunkAlign<'TBase>,'TBase>(initSize, maxSize, bufSize, initFn, infoStr)
-    let allocDic = ConcurrentQueue<ArrAlign<'TBase>>()
-    let usedDic = ConcurrentDictionary<ArrAlign<'TBase>,bool>()
+    let allocDic = ConcurrentQueue<ArrAlign<'TBase>*int ref>()
+    let usedDic = ConcurrentDictionary<ArrAlign<'TBase>*int ref,bool>()
 
     member internal x.SharedMemoryChunkPoolAlloc (infoStr : string) (elem : RefCntBufChunkAlign<'TBase>) =
         x.SharedMemoryPoolAlloc infoStr elem
@@ -685,12 +687,12 @@ type [<AllowNullLiteral>] internal SharedMemoryChunkPool<'TBase>
         if (ret) then
             elem
         else
-            new ArrAlign<'TBase>(RefCntBufChunkAlign<'TBase>.ChunkSize, RefCntBufChunkAlign<'TBase>.AlignBytes)
+            (new ArrAlign<'TBase>(RefCntBufChunkAlign<'TBase>.ChunkSize, RefCntBufChunkAlign<'TBase>.AlignBytes), ref 1)
 
     override x.Alloc (infoStr : string) (elem : RefCntBufChunkAlign<'TBase>) =
         x.SharedMemoryChunkPoolAlloc infoStr elem
         elem.GetNextChunk <- x.GetMem
-        usedDic.GetOrAdd(elem.CurrentChunk, true) |> ignore
+        usedDic.GetOrAdd((elem.CurrentChunk, elem.CurrentCount), true) |> ignore
 
     member private x.UsedDic with get() = usedDic
     member private x.AllocDic with get() = allocDic
@@ -1399,6 +1401,11 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
             pos <- pos + int64 cnt
             let totalOffset = bufList.[elemPos].Offset + offset
             new RBufPart<'T>(bufList.[elemPos], totalOffset, cnt)
+
+    member x.GetMoreBufferPart(pos : int64) : RBufPart<'T> =
+        let mutable elemPos = 0
+        let posR = ref pos
+        x.GetMoreBufferPart(&elemPos, posR)
 
     override x.GetMoreBuffer(elemPos : int byref, pos : int64 byref) : 'T[]*int*int =
         if (pos >= length) then
@@ -2587,6 +2594,12 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
         then
             x.Init()
 
+    internal new (openedFile : Native.AsyncStreamIO, pool : SharedPool<string,'TP>) as x =
+        new BufferListStreamWithCache<'T,'TP>("", pool, false)
+        then
+            x.Init()
+            x.File <- openedFile
+
     internal new (fileName : string) as x =
         new BufferListStreamWithCache<'T,'TP>(fileName, null, false)
         then
@@ -2619,9 +2632,9 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
             file.Dispose()
         base.DisposeInternal(bDisposing)
 
-    member private x.FileName with get() : string = fileName
+    member x.FileName with get() : string = fileName
     // bufList consists of "pre", "numValid", and "post" list (i.e. NumValid + 2 elements at most)
-    member private x.File with get() : AsyncStreamIO = file
+    member private x.File with get() : AsyncStreamIO = file and set(v) = file <- v
 
     member val BufferLess = false with get, set
     member val SequentialRead = true with get, set
