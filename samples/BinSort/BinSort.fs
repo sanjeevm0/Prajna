@@ -183,13 +183,16 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
                     (bls :> IDisposable).Dispose()
             x.WriteStream.Clear()
 
+    static member ClearCacheMemSubPartN parti =
+        Remote.Current.ClearCacheMemSubPartN(parti)    
+
     member x.ClearSortStrm() =
         for elem in x.SortStrm do
             (elem.Value :> IDisposable).Dispose()
         x.SortStrm.Clear()
 
-    static member ClearCacheMemSubPartN parti =
-        Remote.Current.ClearCacheMemSubPartN(parti)    
+    static member ClearSortStream() =
+        Remote.Current.ClearSortStrm()
 
     // ================================================================================
     member val private ReadCnt = ref -1 with get
@@ -366,14 +369,18 @@ let cntLenByteArr (alignLen : int) (cnt : int64) (newCnt : int64) =
     cnt + newCnt/(int64 alignLen)
 
 // Full sort
-let fullSort(sort : Remote, remote : DSet<_>) =
+let fullSort(sort : Remote, remote : DSet<_>, inMemory : bool) =
     let startDSet = DSet<_>( Name = "SortGen", SerializationLimit = 1) 
     startDSet.NumParallelExecution <- 16 
 
     let watch = Stopwatch.StartNew()
 
     // Read Data into DSet
-    let dset1 = startDSet |> DSet.sourceI (int sort.InPartitions) (Remote.ReadFilesToMemStreamS sort.Dim)
+    let dset1 = 
+        if (inMemory) then
+            startDSet |> DSet.sourceI (int sort.InPartitions) (Remote.ReadFilesToMemStreamFS sort.Dim)
+        else
+            startDSet |> DSet.sourceI (int sort.InPartitions) (Remote.ReadFilesToMemStreamS sort.Dim)
     dset1.NumParallelExecution <- 16 
     dset1.SerializationLimit <- 1
 
@@ -411,6 +418,7 @@ let fullSort(sort : Remote, remote : DSet<_>) =
     let dset8 = DSet<_>(Name = "ClearCache", SerializationLimit = 1) |> DSet.sourceI dset5.NumPartitions Remote.GetCachePtr
     dset8 |> DSet.iter Remote.ClearCacheMemSubPartN
 
+    
 [<EntryPoint>]
 let main orgargs = 
     let args = Array.copy orgargs
@@ -455,8 +463,10 @@ let main orgargs =
         remoteExec.Execute(Remote.StartRemoteInstance(nDim, numNodes, numInPartPerNode, numOutPartPerNode, furtherPartition, recordsPerNode, inMemory))
         Logger.LogF(LogLevel.Info, fun _ -> sprintf "Init plus alloc takes %f seconds" watch.Elapsed.TotalSeconds)
 
-        fullSort(sort, remoteExec)
-        fullSort(sort, remoteExec)
+        fullSort(sort, remoteExec, inMemory)
+        remoteExec.Execute(Remote.ClearSortStream)
+        fullSort(sort, remoteExec, inMemory)
+        remoteExec.Execute(Remote.ClearSortStream)
 
         // stop remote instances
         remoteExec.Execute(Remote.StopRemoteInstance)
