@@ -430,8 +430,7 @@ let fullSort(sort : Remote, remote : DSet<_>, inMemory : bool) =
 let main orgargs = 
     let args = Array.copy orgargs
     let parse = ArgumentParser(args)
-    //let PrajnaClusterFile = parse.ParseString( "-cluster", "c:\onenet\cluster\onenet21-25.inf" )
-    let PrajnaClusterFile = parse.ParseString("-cluster", "local[2]")
+    let mutable PrajnaClusterFile = parse.ParseString( "-cluster", "c:\onenet\cluster\onenet21-25.inf" )
     let mutable nDim = parse.ParseInt( "-dim", 100 )
     let mutable recordsPerNode = parse.ParseInt64( "-records", 250000000L ) // records per node
     //let recordsPerNode = parse.ParseInt64("-records", 100000000L)
@@ -441,6 +440,7 @@ let main orgargs =
     let mutable inMemory = parse.ParseBoolean("-inmem", false)
 
     // simple test case
+    PrajnaClusterFile <- "local[2]"
     nDim <- 10
     recordsPerNode <- 160L
     numInPartPerNode <- 2
@@ -455,8 +455,9 @@ let main orgargs =
     let mutable bExecute = false
 
     if (bAllParsed) then
+        Environment.Init()
         // start cluster
-        Cluster.Start( null, PrajnaClusterFile )
+        //Cluster.Start( null, PrajnaClusterFile )
 
         // add other dependencies
         let curJob = JobDependencies.setCurrentJob "SortGen"
@@ -465,7 +466,8 @@ let main orgargs =
         let dir = Path.GetDirectoryName(proc.MainModule.FileName)
         curJob.AddDataDirectory( dir ) |> ignore
 
-        let cluster = Cluster.GetCurrent()
+        //let cluster = Cluster.GetCurrent()
+        let cluster = new Cluster(PrajnaClusterFile)
         let numNodes = cluster.NumNodes
 
         // create local copy
