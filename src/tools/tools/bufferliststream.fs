@@ -472,6 +472,8 @@ type RefCntBufChunkAlign<'T>() as x =
 
     member x.Alloc(size : int, alignBytes : int) =
         let align = alignBytes / sizeof<'T>
+        if (size > RefCntBufChunkAlign<'T>.ChunkSize) then
+            failwith "Size is too large"
         let (xBuf, xOffset) =
             lock (chunkLock) (fun _ ->
                 chunkOffset <- (chunkOffset + (align - 1))/align*align
@@ -507,6 +509,7 @@ type RefCntBufChunkAlign<'T>() as x =
 
 type internal RBufPartType =
     | Virtual
+    | MakeVirtual
     | Valid
     | ValidWrite
 
@@ -1708,7 +1711,7 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
     default x.FlushBuf(buf) = ()
 
     member x.WriteConcurrent<'TS>(buf : 'TS[], offset : int, count : int, align : int) =
-        let list = x.MoveWriteConcurrent(count, align)
+        let list = x.MoveWriteConcurrent<'TS>(count, align)
         let mutable byteOffset = offset*sizeof<'TS>
         for l in list do
             let (dst, dstOffset, dstCount) = l
@@ -2091,7 +2094,8 @@ type BufferListStreamWithPool<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and '
         then
             if (Utils.IsNotNull pool) then
                 x.Pool <- pool
-                x.GetNewWriteBuffer <- x.GetNewBuffer
+                //x.GetNewWriteBuffer <- x.GetNewBuffer
+                x.GetNewWriteBuffer <- x.GetNewBufferWait
 
     member val internal Pool : SharedPool<string, 'TP> = null with get, set
 
@@ -2350,7 +2354,7 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
 
     override x.FlushBuf(rbuf : RBufPart<'T>) =
         if (rbuf.Type = RBufPartType.ValidWrite) then
-            rbuf.Type <- RBufPartType.Virtual // free upon write
+            rbuf.Type <- RBufPartType.MakeVirtual // free upon write
             x.FlushToBackingStream(rbuf)
         else if (rbuf.Type = RBufPartType.Valid) then
             // simply dispose
@@ -2560,7 +2564,7 @@ type internal DiskIOFn<'T>() =
                 raise (new Exception("I/O failed "))
         Console.WriteLine("Finish streampos: {0} {1}", rbuf.StreamPos, rbuf.Type)
         rbuf.IOEvent.Set()
-        if (rbuf.Type = Virtual) then
+        if (rbuf.Type = MakeVirtual) then
             (rbuf :> IDisposable).Dispose()
     static member val private DoneIOWriteDel = IOCallbackDel<'T>(DiskIOFn<'T>.DoneIOWrite)
 

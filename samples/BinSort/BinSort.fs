@@ -39,7 +39,6 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
     let recordsPerInPartition = totalRecords / totalInPartitions
     let perFileInLen = recordsPerInPartition * int64(dim)
     let totalSizeInByte = perFileInLen * int64(totalInPartitions)
-    let maxPartitionLen = totalSizeInByte * 3L / (totalOutPartitions * 2L) // 150% of avg size per partition
     let maxSubPartitionLen = totalSizeInByte * 3L / (totalOutSegments * 2L) // 150% of avg size per partition
     let mutable partBoundary : int[] = null
     let mutable segBoundary : int[] = null
@@ -47,7 +46,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
 
     // for file I/O
     let alignLen = (dim + 7)/8*8
-    let cacheLenPerSegment =  Remote.NumCacheRecords * int64(alignLen) / int64(dim)
+    let cacheLenPerSegment =  Remote.NumCacheRecords * int64(alignLen)
 
     static member val ReadRecords = 1000*1024 with get, set
     static member val NumCacheRecords = (1000000L/4L) with get, set
@@ -77,7 +76,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
                 RefCntBufChunkAlign<byte>.AlignBytes <- 16
                 let memoryPoolLen =
                     if (inMemory) then
-                        maxSubPartitionLen
+                        maxSubPartitionLen * int64(alignLen) / int64(dim)
                     else
                         cacheLenPerSegment
                 x.MemoryPool <- new SharedMemoryChunkPool<byte>(2*(int outSegmentsPerNode), 2*(int outSegmentsPerNode), int memoryPoolLen, (fun _ -> ()), "RepartitionPool")
@@ -98,7 +97,9 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
     member x.StopInstance() =
         (x :> IDisposable).Dispose()
 
-    static member StartRemoteInstance(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode : int, furtherPartition : int, recordsPerNode : int64, inMemory : bool) () =
+    static member StartRemoteInstance(readRecords : int, cacheRecords : int64, dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode : int, furtherPartition : int, recordsPerNode : int64, inMemory : bool) () =
+        Remote.ReadRecords <- readRecords
+        Remote.NumCacheRecords <- cacheRecords
         Remote.Current <- new Remote(dim, numNodes, numInPartPerNode, numOutPartPerNode, furtherPartition, recordsPerNode)
         Remote.Current.InitInstance(inMemory)
 
@@ -140,21 +141,19 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
             let index1 = ((index0 - minSegVal.[int parti]) <<< 8) ||| (int vec.[2])
             let segment = segBoundary.[index1]
             let (segmentList, segmentDic) = x.WriteStream.GetOrAdd(parti, fun _ -> (List<int*int*int>(), Dictionary<int,(int*BufferListStream<byte>)>()))
-            let (segIndex, bls) =
-                if segmentDic.ContainsKey(segment) then
-                    segmentDic.[segment]
+            if not (segmentDic.ContainsKey(segment)) then
+                segmentList.Add(int parti, segmentList.Count, segment)
+                let segIndex = int(parti)*furtherPartition + segment
+                let dirIndex = segIndex % x.PartDataDir.Length
+                let fileName = Path.Combine(x.PartDataDir.[dirIndex], sprintf "%d.bin" segIndex)
+                if (x.InMemory) then
+                    segmentDic.[segment] <- (segIndex, new BufferListStream<byte>())
                 else
-                    segmentList.Add(int parti, segmentList.Count, segment)
-                    let segIndex = int(parti)*furtherPartition + segment
-                    let dirIndex = segIndex % x.PartDataDir.Length
-                    let fileName = Path.Combine(x.PartDataDir.[dirIndex], sprintf "%d.bin" segIndex)
-                    if (x.InMemory) then
-                        (segIndex, new BufferListStream<byte>())
-                    else
-                        let bls = new BufferListStreamWithCache<byte,RefCntBufAlign<byte>>(fileName) // does not open file
-                        bls.BufferLess <- true
-                        bls.SequentialWrite <- true
-                        (segIndex, bls :> BufferListStream<byte>)
+                    let bls = new BufferListStreamWithCache<byte,RefCntBufChunkAlign<byte>>(fileName, x.MemoryPool) // does not open file
+                    //bls.BufferLess <- true
+                    bls.SequentialWrite <- true
+                    segmentDic.[segment] <- (segIndex, bls :> BufferListStream<byte>)
+            let (segIndex, bls) = segmentDic.[segment]
             //bls.Write(vec, 0, vec.Length)
             bls.WriteConcurrent(vec, 0, vec.Length, 1)
         (ms :> IDisposable).Dispose()
@@ -309,7 +308,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
     member x.LoadForSort(segIndex : int, bls : BufferListStream<byte>) =
         let blsC = bls :?> BufferListStreamWithCache<byte,RefCntBufAlign<byte>>
         bls.Flush()
-        let sortFile = Native.AsyncStreamIO.OpenFile(blsC.FileName, FileAccess.Read, FileOptions.Asynchronous ||| FileOptions.SequentialScan, true)
+        let sortFile = Native.AsyncStreamIO.OpenFile(blsC.FileName, FileAccess.Read, FileOptions.Asynchronous ||| FileOptions.SequentialScan, false)
         let sortStrm = new BufferListStreamWithCache<byte,RefCntBufChunkAlign<byte>>(sortFile, x.SortPool :> SharedPool<string,RefCntBufChunkAlign<byte>>)
         sortStrm.StartPrefetch(1)
         x.SortStrm.[segIndex] <- sortStrm        
@@ -342,8 +341,8 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
             //let filename = (bls :?> BufferListStreamWithCache<byte,RefCntBufAlign<byte>>).FileName + ".sorted"
             let dirIndex = segIndex % x.PartDataDir.Length
             let filename = Path.Combine(x.SortDataDir.[dirIndex], sprintf "%d.bin" segIndex)
-            let diskIO = DiskIO.OpenFile(filename, FileOptions.Asynchronous ||| FileOptions.WriteThrough, true)
-            rpart.Type <- RBufPartType.Virtual
+            let diskIO = DiskIO.OpenFile(filename, FileOptions.Asynchronous ||| FileOptions.WriteThrough, false)
+            rpart.Type <- RBufPartType.MakeVirtual
             DiskIOFn<byte>.WriteBuffer(rpart, diskIO, 0L)
             // dispose sort stream
             (x.SortStrm.[segIndex] :> IDisposable).Dispose()
@@ -482,7 +481,7 @@ let main orgargs =
         Logger.LogF(LogLevel.Info, fun _ -> sprintf "Init takes %f seconds" watch.Elapsed.TotalSeconds)
 
         //remoteExec.Execute(RemoteFunc.TransferInstance(sort)) // transfer local to remote via serialization
-        remoteExec.Execute(Remote.StartRemoteInstance(nDim, numNodes, numInPartPerNode, numOutPartPerNode, furtherPartition, recordsPerNode, inMemory))
+        remoteExec.Execute(Remote.StartRemoteInstance(Remote.ReadRecords, Remote.NumCacheRecords, nDim, numNodes, numInPartPerNode, numOutPartPerNode, furtherPartition, recordsPerNode, inMemory))
         Logger.LogF(LogLevel.Info, fun _ -> sprintf "Init plus alloc takes %f seconds" watch.Elapsed.TotalSeconds)
 
         fullSort(sort, remoteExec, inMemory)

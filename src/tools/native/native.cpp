@@ -313,7 +313,7 @@ namespace Prajna {
                 virtual void InvokeCb(int ioResult, int bytesTransferred) new = IOStateBase::InvokeCb
                 {
                     m_parent->UpdateIO(m_tpio, bytesTransferred);
-                m_cb->Invoke(ioResult, m_pState, m_buffer, m_offset, bytesTransferred);
+                    m_cb->Invoke(ioResult, m_pState, m_buffer, m_offset, bytesTransferred);
                 }
 
                 virtual void Free() new = IOStateBase::Free
