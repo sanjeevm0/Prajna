@@ -625,10 +625,18 @@ type [<AllowNullLiteral>] internal SharedMemoryPool<'T,'TBase when 'T :> RefCntB
     new (initSize : int, maxSize : int, bufSize : int, initFn : 'T -> unit, infoStr : string) as x =
         { inherit SharedPool<string, 'T>() }
         then
-            x.InitFunc <- initFn
-            x.BufSize <- bufSize
+            x.SetParams(initFn, bufSize)
             x.InitStack(initSize, maxSize, infoStr)
-            x.disposer <- new DoOnce()
+
+    new (initFn, bufSize) as x =
+        { inherit SharedPool<string, 'T>() }
+        then
+            x.SetParams(initFn, bufSize)
+
+    member x.SetParams(initFn, bufSize) =
+        x.InitFunc <- initFn
+        x.BufSize <- bufSize        
+        x.disposer <- new DoOnce()
 
     static member GetPool(initSize : int, maxSize : int, bufSize : int, infoStr : string) =
         new SharedMemoryPool<'T,'TBase>(initSize, maxSize, bufSize, (fun _ -> ()), infoStr)
@@ -665,7 +673,8 @@ type [<AllowNullLiteral>] internal SharedMemoryPool<'T,'TBase when 'T :> RefCntB
             (!elem).Reset()
         event
 
-    member private x.Dispose() =
+    abstract Dispose : unit->unit
+    default x.Dispose() =
         for e in x.GetStack.Stack do
             (e :> IDisposable).Dispose()
 
@@ -673,14 +682,21 @@ type [<AllowNullLiteral>] internal SharedMemoryPool<'T,'TBase when 'T :> RefCntB
         override x.Dispose() =
             x.disposer.Run(x.Dispose)
 
-type [<AllowNullLiteral>] internal SharedMemoryChunkPool<'TBase>
-    (initSize : int, maxSize : int, bufSize : int, initFn : RefCntBufChunkAlign<'TBase> -> unit, infoStr : string) =
-    inherit SharedMemoryPool<RefCntBufChunkAlign<'TBase>,'TBase>(initSize, maxSize, bufSize, initFn, infoStr)
-    let allocDic = ConcurrentQueue<ArrAlign<'TBase>*int ref>()
-    let usedDic = ConcurrentDictionary<ArrAlign<'TBase>*int ref,bool>()
+type [<AllowNullLiteral>] internal SharedMemoryChunkPool<'TBase>(initFn : RefCntBufChunkAlign<'TBase> -> unit, bufSize : int) =
+    inherit SharedMemoryPool<RefCntBufChunkAlign<'TBase>,'TBase>(initFn, bufSize)
+
+    let allocDic = new ConcurrentQueue<ArrAlign<'TBase>*int ref>()
+    let usedDic = new ConcurrentDictionary<ArrAlign<'TBase>*int ref,bool>()
+
+    new (initSize : int, maxSize : int, bufSize, initFn, infoStr : string) as x =
+        new SharedMemoryChunkPool<'TBase>(initFn, bufSize)
+        then
+            x.InitStack(initSize, maxSize, infoStr)
 
     member internal x.SharedMemoryChunkPoolAlloc (infoStr : string) (elem : RefCntBufChunkAlign<'TBase>) =
         x.SharedMemoryPoolAlloc infoStr elem
+        elem.GetNextChunk <- x.GetMem
+        usedDic.GetOrAdd((elem.CurrentChunk, elem.CurrentCount), true) |> ignore
 
     member x.GetMem() =
         let (ret, elem) = allocDic.TryDequeue()
@@ -691,8 +707,6 @@ type [<AllowNullLiteral>] internal SharedMemoryChunkPool<'TBase>
 
     override x.Alloc (infoStr : string) (elem : RefCntBufChunkAlign<'TBase>) =
         x.SharedMemoryChunkPoolAlloc infoStr elem
-        elem.GetNextChunk <- x.GetMem
-        usedDic.GetOrAdd((elem.CurrentChunk, elem.CurrentCount), true) |> ignore
 
     member private x.UsedDic with get() = usedDic
     member private x.AllocDic with get() = allocDic

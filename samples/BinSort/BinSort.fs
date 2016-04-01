@@ -141,11 +141,11 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
             let segment = segBoundary.[index1]
             let (segmentList, segmentDic) = x.WriteStream.GetOrAdd(parti, fun _ -> (List<int*int*int>(), Dictionary<int,(int*BufferListStream<byte>)>()))
             let (segIndex, bls) =
-                if segmentDic.ContainsKey(index1) then
-                    segmentDic.[index1]
+                if segmentDic.ContainsKey(segment) then
+                    segmentDic.[segment]
                 else
-                    segmentList.Add(int parti, segmentList.Count, index1)
-                    let segIndex = int(parti)*furtherPartition + index1
+                    segmentList.Add(int parti, segmentList.Count, segment)
+                    let segIndex = int(parti)*furtherPartition + segment
                     let dirIndex = segIndex % x.PartDataDir.Length
                     let fileName = Path.Combine(x.PartDataDir.[dirIndex], sprintf "%d.bin" segIndex)
                     if (x.InMemory) then
@@ -306,29 +306,29 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
         Remote.Current.RepartitionMemStream (buffer)
 
     // =========================================================
-    member x.LoadForSort(index1 : int, bls : BufferListStream<byte>) =
+    member x.LoadForSort(segIndex : int, bls : BufferListStream<byte>) =
         let blsC = bls :?> BufferListStreamWithCache<byte,RefCntBufAlign<byte>>
         bls.Flush()
         let sortFile = Native.AsyncStreamIO.OpenFile(blsC.FileName, FileAccess.Read, FileOptions.Asynchronous ||| FileOptions.SequentialScan, true)
         let sortStrm = new BufferListStreamWithCache<byte,RefCntBufChunkAlign<byte>>(sortFile, x.SortPool :> SharedPool<string,RefCntBufChunkAlign<byte>>)
         sortStrm.StartPrefetch(1)
-        x.SortStrm.[index1] <- sortStrm        
+        x.SortStrm.[segIndex] <- sortStrm        
 
-    member x.DoSortFile(parti : int, posInList : int, index1 : int) =
+    member x.DoSortFile(parti : int, posInList : int, segment : int) =
         let (segList, segDic) = x.WriteStream.[uint32 parti]
-        let (segIndex, bls) = segDic.[index1]
+        let (segIndex, bls) = segDic.[segment]
         let (rpart, strmLen) =
             if (x.InMemory) then
                 (bls.GetMoreBufferPart(0L), bls.Length)
             else
                 if (0 = posInList) then
-                    x.LoadForSort(index1, bls)
+                    x.LoadForSort(segIndex, bls)
                 if (posInList+1 < segList.Count) then
                     // start load of next one asynchronously
-                    let (nextParti, nextPos, nextIndex1) = segList.[posInList+1]
-                    let (nextSegIndex, nextBls) = segDic.[nextIndex1]
-                    x.LoadForSort(nextIndex1, nextBls)
-                (x.SortStrm.[index1].GetMoreBufferPart(0L), x.SortStrm.[index1].Length)
+                    let (nextParti, nextPos, nextSegment) = segList.[posInList+1]
+                    let (nextSegIndex, nextBls) = segDic.[nextSegment]
+                    x.LoadForSort(nextSegIndex, nextBls)
+                (x.SortStrm.[segIndex].GetMoreBufferPart(0L), x.SortStrm.[segIndex].Length)
         // now sort
         let buf = rpart.Elem :?> RefCntBufChunkAlign<byte>
         NativeSort.Sort.AlignSort64(buf.Ptr, alignLen>>>3, int rpart.Count>>>3)
@@ -346,13 +346,13 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
             rpart.Type <- RBufPartType.Virtual
             DiskIOFn<byte>.WriteBuffer(rpart, diskIO, 0L)
             // dispose sort stream
-            (x.SortStrm.[index1] :> IDisposable).Dispose()
+            (x.SortStrm.[segIndex] :> IDisposable).Dispose()
         // dispose stream
         (bls :> IDisposable).Dispose()
         cnt
 
-    static member DoSortFile(parti, posInList, index1) =
-        Remote.Current.DoSortFile(parti, posInList, index1)
+    static member DoSortFile(parti, posInList, segIndex) =
+        Remote.Current.DoSortFile(parti, posInList, segIndex)
 
 // ====================================================
 
@@ -449,7 +449,7 @@ let main orgargs =
     inMemory <- false
     Remote.ReadRecords <- 40
     Remote.NumCacheRecords <- 5L
-    MemoryStreamB.InitMemStack(100, 50)
+    //MemoryStreamB.InitMemStack(100, 50)
 
     let bAllParsed = parse.AllParsed Usage
     let mutable bExecute = false
@@ -458,6 +458,9 @@ let main orgargs =
         Environment.Init()
         // start cluster
         //Cluster.Start( null, PrajnaClusterFile )
+        //let cluster = Cluster.GetCurrent()
+        let cluster = new Cluster(PrajnaClusterFile)
+        Cluster.SetCurrent(cluster)
 
         // add other dependencies
         let curJob = JobDependencies.setCurrentJob "SortGen"
@@ -466,8 +469,6 @@ let main orgargs =
         let dir = Path.GetDirectoryName(proc.MainModule.FileName)
         curJob.AddDataDirectory( dir ) |> ignore
 
-        //let cluster = Cluster.GetCurrent()
-        let cluster = new Cluster(PrajnaClusterFile)
         let numNodes = cluster.NumNodes
 
         // create local copy
