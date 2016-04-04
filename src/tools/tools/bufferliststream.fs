@@ -2205,8 +2205,8 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
     member val internal FinalFlush = false with get, set
     override x.DisposeInternal(bDisposing : bool) =
         if (not x.FinalFlush) then
-            x.WaitForIOFinish()
             x.Flush()
+            x.WaitForIOFinish()
             x.FinalFlush <- true
         base.DisposeInternal(bDisposing)
 
@@ -2564,6 +2564,11 @@ type internal DiskIO() =
         file.SetLock(DiskIO.GetLockObj(Path.GetFullPath(fileName)))
         file
 
+    static member OpenFileWrite(fileName : string, fOpt : FileOptions, bufferLess : bool) =
+        let file = AsyncStreamIO.OpenFile(fileName, FileAccess.Write, fOpt, bufferLess)
+        file.SetLock(DiskIO.GetLockObj(Path.GetFullPath(fileName)))
+        file
+
 type internal DiskIOFn<'T>() =
     static member private DoneIOWrite (ioResult : int) (state : obj) (buffer : 'T[]) (offset : int) (bytesTransferred : int) =
         let (rbuf, file) = state :?> (RBufPart<'T>*AsyncStreamIO)
@@ -2615,6 +2620,7 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
 
     inherit BufferListStreamWithBackingStream<'T,'TP>(pool) // inherit using default constructor always
 
+    let mutable fileName = fileName
     let fileOpenLock = Object()
     let mutable file : Native.AsyncStreamIO = null
 
@@ -2652,8 +2658,8 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
 
     override x.DisposeInternal(bDisposing : bool) =
         if (not x.FinalFlush) then
-            x.WaitForIOFinish()
             x.Flush()
+            x.WaitForIOFinish()
             x.FinalFlush <- true
         if (Utils.IsNotNull file) then
             if (file.BufferLess() && file.Length > x.Length) then
@@ -2661,7 +2667,7 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
             file.Dispose()
         base.DisposeInternal(bDisposing)
 
-    member x.FileName with get() : string = fileName
+    member x.FileName with get() : string = fileName and set(v) = fileName <- v
     // bufList consists of "pre", "numValid", and "post" list (i.e. NumValid + 2 elements at most)
     member private x.File with get() : AsyncStreamIO = file and set(v) = file <- v
 

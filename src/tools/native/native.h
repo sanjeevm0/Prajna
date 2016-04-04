@@ -171,7 +171,7 @@ public:
         if (nullptr == m_ptp)
         {
             int e = GetLastError();
-            printf("Last error: 0x%x", e);
+            printf("Last error on CreateThreadPoolIo: 0x%x", e);
             throw "Fail to initialize threadpool I/O error";
         }
         InitializeCriticalSection(m_cs);

@@ -476,7 +476,13 @@ namespace Prajna {
                         creation = OPEN_ALWAYS;
                         break;
                     }
-                    return (IntPtr)CreateFile(pName, accessMode, (DWORD)share, nullptr, creation, dwFlags, nullptr);
+                    HANDLE h = CreateFile(pName, accessMode, (DWORD)share, nullptr, creation, dwFlags, nullptr);
+                    if (INVALID_HANDLE_VALUE == h)
+                    {
+                        int e = GetLastError();
+                        printf("Last error on CreateFile: 0x%x", e);
+                    }
+                    return (IntPtr)h;
                 }
 
                 static IntPtr OpenFileHandle(String^ name, FileAccess access, FileOptions fOpt, bool bBufferLess)

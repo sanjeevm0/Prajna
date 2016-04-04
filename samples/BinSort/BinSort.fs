@@ -161,11 +161,16 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
                         else
                             let dirIndex = segIndex % x.PartDataDir.Length
                             let fileName = Path.Combine(x.PartDataDir.[dirIndex], sprintf "%d.bin" segIndex)
-                            let bls = new BufferListStreamWithCache<byte,RefCntBufChunkAlign<byte>>(fileName, x.MemoryPool) // does not open file
+                            Logger.LogF(LogLevel.Info, fun _ -> sprintf "Create file %s" fileName)
+                            let strm = DiskIO.OpenFileWrite(fileName, FileOptions.Asynchronous ||| FileOptions.WriteThrough, false)
+                            let bls = new BufferListStreamWithCache<byte,RefCntBufChunkAlign<byte>>(strm, x.MemoryPool)
+                            bls.FileName <- fileName
+                            //let bls = new BufferListStreamWithCache<byte,RefCntBufChunkAlign<byte>>(fileName, x.MemoryPool) // does not open file
                             //bls.BufferLess <- true
                             bls.SequentialWrite <- true
                             segmentDic.[segment] <- (true, segIndex, bls :> BufferListStream<byte>)
                 )
+            let (init, segIndex, bls) = segmentDic.[segment]
             //bls.Write(vec, 0, vec.Length)
             bls.WriteConcurrent(vec, 0, vec.Length, 1)
         (ms :> IDisposable).Dispose()
@@ -318,8 +323,9 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
 
     // =========================================================
     member x.LoadForSort(segIndex : int, bls : BufferListStream<byte>) =
-        let blsC = bls :?> BufferListStreamWithCache<byte,RefCntBufAlign<byte>>
-        bls.Flush()
+        let blsC = bls :?> BufferListStreamWithCache<byte,RefCntBufChunkAlign<byte>>
+        blsC.Flush()  // will start async write operations which need to be waited upon
+        blsC.WaitForIOFinish()
         let sortFile = Native.AsyncStreamIO.OpenFile(blsC.FileName, FileAccess.Read, FileOptions.Asynchronous ||| FileOptions.SequentialScan, false)
         let sortStrm = new BufferListStreamWithCache<byte,RefCntBufChunkAlign<byte>>(sortFile, x.SortPool :> SharedPool<string,RefCntBufChunkAlign<byte>>)
         sortStrm.StartPrefetch(1)
@@ -353,7 +359,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
             //let filename = (bls :?> BufferListStreamWithCache<byte,RefCntBufAlign<byte>>).FileName + ".sorted"
             let dirIndex = segIndex % x.PartDataDir.Length
             let filename = Path.Combine(x.SortDataDir.[dirIndex], sprintf "%d.bin" segIndex)
-            let diskIO = DiskIO.OpenFile(filename, FileOptions.Asynchronous ||| FileOptions.WriteThrough, false)
+            let diskIO = DiskIO.OpenFileWrite(filename, FileOptions.Asynchronous ||| FileOptions.WriteThrough, false)
             rpart.Type <- RBufPartType.MakeVirtual
             DiskIOFn<byte>.WriteBuffer(rpart, diskIO, 0L)
             // dispose sort stream
