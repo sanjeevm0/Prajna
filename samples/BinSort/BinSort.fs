@@ -66,7 +66,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
     member val internal Allocate : bool = false with get, set
     member val internal MemoryPool : SharedMemoryChunkPool<byte> = null with get, set
     member val internal SortPool : SharedMemoryChunkPool<byte> = null with get, set
-    member val internal WriteStream = ConcurrentDictionary<uint32, List<int*int*int>*Dictionary<int, int*BufferListStream<byte>>>() with get
+    member val internal WriteStream = ConcurrentDictionary<uint32, List<int*int*int>*ConcurrentDictionary<int, bool*int*BufferListStream<byte>>>() with get
     member val internal SortStrm = ConcurrentDictionary<int, BufferListStreamWithBackingStream<byte,RefCntBufChunkAlign<byte>>>() with get
 
     // init and start of remote instance ===================   
@@ -140,20 +140,32 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
             let index0 = ((int vec.[0]) <<< 8) ||| (int vec.[1])
             let index1 = ((index0 - minSegVal.[int parti]) <<< 8) ||| (int vec.[2])
             let segment = segBoundary.[index1]
-            let (segmentList, segmentDic) = x.WriteStream.GetOrAdd(parti, fun _ -> (List<int*int*int>(), Dictionary<int,(int*BufferListStream<byte>)>()))
-            if not (segmentDic.ContainsKey(segment)) then
-                segmentList.Add(int parti, segmentList.Count, segment)
+            let (segmentList, segmentDic) = x.WriteStream.GetOrAdd(parti, fun _ -> (List<int*int*int>(), ConcurrentDictionary<int,(bool*int*BufferListStream<byte>)>()))
+            let (init, segIndex, bls) = segmentDic.GetOrAdd(segment, fun _ ->
+                // following code may be called multiple times, only one will return
+                // so do not allocte something that needs IDisposable here
                 let segIndex = int(parti)*furtherPartition + segment
-                let dirIndex = segIndex % x.PartDataDir.Length
-                let fileName = Path.Combine(x.PartDataDir.[dirIndex], sprintf "%d.bin" segIndex)
                 if (x.InMemory) then
-                    segmentDic.[segment] <- (segIndex, new BufferListStream<byte>())
+                    (false, segIndex, null)
                 else
-                    let bls = new BufferListStreamWithCache<byte,RefCntBufChunkAlign<byte>>(fileName, x.MemoryPool) // does not open file
-                    //bls.BufferLess <- true
-                    bls.SequentialWrite <- true
-                    segmentDic.[segment] <- (segIndex, bls :> BufferListStream<byte>)
-            let (segIndex, bls) = segmentDic.[segment]
+                    (false, segIndex, null)
+            )
+            if (not init) then
+                // prevent orphaned BufferListStream from hanging around by using lock
+                lock (segmentDic.[segment]) (fun _ ->
+                    let (init, segIndex, bls) = segmentDic.[segment] // get current state of initialization
+                    if (not init) then
+                        segmentList.Add(int parti, segmentList.Count, segment)
+                        if x.InMemory then
+                            segmentDic.[segment] <- (true, segIndex, new BufferListStream<byte>())
+                        else
+                            let dirIndex = segIndex % x.PartDataDir.Length
+                            let fileName = Path.Combine(x.PartDataDir.[dirIndex], sprintf "%d.bin" segIndex)
+                            let bls = new BufferListStreamWithCache<byte,RefCntBufChunkAlign<byte>>(fileName, x.MemoryPool) // does not open file
+                            //bls.BufferLess <- true
+                            bls.SequentialWrite <- true
+                            segmentDic.[segment] <- (true, segIndex, bls :> BufferListStream<byte>)
+                )
             //bls.Write(vec, 0, vec.Length)
             bls.WriteConcurrent(vec, 0, vec.Length, 1)
         (ms :> IDisposable).Dispose()
@@ -181,7 +193,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
         if (x.WriteStream.ContainsKey(parti)) then
             if (Utils.IsNotNull x.WriteStream.[parti]) then
                 for elem in (snd x.WriteStream.[parti]) do
-                    let (segIndex, bls) = elem.Value
+                    let (init, segIndex, bls) = elem.Value
                     (bls :> IDisposable).Dispose()
             x.WriteStream.Clear()
 
@@ -315,7 +327,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
 
     member x.DoSortFile(parti : int, posInList : int, segment : int) =
         let (segList, segDic) = x.WriteStream.[uint32 parti]
-        let (segIndex, bls) = segDic.[segment]
+        let (init, segIndex, bls) = segDic.[segment]
         let (rpart, strmLen) =
             if (x.InMemory) then
                 (bls.GetMoreBufferPart(0L), bls.Length)
@@ -325,7 +337,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
                 if (posInList+1 < segList.Count) then
                     // start load of next one asynchronously
                     let (nextParti, nextPos, nextSegment) = segList.[posInList+1]
-                    let (nextSegIndex, nextBls) = segDic.[nextSegment]
+                    let (nexInit, nextSegIndex, nextBls) = segDic.[nextSegment]
                     x.LoadForSort(nextSegIndex, nextBls)
                 (x.SortStrm.[segIndex].GetMoreBufferPart(0L), x.SortStrm.[segIndex].Length)
         // now sort

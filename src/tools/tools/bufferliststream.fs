@@ -184,7 +184,7 @@ type [<AllowNullLiteral>] internal SharedPool<'K,'T when 'T :> IRefCounter<'K> a
         event
 
 [<AllowNullLiteral>]
-type SafeRefCnt<'T when 'T:null and 'T :> IRefCounter<string>> (infoStr : string)=
+type SafeRefCnt<'T when 'T:null and 'T :> IRefCounter<string>> private ()=
     [<DefaultValue>] val mutable private info : string
     [<DefaultValue>] val mutable private baseInfo : string
 
@@ -192,6 +192,11 @@ type SafeRefCnt<'T when 'T:null and 'T :> IRefCounter<string>> (infoStr : string
     let mutable id = Interlocked.Increment(g_id) //mutable for GetFromPool
     let bRelease = ref 0
     let mutable elem : 'T = null
+
+    new(infoStr : string) as x =
+        new SafeRefCnt<'T>()
+        then
+            x.info <- infoStr + ":" + x.Id.ToString()            
 
     new(infoStr : string, e : 'T) as x =
         new SafeRefCnt<'T>(infoStr)
@@ -213,10 +218,10 @@ type SafeRefCnt<'T when 'T:null and 'T :> IRefCounter<string>> (infoStr : string
             Logger.LogF(BufferListDebugging.PoolAllocLogLevel, fun _ -> sprintf "Also using %s for id %d - refcount %d" x.Element.Key x.Id x.Element.GetRef)
 #endif
 
-    member x.SetElement(e : 'T) =
+    member internal x.SetElement(e : 'T) =
         x.Element <- e
         x.RC.AddRef() |> ignore
-        x.info <- infoStr + ":" + x.Id.ToString()
+        //x.info <- infoStr + ":" + x.Id.ToString() // x.info already set in constructor
 #if DEBUGALLOCS
         x.Element.Allocs.[x.info] <- Environment.StackTrace
         Logger.LogF(BufferListDebugging.PoolAllocLogLevel, fun _ -> sprintf "Using element %s for id %d - refcount %d" x.Element.Key x.Id x.Element.GetRef)
@@ -282,7 +287,7 @@ type SafeRefCnt<'T when 'T:null and 'T :> IRefCounter<string>> (infoStr : string
     member x.Elem
         with get() : 'T = 
             if (!bRelease = 1) then
-                failwith (sprintf "Already Released %s %d" infoStr id)
+                failwith (sprintf "Already Released %s %d" x.info id)
             else
                 elem
 
@@ -1479,10 +1484,14 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
         if (position <> length) then
             failwith "Splicing RBuf in middle is not supported"
         else
-            let rbufPartNew = new RBufPart<'T>(rbufAdd) // make a copy
+            let rbufPartNew = 
+                if (rbufAdd.Type = RBufPartType.Virtual) then
+                    RBufPart<'T>.GetVirtual(rbufAdd)
+                else
+                    new RBufPart<'T>(rbufAdd) // make a copy
             rbufPartNew.StreamPos <- position
             if (elemLen > 0) then
-                x.SealWriteBuffer()
+                x.SealWriteBuffer() // seal previous buffer
             x.InsertIntoList(rbufPartNew, elemLen)
             length <- length + int64 rbufAdd.Count
             capacity <- capacity + int64 rbufAdd.Count
@@ -1493,7 +1502,6 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
             bufRemWrite <- 0L
             bufPos <- int64 rbufPartNew.Offset + rbufPartNew.Count
             bufBeginPos <- int64 rbufPartNew.Offset
-            rbufPartNew.Finished <- true
 
     member internal x.SetPosToI(i : int) =
         rbufPart <- bufList.[i]
@@ -1628,7 +1636,8 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
         x.AddExistingBuffer(rbuf)
         position <- position + int64 rbuf.Count
         elemPos <- Math.Max(elemLen, elemPos)
-        length <- Math.Max(length, position)
+        length <- Math.Max(length, position) // probably does nothing
+        x.SealWriteBuffer() // cannot add more to this
 
     // write directly into part
     member internal x.GetWritePart() =
@@ -2359,6 +2368,8 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
         else if (rbuf.Type = RBufPartType.Valid) then
             // simply dispose
             (rbuf :> IDisposable).Dispose()
+        else
+            failwith "Buffer type unknown"
 
     // for concurrent read/write, this must occur inside ioLock block
     member x.MakeElemVirtual(i : int) =
@@ -2564,7 +2575,7 @@ type internal DiskIOFn<'T>() =
                 raise (new Exception("I/O failed "))
         Console.WriteLine("Finish streampos: {0} {1}", rbuf.StreamPos, rbuf.Type)
         rbuf.IOEvent.Set()
-        if (rbuf.Type = MakeVirtual) then
+        if (rbuf.Type = RBufPartType.MakeVirtual) then
             (rbuf :> IDisposable).Dispose()
     static member val private DoneIOWriteDel = IOCallbackDel<'T>(DiskIOFn<'T>.DoneIOWrite)
 
