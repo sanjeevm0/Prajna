@@ -2188,10 +2188,12 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
         x.OpenStream()
         x.DoBackgroundPrefetch null false
 
+    member val private BackgroundPrefetchDone = new MEvent(false)
     member x.StopPrefetch() =
         lock (x.IOLock) (fun _ ->
             doFetching <- false
         )
+        x.BackgroundPrefetchDone.Wait()
 
     member x.DoBackgroundPrefetch(state : obj) (bTimeOut : bool) =
         lock (x.IOLock) (fun _ ->
@@ -2199,6 +2201,10 @@ type BufferListStreamWithBackingStream<'T,'TP when 'TP:null and 'TP:(new:unit->'
                 let (bDone, event) = x.TryPrefetch(x.NumPrefetch)
                 if not bDone then
                     RWHQueue.Add(ThreadPool.RegisterWaitForSingleObject(event, x.BackgroundPrefetch, null, -1, true), event)
+                else
+                    x.BackgroundPrefetchDone.Set()
+            else
+                x.BackgroundPrefetchDone.Set()
         )
     member private x.BackgroundPrefetch = new WaitOrTimerCallback(x.DoBackgroundPrefetch)
 
@@ -2634,6 +2640,7 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
         then
             x.Init()
             x.File <- openedFile
+            x.AddPreexistingContent()
 
     internal new (fileName : string) as x =
         new BufferListStreamWithCache<'T,'TP>(fileName, null, false)
@@ -2705,6 +2712,13 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
         else
             x.Flush()
 
+    member x.AddPreexistingContent() =
+        if (x.File.Length > x.Length) then
+            use elem = RBufPart<'T>.GetVirtual()
+            elem.StreamPos <- x.Length
+            elem.Count <- x.File.Length - x.Length
+            x.AddExistingBuffer(elem)        
+
     member x.OpenFile() =
         if (null = file) then
             lock (fileOpenLock) (fun _ ->
@@ -2715,9 +2729,5 @@ type BufferListStreamWithCache<'T,'TP when 'TP:null and 'TP:(new:unit->'TP) and 
                     if x.SequentialWrite then
                         fOpt <- fOpt ||| FileOptions.WriteThrough
                     file <- DiskIO.OpenFile(fileName, fOpt, x.BufferLess)
-                    if (x.File.Length > x.Length) then
-                        use elem = RBufPart<'T>.GetVirtual()
-                        elem.StreamPos <- x.Length
-                        elem.Count <- x.File.Length - x.Length
-                        x.AddExistingBuffer(elem)
+                    x.AddPreexistingContent()
             )

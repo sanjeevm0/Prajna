@@ -74,16 +74,17 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
         lock (x) (fun _ ->
             if (not x.Allocate) then
                 RefCntBufChunkAlign<byte>.AlignBytes <- 16
+                let maxSubPartitionLenAdjust = maxSubPartitionLen * int64(alignLen) / int64(dim)
                 let memoryPoolLen =
                     if (inMemory) then
-                        maxSubPartitionLen * int64(alignLen) / int64(dim)
+                        maxSubPartitionLenAdjust
                     else
                         cacheLenPerSegment
                 x.MemoryPool <- new SharedMemoryChunkPool<byte>(2*(int outSegmentsPerNode), 2*(int outSegmentsPerNode), int memoryPoolLen, (fun _ -> ()), "RepartitionPool")
                 if (not x.InMemory) then
                     // to reuse memory for sort pool, would have to close all streams first
                     //x.SortPool <- SharedMemoryChunkPool<byte>.ReusePool(x.MemoryPool, numOutPartPerNode*2, numOutPartPerNode*2, int maxSubPartitionLen, (fun _ -> ()), "SortPool")
-                    x.SortPool <- new SharedMemoryChunkPool<byte>(numOutPartPerNode*2, numOutPartPerNode*2, int maxSubPartitionLen, (fun _ -> ()), "SortPool")
+                    x.SortPool <- new SharedMemoryChunkPool<byte>(numOutPartPerNode*2, numOutPartPerNode*2, int maxSubPartitionLenAdjust*2, (fun _ -> ()), "SortPool")
                 // boundaries for repartitioning (Shuffling)
                 partBoundary <- Array.init 65536 (fun i -> Math.Min(int(totalOutPartitions)-1,(int)(((int64 i)*(int64 totalOutPartitions))/65536L)))
                 // boundaries for further binning at each node
@@ -324,11 +325,13 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
     // =========================================================
     member x.LoadForSort(segIndex : int, bls : BufferListStream<byte>) =
         let blsC = bls :?> BufferListStreamWithCache<byte,RefCntBufChunkAlign<byte>>
-        blsC.Flush()  // will start async write operations which need to be waited upon
-        blsC.WaitForIOFinish()
-        let sortFile = Native.AsyncStreamIO.OpenFile(blsC.FileName, FileAccess.Read, FileOptions.Asynchronous ||| FileOptions.SequentialScan, false)
+        let fileName = blsC.FileName
+        //blsC.Flush()  // will start async write operations which need to be waited upon
+        //blsC.WaitForIOFinish()
+        (blsC :> IDisposable).Dispose()
+        let sortFile = Native.AsyncStreamIO.OpenFile(fileName, FileAccess.Read, FileOptions.Asynchronous ||| FileOptions.SequentialScan, false)
         let sortStrm = new BufferListStreamWithCache<byte,RefCntBufChunkAlign<byte>>(sortFile, x.SortPool :> SharedPool<string,RefCntBufChunkAlign<byte>>)
-        sortStrm.StartPrefetch(1)
+        sortStrm.SetPrefetch(1)
         x.SortStrm.[segIndex] <- sortStrm        
 
     member x.DoSortFile(parti : int, posInList : int, segment : int) =
@@ -365,7 +368,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
             // dispose sort stream
             (x.SortStrm.[segIndex] :> IDisposable).Dispose()
         // dispose stream
-        (bls :> IDisposable).Dispose()
+        //(bls :> IDisposable).Dispose()
         cnt
 
     static member DoSortFile(parti, posInList, segIndex) =
