@@ -351,7 +351,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
                 (x.SortStrm.[segIndex].GetMoreBufferPart(0L), x.SortStrm.[segIndex].Length)
         // now sort
         let buf = rpart.Elem :?> RefCntBufChunkAlign<byte>
-        NativeSort.Sort.AlignSort64(buf.Ptr, alignLen>>>3, int rpart.Count>>>3)
+        NativeSort.Sort.AlignSort64(buf.Ptr, alignLen>>>3, int rpart.Count / alignLen)
         let cnt = rpart.Count
         if (cnt <> strmLen) then
             failwith "Full stream is not being sorted"
