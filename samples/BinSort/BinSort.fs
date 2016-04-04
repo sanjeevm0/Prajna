@@ -367,6 +367,9 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
             DiskIOFn<byte>.WriteBuffer(rpart, diskIO, 0L)
             // dispose sort stream
             (x.SortStrm.[segIndex] :> IDisposable).Dispose()
+            // wait for other to finish
+            diskIO.WaitForIOFinish()
+            (diskIO :> IDisposable).Dispose()
         // dispose stream
         //(bls :> IDisposable).Dispose()
         cnt
