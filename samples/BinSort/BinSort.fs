@@ -208,7 +208,8 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
 
     member x.ClearSortStrm() =
         for elem in x.SortStrm do
-            (elem.Value :> IDisposable).Dispose()
+            if (Utils.IsNotNull elem.Value) then
+                (elem.Value :> IDisposable).Dispose()
         x.SortStrm.Clear()
 
     static member ClearSortStream() =
