@@ -47,9 +47,10 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
     // for file I/O
     let alignLen = (dim + 7)/8*8
     let cacheLenPerSegment =  Remote.NumCacheRecords * int64(alignLen)
+    let inLenPerPartition = Remote.ReadRecords * dim
 
     static member val ReadRecords = 1000*1024 with get, set
-    static member val NumCacheRecords = (1000000L/4L) with get, set
+    static member val NumCacheRecords = (1000000L/16L) with get, set
 
     // properties
     member x.Dim with get() = dim
@@ -64,8 +65,9 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
     member val private SegmentCnt = -1 with get, set
     member val internal InMemory : bool = false with get, set
     member val internal Allocate : bool = false with get, set
-    member val internal MemoryPool : SharedMemoryChunkPool<byte> = null with get, set
-    member val internal SortPool : SharedMemoryChunkPool<byte> = null with get, set
+    member val internal ReadPool : SharedMemoryChunkPool<byte> = null with get, set // used for reading records
+    member val internal MemoryPool : SharedMemoryChunkPool<byte> = null with get, set // used for storing repartition records coming in
+    member val internal SortPool : SharedMemoryChunkPool<byte> = null with get, set // used for sorting each segment
     member val internal WriteStream = ConcurrentDictionary<uint32, List<int*int*int>*ConcurrentDictionary<int, bool*int*BufferListStream<byte>>>() with get
     member val internal SortStrm = ConcurrentDictionary<int, BufferListStreamWithBackingStream<byte,RefCntBufChunkAlign<byte>>>() with get
 
@@ -80,6 +82,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
                         maxSubPartitionLenAdjust
                     else
                         cacheLenPerSegment
+                x.ReadPool <- new SharedMemoryChunkPool<byte>(2*numInPartPerNode, 2*numInPartPerNode, inLenPerPartition, (fun _ -> ()), "ReadPool")
                 x.MemoryPool <- new SharedMemoryChunkPool<byte>(2*(int outSegmentsPerNode), 2*(int outSegmentsPerNode), int memoryPoolLen, (fun _ -> ()), "RepartitionPool")
                 if (not x.InMemory) then
                     // to reuse memory for sort pool, would have to close all streams first
@@ -160,7 +163,8 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
                         if x.InMemory then
                             segmentDic.[segment] <- (true, segIndex, new BufferListStream<byte>())
                         else
-                            let dirIndex = segIndex % x.PartDataDir.Length
+                            //let dirIndex = segIndex % x.PartDataDir.Length
+                            let dirIndex = int(parti) % x.PartDataDir.Length
                             let fileName = Path.Combine(x.PartDataDir.[dirIndex], sprintf "%d.bin" segIndex)
                             Logger.LogF(LogLevel.Info, fun _ -> sprintf "Create file %s" fileName)
                             let strm = DiskIO.OpenFileWrite(fileName, FileOptions.Asynchronous ||| FileOptions.WriteThrough, false)
@@ -218,14 +222,13 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
     // ================================================================================
     member val private ReadCnt = ref -1 with get
     member val private RawDataDir : string[] = [|@"c:\sort\raw"; @"d:\sort\raw"; @"e:\sort\raw"; @"f:\sort\raw"|] with get, set
-    //member val PartDataDir : string[] = [|@"c:\sort\part"; @"d:\sort\part"; @"e:\sort\part"; @"f:\sort\part"|] with get, set
-    //member val SortDataDir : string[] = [|@"c:\sort\sort"; @"d:\sort\sort"; @"e:\sort\sort"; @"f:\sort\sort"|] with get, set
-    member val PartDataDir : string[] = [|@"e:\sort\part"; @"f:\sort\part"|] with get, set
-    member val SortDataDir : string[] = [|@"e:\sort\sort"; @"f:\sort\sort"|] with get, set
+    member val PartDataDir : string[] = [|@"c:\sort\part"; @"d:\sort\part"; @"e:\sort\part"; @"f:\sort\part"|] with get, set
+    member val SortDataDir : string[] = [|@"c:\sort\sort"; @"d:\sort\sort"; @"e:\sort\sort"; @"f:\sort\sort"|] with get, set
+//    member val PartDataDir : string[] = [|@"e:\sort\part"; @"f:\sort\part"|] with get, set
+//    member val SortDataDir : string[] = [|@"e:\sort\sort"; @"f:\sort\sort"|] with get, set
 
     member x.ReadFilesToMemStream dim parti =
-        let readBlockSize = Remote.ReadRecords * dim
-        let tbuf = Array.zeroCreate<byte> readBlockSize          
+        let readBlockSize = Remote.ReadRecords * dim       
         let counter = ref 0
         let totalReadLen = ref 0L
         let ret =
@@ -236,12 +239,12 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
                 while !totalReadLen < perFileInLen do 
                     let toRead = int32 (Math.Min(int64 readBlockSize, perFileInLen - !totalReadLen))
                     if toRead > 0 then
-                        let memBuf = new MemoryStreamB()
-                        memBuf.WriteFromStreamAlign(fh, int64 toRead, dim)
+                        let memBuf = new BufferListStreamWithPool<byte,RefCntBufChunkAlign<byte>>(x.ReadPool) // take from read pool
+                        memBuf.WriteFromFileStream(fh, int64 toRead, dim)
                         totalReadLen := !totalReadLen + (int64) toRead
                         fh.Seek(0L, SeekOrigin.Begin) |> ignore
                         counter := !counter + 1
-                        yield memBuf
+                        yield memBuf :> BufferListStream<byte>
                 Logger.LogF( LogLevel.MildVerbose, (fun _ -> sprintf "All data from file has been read"))  
                 fh.Close()
             }
@@ -263,14 +266,14 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
                 while !totalReadLen < perFileInLen do 
                     let toRead = int32 (Math.Min(int64 readBlockSize, perFileInLen - !totalReadLen))
                     if toRead > 0 then
-                        let memBuf = new MemoryStreamB()
+                        let memBuf = new BufferListStreamWithPool<byte,RefCntBufChunkAlign<byte>>(x.ReadPool)
                         memBuf.WriteArrAlign(tbuf, 0, toRead, dim)
                         totalReadLen := !totalReadLen + (int64) toRead
                         counter := !counter + 1
                         //if (!counter % 100 = 0) then
                         //    Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "Read %d bytes from file" !totalReadLen) )
                         Logger.LogF( LogLevel.MildVerbose, ( fun _ -> sprintf "%d Read %d bytes from file total %d - rem %d" instCnt toRead !totalReadLen (perFileInLen-(!totalReadLen))) )
-                        yield memBuf
+                        yield memBuf :> BufferListStream<byte>
                 Logger.LogF( LogLevel.MildVerbose, (fun _ -> sprintf "All data from file has been read"))  
             }
         ret
@@ -278,7 +281,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
     static member ReadFilesToMemStreamFS dim parti =
         Remote.Current.ReadFilesToMemStreamF dim parti
 
-    member internal x.RepartitionMemStream (buffer:MemoryStreamB) = 
+    member internal x.RepartitionMemStream (buffer:BufferListStream<byte>) = 
         if buffer.Length > 0L then
             let retseq = seq {
                 let partstream = Array.init<StreamBase<byte>> (int(totalOutPartitions)) (fun i -> null)
@@ -361,7 +364,8 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
         else
             // write out to file which will dispose rpart
             //let filename = (bls :?> BufferListStreamWithCache<byte,RefCntBufAlign<byte>>).FileName + ".sorted"
-            let dirIndex = segIndex % x.PartDataDir.Length
+            //let dirIndex = segIndex % x.PartDataDir.Length
+            let dirIndex = parti % x.PartDataDir.Length
             let filename = Path.Combine(x.SortDataDir.[dirIndex], sprintf "%d.bin" segIndex)
             let diskIO = DiskIO.OpenFileWrite(filename, FileOptions.Asynchronous ||| FileOptions.WriteThrough, false)
             rpart.Type <- RBufPartType.MakeVirtual
@@ -408,7 +412,8 @@ let fullSort(sort : Remote, remote : DSet<_>, inMemory : bool) =
 
     // Read Data into DSet
     let dset1 = 
-        if (inMemory || true) then
+        //if (inMemory || true) then
+        if (inMemory) then
             startDSet |> DSet.sourceI (int sort.InPartitions) (Remote.ReadFilesToMemStreamFS sort.Dim)
         else
             startDSet |> DSet.sourceI (int sort.InPartitions) (Remote.ReadFilesToMemStreamS sort.Dim)
@@ -464,16 +469,17 @@ let main orgargs =
     let mutable inMemory = parse.ParseBoolean("-inmem", false)
 
     // simple test case
-    PrajnaClusterFile <- "local[2]"
-    nDim <- 10
-    recordsPerNode <- 160L
-    numInPartPerNode <- 2
-    numOutPartPerNode <- 2
-    furtherPartition <- 4
-    inMemory <- false
-    Remote.ReadRecords <- 40
-    Remote.NumCacheRecords <- 5L
-    //MemoryStreamB.InitMemStack(100, 50)
+    if (false) then
+        PrajnaClusterFile <- "local[2]"
+        nDim <- 10
+        recordsPerNode <- 160L
+        numInPartPerNode <- 2
+        numOutPartPerNode <- 2
+        furtherPartition <- 4
+        inMemory <- false
+        Remote.ReadRecords <- 40
+        Remote.NumCacheRecords <- 5L
+        //MemoryStreamB.InitMemStack(100, 50)
 
     let bAllParsed = parse.AllParsed Usage
     let mutable bExecute = false

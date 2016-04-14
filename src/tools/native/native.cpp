@@ -756,7 +756,7 @@ namespace Prajna {
 
                 generic <class T> static int ReadBuffer(FileStream ^strm, array<T> ^buf, int offset, int num)
                 {
-                    pin_ptr<T> pBuf = &buf[0];
+                    pin_ptr<T> pBuf = &buf[offset];
                     SafeFileHandle ^sfh = strm->SafeFileHandle;
                     bool success = false;
                     sfh->DangerousAddRef(success);
@@ -766,15 +766,18 @@ namespace Prajna {
                         int numToRead = Math::Min(num, buf->Length - offset);
                         if (numToRead != num)
                         {
+                            sfh->DangerousRelease();
                             throw gcnew IndexOutOfRangeException();
                         }
                         DWORD bytesRead;
                         if (::ReadFile(hFile, (void*)pBuf, numToRead*sizeof(T), &bytesRead, nullptr))
                         {
+                            sfh->DangerousRelease();
                             return bytesRead / sizeof(T);
                         }
                         else
                         {
+                            sfh->DangerousRelease();
                             return -1;
                         }
                     }
@@ -798,6 +801,7 @@ namespace Prajna {
                         int numToWrite = Math::Min(num, buf->Length - offset);
                         if (numToWrite != num)
                         {
+                            sfh->DangerousRelease();
                             throw gcnew IndexOutOfRangeException("Index out of range");
                         }
                         DWORD bytesWritten = 0;
