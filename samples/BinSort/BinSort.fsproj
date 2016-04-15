@@ -6,6 +6,7 @@
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
     <SchemaVersion>2.0</SchemaVersion>
     <ProjectGuid>{33241c76-cdc9-4f23-8947-a204d42a5724}</ProjectGuid>
+    <ProjectGuid>{33241c76-cdc9-4f23-8947-a204d42a5724}</ProjectGuid>
     <OutputType>Exe</OutputType>
     <RootNamespace>BinSort</RootNamespace>
     <AssemblyName>BinSort</AssemblyName>
@@ -87,6 +88,7 @@
     <Prefer32Bit>true</Prefer32Bit>
     <PlatformTarget>x64</PlatformTarget>
     <StartArguments>-simple true -con -verbose 4</StartArguments>
+    <StartArguments>-cluster c:\onenet\cluster\onenet01-05.inf -log c:\onenet\log\b.log -con -verbose 4</StartArguments>
     <EnableUnmanagedDebugging>true</EnableUnmanagedDebugging>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x64' ">
