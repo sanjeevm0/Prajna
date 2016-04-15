@@ -13,8 +13,5 @@ nuget Microsoft.WindowsAzure.Common
 nuget Microsoft.WindowsAzure.Management
 nuget Microsoft.WindowsAzure.Management.Compute
 
-github fsharp/FAKE modules/Octokit/Octokit.fsx 
-
-http https://live.sysinternals.com/files/handle.zip
-
-
+github fsharp/FAKE modules/Octokit/Octokit.fsx
+http https://live.sysinternals.com/files/handle.zip handle.zip
