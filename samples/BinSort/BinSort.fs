@@ -101,10 +101,16 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
     member x.StopInstance() =
         (x :> IDisposable).Dispose()
 
-    static member StartRemoteInstance(readRecords : int, cacheRecords : int64, dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode : int, furtherPartition : int, recordsPerNode : int64, inMemory : bool) () =
+    static member StartRemoteInstance(rawDir : string[], partDir : string[], sortDir : string[], readRecords : int, cacheRecords : int64, 
+                                      dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode : int, furtherPartition : int, 
+                                      recordsPerNode : int64, inMemory : bool) () =
         Remote.ReadRecords <- readRecords
         Remote.NumCacheRecords <- cacheRecords
         Remote.Current <- new Remote(dim, numNodes, numInPartPerNode, numOutPartPerNode, furtherPartition, recordsPerNode)
+        // overwrite partdir and sortdir with arguments from job
+        Remote.Current.RawDataDir <- rawDir
+        Remote.Current.PartDataDir <- partDir
+        Remote.Current.SortDataDir <- sortDir
         Remote.Current.InitInstance(inMemory)
 
     static member StopRemoteInstance() =
@@ -221,9 +227,10 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
 
     // ================================================================================
     member val private ReadCnt = ref -1 with get
-    member val private RawDataDir : string[] = [|@"c:\sort\raw"; @"d:\sort\raw"; @"e:\sort\raw"; @"f:\sort\raw"|] with get, set
+    member val RawDataDir : string[] = [|@"c:\sort\raw"; @"d:\sort\raw"; @"e:\sort\raw"; @"f:\sort\raw"|] with get, set
     member val PartDataDir : string[] = [|@"c:\sort\part"; @"d:\sort\part"; @"e:\sort\part"; @"f:\sort\part"|] with get, set
     member val SortDataDir : string[] = [|@"c:\sort\sort"; @"d:\sort\sort"; @"e:\sort\sort"; @"f:\sort\sort"|] with get, set
+//    member val RawDataDir : string[] = [|@"e:\sort\raw"; @"f:\sort\raw"|] with get, set
 //    member val PartDataDir : string[] = [|@"e:\sort\part"; @"f:\sort\part"|] with get, set
 //    member val SortDataDir : string[] = [|@"e:\sort\sort"; @"f:\sort\sort"|] with get, set
 
@@ -293,7 +300,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
                     let (buf, pos, len) = sr.GetMoreBuffer()
                     if (Utils.IsNotNull buf) then
                         let idx = ref pos
-                        while (!idx + dim <= len) do
+                        while (!idx + dim <= pos + len) do
                             let index = (((int) buf.[!idx]) <<< 8) + ((int) buf.[!idx + 1])
                             let parti = partBoundary.[index]
 
@@ -467,9 +474,11 @@ let main orgargs =
     let mutable numOutPartPerNode = parse.ParseInt( "-nump", 8 ) // number of partitions (output)
     let mutable furtherPartition = parse.ParseInt("-fnump", 2500) // further binning for improved sort performance
     let mutable inMemory = parse.ParseBoolean("-inmem", false)
+    let mutable bSimpleTest = parse.ParseBoolean("-simple", false)
 
     // simple test case
-    if (false) then
+    if (bSimpleTest) then
+        Console.WriteLine("Simple local test")
         PrajnaClusterFile <- "local[2]"
         nDim <- 10
         recordsPerNode <- 160L
@@ -487,14 +496,12 @@ let main orgargs =
     if (bAllParsed) then
         Environment.Init()
         // start cluster
-        //Cluster.Start( null, PrajnaClusterFile )
-        //let cluster = Cluster.GetCurrent()
         let cluster = new Cluster(PrajnaClusterFile)
         Cluster.SetCurrent(cluster)
 
         // add other dependencies
         let curJob = JobDependencies.setCurrentJob "SortGen"
-        JobDependencies.Current.Add([|"nativesort.dll"|])
+        JobDependencies.Current.Add([|"nativesort.dll"; "native.dll"|])
         let proc = Process.GetCurrentProcess()
         let dir = Path.GetDirectoryName(proc.MainModule.FileName)
         curJob.AddDataDirectory( dir ) |> ignore
@@ -503,6 +510,10 @@ let main orgargs =
 
         // create local copy
         let sort = new Remote(nDim, numNodes, numInPartPerNode, numOutPartPerNode, furtherPartition, recordsPerNode)
+        if (bSimpleTest) then
+            sort.RawDataDir <- [|@"e:\sort\raw"; @"f:\sort\raw"|]
+            sort.PartDataDir <- [|@"e:\sort\part"; @"f:\sort\part"|]
+            sort.SortDataDir <- [|@"e:\sort\sort"; @"f:\sort\sort"|]
 
         // do sort
         let remoteExec = DSet<_>(Name = "Remote")
@@ -512,7 +523,8 @@ let main orgargs =
         Logger.LogF(LogLevel.Info, fun _ -> sprintf "Init takes %f seconds" watch.Elapsed.TotalSeconds)
 
         //remoteExec.Execute(RemoteFunc.TransferInstance(sort)) // transfer local to remote via serialization
-        remoteExec.Execute(Remote.StartRemoteInstance(Remote.ReadRecords, Remote.NumCacheRecords, nDim, numNodes, numInPartPerNode, numOutPartPerNode, furtherPartition, recordsPerNode, inMemory))
+        remoteExec.Execute(Remote.StartRemoteInstance(sort.RawDataDir, sort.PartDataDir, sort.SortDataDir, Remote.ReadRecords, Remote.NumCacheRecords, 
+                                                      nDim, numNodes, numInPartPerNode, numOutPartPerNode, furtherPartition, recordsPerNode, inMemory))
         Logger.LogF(LogLevel.Info, fun _ -> sprintf "Init plus alloc takes %f seconds" watch.Elapsed.TotalSeconds)
 
         fullSort(sort, remoteExec, inMemory)

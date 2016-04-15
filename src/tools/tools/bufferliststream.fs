@@ -1858,7 +1858,7 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
             else
                 let toRead = Math.Min(bCount, bufRemAlign)
                 //let writeAmt = fh.Read(buf, int pos, int toRead)
-                let writeAmt = Native.AsyncStreamIO.ReadBuffer(fh, buf, int pos, int toRead)
+                let writeAmt = Native.AsyncStreamIO.ReadBuffer<'T>(fh, buf, int pos, int toRead)
                 bCount <- bCount - int64 writeAmt
                 x.MoveForwardAfterWrite(int64 writeAmt)
                 if (writeAmt <> int toRead) then
