@@ -481,6 +481,7 @@ namespace Prajna {
                     {
                         int e = GetLastError();
                         printf("Last error on CreateFile: 0x%x", e);
+                        throw gcnew IOException("Unable to open file handle");
                     }
                     return (IntPtr)h;
                 }
