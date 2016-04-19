@@ -1947,16 +1947,17 @@ and [<AllowNullLiteral>] NetworkConnections() as x =
     /// <param name="newChannel">The channel to add to collection</param>
     /// <returns>The channel in collection</returns>
     member x.AddToCollection(newChannel : NetworkCommandQueue) =
-        let socket = newChannel.Socket
-        let newSignature = LocalDNS.IPEndPointToInt64( socket.RemoteEndPoint :?> IPEndPoint )
-        // We expect most socket added to be unique, so it is ok to use value rather than valueFunc here. 
-        let addedChannel = channelsCollection.GetOrAdd( newSignature, newChannel )
-        if not (Object.ReferenceEquals( addedChannel, newChannel )) then 
-            channelsCollection.Item(newSignature) <- newChannel
-            Logger.LogF( LogLevel.Warning, ( fun _ -> sprintf "add to channel accepted socket from %A with name %A, but channel with same remote endpoint already exist!" socket.RemoteEndPoint (LocalDNS.GetShowInfo( socket.RemoteEndPoint ) ) ))
-        Logger.LogF( LogLevel.WildVerbose, (fun _ -> let ep = socket.RemoteEndPoint 
-                                                     let eip = ep :?> IPEndPoint
-                                                     sprintf "add to channel accepted socket from %A with name %A" ep (LocalDNS.GetHostByAddress( eip.Address.GetAddressBytes(),false)  ) ))
+        if (not newChannel.HasFailed) then
+            let socket = newChannel.Socket
+            let newSignature = LocalDNS.IPEndPointToInt64( socket.RemoteEndPoint :?> IPEndPoint )
+            // We expect most socket added to be unique, so it is ok to use value rather than valueFunc here. 
+            let addedChannel = channelsCollection.GetOrAdd( newSignature, newChannel )
+            if not (Object.ReferenceEquals( addedChannel, newChannel )) then 
+                channelsCollection.Item(newSignature) <- newChannel
+                Logger.LogF( LogLevel.Warning, ( fun _ -> sprintf "add to channel accepted socket from %A with name %A, but channel with same remote endpoint already exist!" socket.RemoteEndPoint (LocalDNS.GetShowInfo( socket.RemoteEndPoint ) ) ))
+            Logger.LogF( LogLevel.WildVerbose, (fun _ -> let ep = socket.RemoteEndPoint 
+                                                         let eip = ep :?> IPEndPoint
+                                                         sprintf "add to channel accepted socket from %A with name %A" ep (LocalDNS.GetHostByAddress( eip.Address.GetAddressBytes(),false)  ) ))
 
     /// Given a socket, create a NetworkCommandQueue and add it to collection
     /// <param name="socket">The socket from which to create NetworkCommandQueue</param>

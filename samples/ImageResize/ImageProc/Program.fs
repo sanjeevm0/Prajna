@@ -4,11 +4,9 @@ open System.Windows.Forms
 open System.Drawing
 open System.Drawing.Imaging
 open System
-open Tools
-open Tools.ParseArgs
-open Tools.FTrace
-open Prajna
-open ImageProcUM
+open Prajna.Core
+open Prajna.Api.FSharp
+open Prajna.Tools
 
 let imgProc = new ImageProcUM.ProcUM()
 
@@ -53,12 +51,12 @@ let main argv =
 
     //DKVAction.DefaultTypeOfJobMask <- PrajnaTaskType.ApplicationMask
 
-    PrajnaCluster.Start( "", PrajnaClusterFile )
+    Cluster.Start( "", PrajnaClusterFile )
     // add other file dependencies
     //PrajnaJobDependencies.AddTo([|("a.txt", "test/a.txt"); ("b.txt", "test/b.txt")|])
 
     let t1 = DateTime.Now
-    let mutable curDKV = DKV<string, byte[]>(Name = remoteDKVname,
+    let mutable curDKV = DSet<string*byte[]>(Name = remoteDKVname,
                                              Version = ver,
                                              IsSource = true)
     let mutable procDKVSeq = curDKV.MapByValue(ImageProc).ToSeq()
