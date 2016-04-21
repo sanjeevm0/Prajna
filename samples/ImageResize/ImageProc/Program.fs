@@ -56,11 +56,10 @@ let main argv =
     //PrajnaJobDependencies.AddTo([|("a.txt", "test/a.txt"); ("b.txt", "test/b.txt")|])
 
     let t1 = DateTime.Now
-    let mutable curDKV = DSet<string*byte[]>(Name = remoteDKVname,
-                                             Version = ver,
-                                             IsSource = true)
+    let mutable curDKV = DSet<string*byte[]>( Name = remoteDKVname,
+                                              Version = ver) |> DSet.loadSource
     let mutable procDKVSeq = curDKV.MapByValue(ImageProc).ToSeq()
-    let (numFiles, total) = DKV.RetrieveFolderRecursive(localdir, procDKVSeq)
+    let (numFiles, total) = DSet.RetrieveFolderRecursive(localdir, procDKVSeq)
     let t2 = DateTime.Now
     let elapse = t2.Subtract(t1)
     Logger.Log( LogLevel.Info, ( sprintf "Processed %d Files with total %dB in %f sec, throughput = %f MB/s" numFiles total elapse.TotalSeconds ((float total)/elapse.TotalSeconds/1000000.) ))
