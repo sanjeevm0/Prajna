@@ -15,6 +15,7 @@
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
     <TargetFSharpCoreVersion>4.3.1.0</TargetFSharpCoreVersion>
     <Name>BinSort</Name>
+    <RunPostBuildEvent>OnBuildSuccess</RunPostBuildEvent>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <DebugSymbols>true</DebugSymbols>
@@ -70,7 +71,7 @@
     </ProjectReference>
     <ProjectReference Include="..\NativeSort\NativeSort.vcxproj">
       <Name>NativeSort</Name>
-      <Project>{d851a169-82e7-44b7-a3e6-d784eae0f57e}</Project>
+      <Project>{6bd1ee9a-ed53-4f52-b337-a235d33d63ec}</Project>
       <Private>True</Private>
     </ProjectReference>
   </ItemGroup>
@@ -89,7 +90,7 @@
     <Prefer32Bit>true</Prefer32Bit>
     <PlatformTarget>x64</PlatformTarget>
     <StartArguments>-simple true -con -verbose 4</StartArguments>
-    <StartArguments>-cluster c:\onenet\cluster\onenet01-05.inf -log c:\onenet\log\b.log -con -verbose 4</StartArguments>
+    <StartArguments>-con -verbose 4 -cluster C:\onenet\cluster\cluster01-04.lst</StartArguments>
     <EnableUnmanagedDebugging>true</EnableUnmanagedDebugging>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x64' ">
@@ -116,6 +117,10 @@
     </Otherwise>
   </Choose>
   <Import Project="$(FSharpTargetsPath)" />
+  <PropertyGroup>
+    <PostBuildEvent>
+    </PostBuildEvent>
+  </PropertyGroup>
   <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 
        Other similar extension points exist, see Microsoft.Common.targets.
   <Target Name="BeforeBuild">

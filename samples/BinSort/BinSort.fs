@@ -50,7 +50,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
     let inLenPerPartition = Remote.ReadRecords * dim
 
     static member val ReadRecords = 1000*1024 with get, set
-    static member val NumCacheRecords = (1000000L/16L) with get, set
+    static member val NumCacheRecords = 2048L with get, set
 
     // properties
     member x.Dim with get() = dim
@@ -82,6 +82,8 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
                         maxSubPartitionLenAdjust
                     else
                         cacheLenPerSegment
+                RefCntBufChunkAlign<byte>.ChunkSize <- Math.Max(inLenPerPartition, int memoryPoolLen)
+                RefCntBufChunkAlign<byte>.ChunkSize <- Math.Max(RefCntBufChunkAlign<byte>.ChunkSize, int maxSubPartitionLenAdjust*2)
                 x.ReadPool <- new SharedMemoryChunkPool<byte>(2*numInPartPerNode, 2*numInPartPerNode, inLenPerPartition, (fun _ -> ()), "ReadPool")
                 x.MemoryPool <- new SharedMemoryChunkPool<byte>(2*(int outSegmentsPerNode), 2*(int outSegmentsPerNode), int memoryPoolLen, (fun _ -> ()), "RepartitionPool")
                 if (not x.InMemory) then
