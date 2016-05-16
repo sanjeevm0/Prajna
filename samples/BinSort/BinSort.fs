@@ -50,7 +50,8 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
     let inLenPerPartition = Remote.ReadRecords * dim
 
     static member val ReadRecords = 1000*1024 with get, set
-    static member val NumCacheRecords = 2048L with get, set
+    //static member val NumCacheRecords = 2048L with get, set
+    static member val NumCacheRecords = 1L <<< 20 with get, set
 
     // properties
     member x.Dim with get() = dim
@@ -66,7 +67,8 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
     member val internal InMemory : bool = false with get, set
     member val internal Allocate : bool = false with get, set
     member val internal ReadPool : SharedMemoryChunkPool<byte> = null with get, set // used for reading records
-    member val internal MemoryPool : SharedMemoryChunkPool<byte> = null with get, set // used for storing repartition records coming in
+    //member val internal MemoryPool : SharedMemoryChunkPool<byte> = null with get, set // used for storing repartition records coming in
+    member val internal MemoryPool : SharedMemoryPool<RefCntBufAlign<byte>,byte> = null with get, set // used for storing repartition records coming in
     member val internal SortPool : SharedMemoryChunkPool<byte> = null with get, set // used for sorting each segment
     member val internal WriteStream = ConcurrentDictionary<uint32, List<int*int*int>*ConcurrentDictionary<int, bool*int*BufferListStream<byte>>>() with get
     member val internal SortStrm = ConcurrentDictionary<int, BufferListStreamWithBackingStream<byte,RefCntBufChunkAlign<byte>>>() with get
@@ -85,7 +87,8 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
                 RefCntBufChunkAlign<byte>.ChunkSize <- Math.Max(inLenPerPartition, int memoryPoolLen)
                 RefCntBufChunkAlign<byte>.ChunkSize <- Math.Max(RefCntBufChunkAlign<byte>.ChunkSize, int maxSubPartitionLenAdjust*2)
                 x.ReadPool <- new SharedMemoryChunkPool<byte>(2*numInPartPerNode, 2*numInPartPerNode, inLenPerPartition, (fun _ -> ()), "ReadPool")
-                x.MemoryPool <- new SharedMemoryChunkPool<byte>(2*(int outSegmentsPerNode), 2*(int outSegmentsPerNode), int memoryPoolLen, (fun _ -> ()), "RepartitionPool")
+                //x.MemoryPool <- new SharedMemoryChunkPool<byte>(2*(int outSegmentsPerNode), 2*(int outSegmentsPerNode), int memoryPoolLen, (fun _ -> ()), "RepartitionPool")
+                x.MemoryPool <- new SharedMemoryPool<RefCntBufAlign<byte>,byte>(2*(int outSegmentsPerNode), 2*(int outSegmentsPerNode), int memoryPoolLen, (fun _ -> ()), "RepartitionPool")
                 if (not x.InMemory) then
                     // to reuse memory for sort pool, would have to close all streams first
                     //x.SortPool <- SharedMemoryChunkPool<byte>.ReusePool(x.MemoryPool, numOutPartPerNode*2, numOutPartPerNode*2, int maxSubPartitionLen, (fun _ -> ()), "SortPool")
@@ -176,7 +179,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
                             let fileName = Path.Combine(x.PartDataDir.[dirIndex], sprintf "%d.bin" segIndex)
                             Logger.LogF(LogLevel.Info, fun _ -> sprintf "Create file %s" fileName)
                             let strm = DiskIO.OpenFileWrite(fileName, FileOptions.Asynchronous ||| FileOptions.WriteThrough, false)
-                            let bls = new BufferListStreamWithCache<byte,RefCntBufChunkAlign<byte>>(strm, x.MemoryPool)
+                            let bls = new BufferListStreamWithCache<byte,RefCntBufAlign<byte>>(strm, x.MemoryPool)
                             bls.FileName <- fileName
                             //let bls = new BufferListStreamWithCache<byte,RefCntBufChunkAlign<byte>>(fileName, x.MemoryPool) // does not open file
                             //bls.BufferLess <- true
@@ -337,7 +340,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
 
     // =========================================================
     member x.LoadForSort(segIndex : int, bls : BufferListStream<byte>) =
-        let blsC = bls :?> BufferListStreamWithCache<byte,RefCntBufChunkAlign<byte>>
+        let blsC = bls :?> BufferListStreamWithCache<byte,RefCntBufAlign<byte>>
         let fileName = blsC.FileName
         //blsC.Flush()  // will start async write operations which need to be waited upon
         //blsC.WaitForIOFinish()
@@ -474,9 +477,12 @@ let main orgargs =
     //let recordsPerNode = parse.ParseInt64("-records", 100000000L)
     let mutable numInPartPerNode = parse.ParseInt( "-nfile", 8 ) // number of partitions (input)
     let mutable numOutPartPerNode = parse.ParseInt( "-nump", 8 ) // number of partitions (output)
-    let mutable furtherPartition = parse.ParseInt("-fnump", 2500) // further binning for improved sort performance
+    //let mutable furtherPartition = parse.ParseInt("-fnump", 2500) // further binning for improved sort performance
+    let mutable furtherPartition = parse.ParseInt("-nump", 32)
     let mutable inMemory = parse.ParseBoolean("-inmem", false)
     let mutable bSimpleTest = parse.ParseBoolean("-simple", false)
+
+    // to use 80GB of memory for caching, product of furtherPartition * numCacheRecords should be about 50M
 
     // simple test case
     if (bSimpleTest) then
