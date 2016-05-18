@@ -2606,15 +2606,36 @@ type internal DiskIOFn<'T>() =
             (rbuf :> IDisposable).Dispose()
     static member val private DoneIOWriteDel = IOCallbackDel<'T>(DiskIOFn<'T>.DoneIOWrite)
 
-    static member WriteBuffer(elem : RBufPart<'T>, file : AsyncStreamIO, ?pos : int64) =
+    static member private DoneIOWriteCloseWithCb (closeCb : Option<unit->unit>) (ioResult : int) (state : obj) (buffer : 'T[]) (offset : int) (bytesTransferred : int) =
+        let (rbuf, file) = state :?> (RBufPart<'T>*AsyncStreamIO)
+        DiskIOFn<'T>.DoneIOWrite ioResult state buffer offset bytesTransferred
+        // now also close the file stream
+        file.WaitForIOFinish()
+        (file :> IDisposable).Dispose()
+        match closeCb with
+            | None -> ()
+            | Some(cbFn) -> cbFn()
+    static member val private DoneIOWriteClose = DiskIOFn<'T>.DoneIOWriteCloseWithCb (Some(fun () -> ()))
+    static member val private DoneIOWriteCloseDel = IOCallbackDel<'T>(DiskIOFn<'T>.DoneIOWriteClose)
+
+    static member WriteBufferH (doneCb) (elem : RBufPart<'T>, file : AsyncStreamIO, pos : int64) =
         //elem.Elem.WriteIO.Reset()
         elem.ResetIOEvent()
-        let pos = defaultArg pos elem.StreamPos
         Console.WriteLine("Writing element pos: {0} length: {1}", elem.StreamPos, elem.Count)
         if (file.BufferLess()) then
-            file.WriteFilePos(elem.Elem.Ptr, elem.Elem.Buffer, elem.Offset, elem.Elem.Length, DiskIOFn<'T>.DoneIOWriteDel, (elem, file), pos) |> ignore
+            file.WriteFilePos(elem.Elem.Ptr, elem.Elem.Buffer, elem.Offset, elem.Elem.Length, doneCb, (elem, file), pos) |> ignore
         else
-            file.WriteFilePos(elem.Elem.Ptr, elem.Elem.Buffer, elem.Offset, int elem.Count, DiskIOFn<'T>.DoneIOWriteDel, (elem, file), pos) |> ignore
+            file.WriteFilePos(elem.Elem.Ptr, elem.Elem.Buffer, elem.Offset, int elem.Count, doneCb, (elem, file), pos) |> ignore
+
+    static member WriteBuffer(elem : RBufPart<'T>, file : AsyncStreamIO, ?pos : int64) =
+        let pos = defaultArg pos elem.StreamPos
+        DiskIOFn<'T>.WriteBufferH (DiskIOFn<'T>.DoneIOWriteDel) (elem, file, pos)
+
+    static member WriteBufferClose(elem : RBufPart<'T>, file : AsyncStreamIO, closeCb : Option<unit->unit>, ?pos : int64) =
+        let pos = defaultArg pos elem.StreamPos
+        match closeCb with
+            | None -> DiskIOFn<'T>.WriteBufferH (DiskIOFn<'T>.DoneIOWriteCloseDel) (elem, file, pos)
+            | Some(cbFn) -> DiskIOFn<'T>.WriteBufferH (IOCallbackDel<'T>(DiskIOFn<'T>.DoneIOWriteCloseWithCb closeCb)) (elem, file, pos)
 
     static member private DoneIORead (ioResult : int) (state : obj) (buffer : 'T[]) (offset : int) (bytesTransferred : int) =
         let rbuf = state :?> RBufPart<'T>

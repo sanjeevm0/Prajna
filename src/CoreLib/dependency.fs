@@ -285,10 +285,14 @@ type JobDependencies() =
         if (not (File.Exists local)) then
             failwith (sprintf "File dependency not found")
         //JobDependencies.FileDependencies.Add(dep)
-        let jobDep = JobDependency(Name = remote,
-                                         Location = local)
-        jobDep.ComputeHash() |> ignore
-        if (not (x.JobDependencyContains(jobDep))) then
+        let jobDep = JobDependency(Name = remote, Location = local)
+        let success =
+            try
+                jobDep.ComputeHash() |> ignore
+                true
+            with e ->
+                false            
+        if success && (not (x.JobDependencyContains(jobDep))) then
             x.FileDependencies.Add(jobDep)
             System.Threading.Interlocked.Increment( x.nDependencyChanged ) |> ignore 
 

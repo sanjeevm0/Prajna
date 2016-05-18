@@ -90,7 +90,7 @@
     <Prefer32Bit>true</Prefer32Bit>
     <PlatformTarget>x64</PlatformTarget>
     <StartArguments>-simple true -con -verbose 4</StartArguments>
-    <StartArguments>-con -verbose 4 -cluster C:\onenet\cluster\cluster01-04.lst</StartArguments>
+    <StartArguments>-simple true -log simplesort.log -con -verbose 4</StartArguments>
     <EnableUnmanagedDebugging>true</EnableUnmanagedDebugging>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x64' ">
