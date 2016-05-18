@@ -2606,17 +2606,10 @@ type internal DiskIOFn<'T>() =
             (rbuf :> IDisposable).Dispose()
     static member val private DoneIOWriteDel = IOCallbackDel<'T>(DiskIOFn<'T>.DoneIOWrite)
 
-    static member private DoneIOWriteCloseWithCb (closeCb : Option<unit->unit>) (ioResult : int) (state : obj) (buffer : 'T[]) (offset : int) (bytesTransferred : int) =
+    static member private DoneIOWriteWithCb (doneCb : unit->unit) (ioResult : int) (state : obj) (buffer : 'T[]) (offset : int) (bytesTransferred : int) =
         let (rbuf, file) = state :?> (RBufPart<'T>*AsyncStreamIO)
         DiskIOFn<'T>.DoneIOWrite ioResult state buffer offset bytesTransferred
-        // now also close the file stream
-        file.WaitForIOFinish()
-        (file :> IDisposable).Dispose()
-        match closeCb with
-            | None -> ()
-            | Some(cbFn) -> cbFn()
-    static member val private DoneIOWriteClose = DiskIOFn<'T>.DoneIOWriteCloseWithCb (Some(fun () -> ()))
-    static member val private DoneIOWriteCloseDel = IOCallbackDel<'T>(DiskIOFn<'T>.DoneIOWriteClose)
+        doneCb()
 
     static member WriteBufferH (doneCb) (elem : RBufPart<'T>, file : AsyncStreamIO, pos : int64) =
         //elem.Elem.WriteIO.Reset()
@@ -2631,11 +2624,9 @@ type internal DiskIOFn<'T>() =
         let pos = defaultArg pos elem.StreamPos
         DiskIOFn<'T>.WriteBufferH (DiskIOFn<'T>.DoneIOWriteDel) (elem, file, pos)
 
-    static member WriteBufferClose(elem : RBufPart<'T>, file : AsyncStreamIO, closeCb : Option<unit->unit>, ?pos : int64) =
+    static member WriteBufferCb(elem : RBufPart<'T>, file : AsyncStreamIO, doneCb : unit->unit, ?pos : int64) =
         let pos = defaultArg pos elem.StreamPos
-        match closeCb with
-            | None -> DiskIOFn<'T>.WriteBufferH (DiskIOFn<'T>.DoneIOWriteCloseDel) (elem, file, pos)
-            | Some(cbFn) -> DiskIOFn<'T>.WriteBufferH (IOCallbackDel<'T>(DiskIOFn<'T>.DoneIOWriteCloseWithCb closeCb)) (elem, file, pos)
+        DiskIOFn<'T>.WriteBufferH (IOCallbackDel<'T>(DiskIOFn<'T>.DoneIOWriteWithCb doneCb)) (elem, file, pos)
 
     static member private DoneIORead (ioResult : int) (state : obj) (buffer : 'T[]) (offset : int) (bytesTransferred : int) =
         let rbuf = state :?> RBufPart<'T>

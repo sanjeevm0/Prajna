@@ -355,9 +355,15 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
         let sortStrm = new BufferListStreamWithCache<byte,RefCntBufChunkAlign<byte>>(sortFile, x.SortPool :> SharedPool<string,RefCntBufChunkAlign<byte>>)
         sortStrm.SetPrefetch(1)
         x.SortStrm.[segIndex] <- sortStrm
-        
-    static member DecCnt (v : int ref) () =
+
+    static member private DecCnt (o : obj) =
+        let (strm, v) = o :?> Stream*(int ref)
+        (strm :> IDisposable).Dispose()
         Interlocked.Decrement(v) |> ignore
+    static member val private DecCntDel = WaitCallback(Remote.DecCnt)
+        
+    static member DoneSort (strm : Stream, v : int ref) () =
+        ThreadPool.QueueUserWorkItem(Remote.DecCntDel, (strm, v)) |> ignore
 
     member x.DoSortFile(parti : int, posInList : int, segment : int) =
         let (writeCnt, segList, segDic) = x.WriteStream.[uint32 parti]
@@ -393,7 +399,7 @@ type Remote(dim : int, numNodes : int, numInPartPerNode : int, numOutPartPerNode
             let diskIO = DiskIO.OpenFileWrite(filename, FileOptions.Asynchronous ||| FileOptions.WriteThrough, false)
             rpart.Type <- RBufPartType.MakeVirtual
             Interlocked.Increment(writeCnt) |> ignore
-            DiskIOFn<byte>.WriteBufferClose(rpart, diskIO, Some(Remote.DecCnt writeCnt), 0L)
+            DiskIOFn<byte>.WriteBufferCb(rpart, diskIO, Remote.DoneSort (diskIO, writeCnt), 0L)
             // dispose sort stream
             (x.SortStrm.[segIndex] :> IDisposable).Dispose()
             // wait for other to finish
