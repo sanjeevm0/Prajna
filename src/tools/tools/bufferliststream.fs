@@ -2600,7 +2600,7 @@ type internal DiskIOFn<'T>() =
         else
             if (int rbuf.Count*sizeof<'T> <> bytesTransferred) then
                 raise (new Exception("I/O failed "))
-        Console.WriteLine("Finish streampos: {0} {1}", rbuf.StreamPos, rbuf.Type)
+        Logger.LogF(LogLevel.MediumVerbose, fun _ -> sprintf "Finish streampos: %d %A" rbuf.StreamPos rbuf.Type)
         rbuf.IOEvent.Set()
         if (rbuf.Type = RBufPartType.MakeVirtual) then
             (rbuf :> IDisposable).Dispose()
@@ -2610,7 +2610,7 @@ type internal DiskIOFn<'T>() =
         //elem.Elem.WriteIO.Reset()
         elem.ResetIOEvent()
         let pos = defaultArg pos elem.StreamPos
-        Console.WriteLine("Writing element pos: {0} length: {1}", elem.StreamPos, elem.Count)
+        Logger.LogF(LogLevel.MediumVerbose, fun _ -> sprintf "Writing element pos: %d length: %d" elem.StreamPos elem.Count)
         if (file.BufferLess()) then
             file.WriteFilePos(elem.Elem.Ptr, elem.Elem.Buffer, elem.Offset, elem.Elem.Length, DiskIOFn<'T>.DoneIOWriteDel, (elem, file), pos) |> ignore
         else
