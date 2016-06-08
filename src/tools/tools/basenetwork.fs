@@ -458,7 +458,6 @@ type GenericBuf(conn : IConn, maxBufferSize : int) as x =
 
 /// maintains multiple network connections
 [<AllowNullLiteral>]
-[<AbstractClass>]
 type Network() =
     let mutable listen : TcpListener = null
     let networkQ = ConcurrentDictionary<string, IConn>()

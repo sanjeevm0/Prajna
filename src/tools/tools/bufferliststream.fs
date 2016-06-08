@@ -989,10 +989,13 @@ type StreamReader<'T>(_bls : StreamBase<'T>, _bufPos : int64, _maxLen : int64) =
     member x.GetMoreBufferPart() : RBufPart<'T> =
         if (maxLen > 0L) then
             use rbuf = bls.GetMoreBufferPart(&elemPos, &bufPos)
-            let retCnt = Math.Min(int64 rbuf.Count, maxLen)
-            maxLen <- maxLen - retCnt
-            let ret = new RBufPart<'T>(rbuf, rbuf.Offset, retCnt)
-            ret
+            if (Utils.IsNotNull rbuf) then
+                let retCnt = Math.Min(int64 rbuf.Count, maxLen)
+                maxLen <- maxLen - retCnt
+                let ret = new RBufPart<'T>(rbuf, rbuf.Offset, retCnt)
+                ret
+            else
+                null
         else
             null
 
@@ -1668,6 +1671,18 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
         x.MoveToNextBuffer(true, int bufRemWrite) |> ignore
         rbuf.Buffer.[int bufPos] <- b
         x.MoveForwardAfterWrite(1L)
+
+    override x.WriteByte(b : byte) =
+        let a = Array.zeroCreate<byte>(1)
+        x.WriteArr<byte>(a, 0, 1)
+
+    override x.ReadByte() =
+        let a = Array.zeroCreate<byte>(1)
+        let amt = x.ReadArrT(a, 0, 1, 1)
+        if (amt = 0) then
+            -1
+        else
+            int a.[0]
 
     member x.SealAndGetNextWriteBuffer() =
         x.SealWriteBuffer()
