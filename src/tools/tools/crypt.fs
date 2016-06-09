@@ -241,7 +241,7 @@ type internal Crypt() =
         Crypt.EncryptWithParams(rsa.ExportCspBlob(true), password, Crypt.DefaultKeySize, Crypt.DefaultBlkSize)
 
     static member RSAFromKey(keyBlob : byte[]) =
-        use rsa = new RSACryptoServiceProvider()
+        let rsa = new RSACryptoServiceProvider()
         rsa.ImportCspBlob(keyBlob)
         rsa
 
