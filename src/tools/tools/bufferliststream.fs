@@ -1673,9 +1673,12 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
         x.MoveForwardAfterWrite(1L)
 
     override x.WriteByte(b : byte) =
-        let a = Array.zeroCreate<byte>(1)
-        a.[0] <- b
-        x.WriteArr<byte>(a, 0, 1)
+        if (typeof<'T>.Equals(typeof<byte>)) then
+            x.WriteOne(box(b) :?> 'T)
+        else
+            let a = Array.zeroCreate<byte>(1)
+            a.[0] <- b
+            x.WriteArr<byte>(a, 0, 1)
 
     override x.ReadByte() : int =
         let a = Array.zeroCreate<byte>(1)
