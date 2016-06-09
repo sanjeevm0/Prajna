@@ -1674,11 +1674,12 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
 
     override x.WriteByte(b : byte) =
         let a = Array.zeroCreate<byte>(1)
+        a.[0] <- b
         x.WriteArr<byte>(a, 0, 1)
 
-    override x.ReadByte() =
+    override x.ReadByte() : int =
         let a = Array.zeroCreate<byte>(1)
-        let amt = x.ReadArrT(a, 0, 1, 1)
+        let amt = x.ReadArrT(a, 0, 1, sizeof<byte>)
         if (amt = 0) then
             -1
         else
