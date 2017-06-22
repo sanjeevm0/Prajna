@@ -277,14 +277,13 @@ type internal Crypt() =
         cs.Flush()
         ms
 
-    static member EncryptStream(rjnd : AesCryptoServiceProvider, msOrig : StreamBase<byte>) : StreamBase<byte> =
+    static member EncryptIntoStream(rjnd : AesCryptoServiceProvider, msOrig : StreamBase<byte>, ms : StreamBase<byte>) =
         if (rjnd.BlockSize > Crypt.MaxBlkSize) then
             failwith "Illegal block size"
         rjnd.GenerateIV()
         let blkBytes = byte (rjnd.BlockSize >>> 3)
         let mutable nPadding = blkBytes - byte (msOrig.Length % int64 blkBytes)
         rjnd.Padding <- PaddingMode.None
-        let ms = msOrig.GetNew()
         ms.WriteByte(nPadding)
         ms.WriteBytesWLen(rjnd.IV)
         use cs = new CryptoStream(ms, rjnd.CreateEncryptor(), CryptoStreamMode.Write)
@@ -292,7 +291,11 @@ type internal Crypt() =
         sr.ApplyFnToBuffers(fun (buf, offset, cnt) -> cs.Write(buf, offset, cnt))
         if (nPadding <> 0uy) then
             cs.Write(zeroBlk, 0, int nPadding)
-        cs.Flush()
+        cs.Flush()    
+
+    static member EncryptStream(rjnd : AesCryptoServiceProvider, msOrig : StreamBase<byte>) : StreamBase<byte> =
+        let ms = msOrig.GetNew()
+        Crypt.EncryptIntoStream(rjnd, msOrig, ms)
         ms
 
     static member Decrypt(rjnd : AesCryptoServiceProvider, ms : StreamBase<byte>) : byte[]*int =

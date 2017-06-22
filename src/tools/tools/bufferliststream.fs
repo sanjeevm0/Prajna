@@ -2193,6 +2193,10 @@ type RWHQueue() =
         if (Interlocked.Increment(count) = 1) then
             PoolTimer.AddTimer(RWHQueue.Release, 1000L)
 
+    static member RegisterWaitForSingleObject(event : WaitHandle, b : WaitOrTimerCallback, c : obj, d : int, e : bool) =
+        let rwh = ThreadPool.RegisterWaitForSingleObject(event, b, c, d, e)
+        RWHQueue.Add(rwh, event)
+
 // This is sort of like .Net FileStream / NetStream, however has following support
 // 1. Async I/O using I/O Completion ports
 // 2. Support for reading / writing to arbirary 'T instead of just byte

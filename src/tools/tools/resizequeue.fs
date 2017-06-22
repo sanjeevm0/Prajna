@@ -176,7 +176,9 @@ type BaseQ<'T>() =
     static member internal ClearQ(x : ConcurrentQueue<'T>) =
         let item : 'T ref = ref Unchecked.defaultof<'T>
         while (not x.IsEmpty) do
-            x.TryDequeue(item) |> ignore
+            let (ret, item) = x.TryDequeue()
+            if (ret && typeof<IDisposable>.IsAssignableFrom(typeof<'T>)) then
+                (box(item) :?> IDisposable).Dispose()
 
     static member internal OnWaitComplete (o : obj) (bTimedOut : bool) =
         let (rwh, callback, state) = o :?> (RegisteredWaitHandle ref)*(obj*bool->unit)*obj
