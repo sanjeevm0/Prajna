@@ -461,6 +461,7 @@ type GenericBuf(conn : IConn, maxBufferSize : int) as x =
 type Network() =
     let mutable listen : TcpListener = null
     let networkQ = ConcurrentDictionary<string, IConn>()
+    let networkQRev = ConcurrentDictionary<IConn, string>()
     let numConn = ref 0
     let localAddrV4 = LocalDNS.GetHostAddresses("", true)
 
@@ -470,19 +471,38 @@ type Network() =
     member private x.GetSocketID(sock : Socket) =
         let ipRemote = sock.RemoteEndPoint
         let addr = (ipRemote :?> IPEndPoint)
-        (addr, addr.Address.ToString() + ":" + addr.Port.ToString() + ":" + "Listen_" + x.GetConnNum().ToString())
+        (addr, addr.Address.ToString() + ":" + addr.Port.ToString() + ":" + "ConnID_" + x.GetConnNum().ToString())
 
     member private x.InitConn(conn : IConn, sock : Socket, state : obj) =
         let (addr, id) = x.GetSocketID(sock)
         networkQ.[id] <- conn
+        networkQRev.[conn] <- id
         conn.Init(sock, state)
 
     /// Close all network connections held by Network
     member x.CloseConns() =
         for conn in (networkQ) do
             let iconn = conn.Value
-            iconn.Close()
-            iconn.Socket.Dispose()
+            try
+                iconn.Close()
+                iconn.Socket.Dispose()
+            with e ->
+                ()
+        networkQ.Clear()
+        networkQRev.Clear()
+
+    member x.GetConnID(conn : IConn) =
+        networkQRev.[conn]
+
+    member x.RemoveConn(conn : IConn) =
+        try
+            conn.Close()
+            conn.Socket.Dispose()
+            let (ret, id) = networkQRev.TryRemove(conn)
+            if (ret) then
+                networkQ.TryRemove(id) |> ignore
+        with e ->
+            ()
 
     member private x.AfterAccept(ar : IAsyncResult) =
         let (listen, newFn, state) = ar.AsyncState :?> (TcpListener*(unit->IConn)*obj)
@@ -647,11 +667,19 @@ type Network() =
                 if not success && Utils.IsNotNull sock then
                     sock.Dispose()
 
+    abstract Dispose : bool->unit
+    default x.Dispose(bDisposing : bool) =
+        if (bDisposing) then
+            try
+                x.CloseConns()
+                x.StopListen()
+            with e ->
+                ()
+
     interface IDisposable with
         /// Releases all resources used by the current instance.
-        member x.Dispose() = 
-            x.CloseConns()
-            GC.SuppressFinalize(x);
+        override x.Dispose() = 
+            x.Dispose(true)
                                     
     static member internal SrcDstBlkCopy(src : byte[], srcOffset : int byref, srcLen : int byref,
                                          dst : byte[], dstOffset : int byref, dstLen : int byref) =
