@@ -97,13 +97,13 @@ type [<AbstractClass>] NetUtils() =
         let (addr, port) = NetUtils.GetRemoteIPAddrPort(sock)
         NetUtils.GetIPKey(addr, port)
 
-    static member internal ParseAddrPort (addrport : string, port : int) =
+    static member ParseAddrPort (addrport : string, port : int) =
         let position = addrport.LastIndexOf(":")
         if (position = -1) then
-            (addrport, port)
+            (addrport.ToLower(), port)
         else
             let (portString : string) = addrport.Substring (position+1)
-            (addrport.Substring(0, position), Convert.ToInt32(portString))
+            (addrport.Substring(0, position).ToLower(), Convert.ToInt32(portString))
 
     /// Parse a string into (address, port)
     /// <param name="addrport">The string represting address and port</param>
@@ -113,7 +113,7 @@ type [<AbstractClass>] NetUtils() =
         if (position = -1) then
             ("", Convert.ToInt32(addrport))
         else
-            (addrport.Substring(0, position), Convert.ToInt32(addrport.Substring(position+1)))
+            (addrport.Substring(0, position).ToLower(), Convert.ToInt32(addrport.Substring(position+1)))
 
     static member internal RecvAsync(sock : Socket, e : SocketAsyncEventArgs) =
         try
