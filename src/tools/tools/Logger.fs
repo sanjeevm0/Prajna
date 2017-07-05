@@ -87,6 +87,9 @@ type ILoggerProvider =
     /// Parse arguments that configs the behavior of the LoggerProvider
     abstract member ParseArgs : string[] -> unit
 
+    /// Get arguments
+    abstract member Args : unit -> string
+
     /// Print the usage information on string arguments that ParseArgs can parse for the LoggerProvider
     abstract member GetArgsUsage : unit -> string
 
@@ -97,7 +100,7 @@ type ILoggerProvider =
     /// Returns "null" if the provider has no such capability
     abstract member GetLogFile : unit -> string
 
-type internal DefaultLogger () =
+type internal DefaultLogger () as x =
     // max log file size
     let maxLogFileLength = 10L <<< 20
 
@@ -194,14 +197,17 @@ type internal DefaultLogger () =
     /// -nocon        : do not show trace on console 
     /// -vnoflush     : turn off auto flush
     /// -vstack       : turn on stack trace
+    /// -verbose      : log verbosity
     let ParseArguments (args : string[]) = 
         Trace.AutoFlush <- true
         let mutable i = 0
         let mutable nListeners = Trace.Listeners.Count
+        x.LoggerArgs <- ""
         while i < args.Length do
             match args.[i] with 
                 | Prefixi "-log" _ 
-                    -> args.[i] <- String.Empty
+                    -> x.LoggerArgs <- x.LoggerArgs + " " + args.[i] + " " + args.[i+1]
+                       args.[i] <- String.Empty
                        if i+1 < args.Length then 
                            // Trace.Listeners.Add( new TextWriterTraceListener(args.[i+1]) ) |> ignore
                            AddLogFile( args.[i+1] )
@@ -209,21 +215,26 @@ type internal DefaultLogger () =
                        else
                            failwith "incorrect arguments"
                 | Prefixi "-con" _ 
-                    -> // let monoutput = (sprintf "Argument %s, register console as trace output.... " args.[i])
+                    -> x.LoggerArgs <- x.LoggerArgs + " " + args.[i]
+                       // let monoutput = (sprintf "Argument %s, register console as trace output.... " args.[i])
                        // Console.Out.WriteLine( monoutput )
                        args.[i] <- String.Empty
                        AddConsole()
                 | Prefixi "-nocon" _ 
-                    -> args.[i] <- String.Empty
+                    -> x.LoggerArgs <- x.LoggerArgs + " " + args.[i]
+                       args.[i] <- String.Empty
                        RemoveConsole()
                 | Prefixi "-vnoflush" _ 
-                    -> args.[i] <- String.Empty
+                    -> x.LoggerArgs <- x.LoggerArgs + " " + args.[i]
+                       args.[i] <- String.Empty
                        Trace.AutoFlush <- false
                 | Prefixi "-vstack" _ 
-                    -> args.[i] <- String.Empty
+                    -> x.LoggerArgs <- x.LoggerArgs + " " + args.[i]
+                       args.[i] <- String.Empty
                        shouldShowStackTrace <- true
                 | Prefixi "-verbose" _ 
-                    -> args.[i] <- String.Empty
+                    -> x.LoggerArgs <- x.LoggerArgs + " " + args.[i] + " " + args.[i+1]
+                       args.[i] <- String.Empty
                        if i+1 < args.Length then 
                           defaultLogLevel <- ParseLogLevel (args.[i+1])
                           args.[i + 1] <- String.Empty
@@ -232,6 +243,7 @@ type internal DefaultLogger () =
                 | _ 
                     -> ()
             i <- i+1
+            x.LoggerArgs <- x.LoggerArgs + " "
 
         if Trace.Listeners.Count = nListeners then
             // JinL: don't add Console.Out due to potential performance penalty. 
@@ -313,9 +325,14 @@ type internal DefaultLogger () =
         Trace.WriteLine <| sb.ToString()
         FlushImpl()
 
+    member val private LoggerArgs = "" with get, set
+
     interface ILoggerProvider with
         member this.ParseArgs(args : string[]) =
             ParseArguments(args)
+
+        member this.Args() =
+            x.LoggerArgs
 
         member this.GetArgsUsage() =
             usage
@@ -390,6 +407,9 @@ type Logger internal ()=
     static member ParseArgs(args : string[]) =
         Logger.LoggerProvider.ParseArgs(args)
         defaultLogIdLogLevel <- calculateDefaultLogIdLogLevel()
+
+    static member Args() =
+        Logger.LoggerProvider.Args()
 
     static member PrintArgsUsage() =
         let result = Logger.LoggerProvider.GetArgsUsage()
