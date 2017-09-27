@@ -188,6 +188,38 @@ type StreamExtension =
             if v <= -1 then 0 else if v<128 then v else int( sbyte v)
         | _ ->
             StreamExtension.ReadInt32( x )
+    /// Write variable length int64
+    [<Extension>]
+    static member WriteVInt64(x : Stream, v:int64) =
+        if (int64 Int32.MinValue <= v && v < int64 Int32.MaxValue) then
+            StreamExtension.WriteInt32(x, int32 v)
+        else
+            StreamExtension.WriteInt32(x, Int32.MaxValue)
+            StreamExtension.WriteInt64(x, v)
+    /// Read variable length int64
+    [<Extension>]
+    static member ReadVInt64(x : Stream) : int64 =
+        let v = StreamExtension.ReadInt32(x)
+        if (v <> Int32.MaxValue) then
+            int64 v
+        else
+            StreamExtension.ReadInt64(x)
+    /// Write variable length uint64
+    [<Extension>]
+    static member WriteVUInt64(x : Stream, v:uint64) =
+        if (v < uint64 UInt32.MaxValue) then
+            StreamExtension.WriteUInt32(x, uint32 v)
+        else
+            StreamExtension.WriteUInt32(x, UInt32.MaxValue)
+            StreamExtension.WriteUInt64(x, v)
+    /// Read variable length uint64
+    [<Extension>]
+    static member ReadVUInt64(x : Stream) : uint64 =
+        let v = StreamExtension.ReadUInt32(x)
+        if (v < UInt32.MaxValue) then
+            uint64 v
+        else
+            StreamExtension.ReadUInt64(x)
     /// Write a boolean into bytestream, with 1uy represents true and 0uy represents false
     [<Extension>]
     static member WriteBoolean( x: Stream, b:bool ) = 
