@@ -673,7 +673,7 @@ type private TimerPool<'K>() as x =
                 timer.Dispose()
             GC.SuppressFinalize(x);
 
-type internal PoolTimer() =
+type PoolTimer() =
     // TimerPoolInt is IDisposable. However, it's a static variable thus cannot be disposed mnaully. 
     // It should be OK, it will be disposed when appdomain unloads
     static member val private TimerPoolInt = new TimerPool<int64>() with get
