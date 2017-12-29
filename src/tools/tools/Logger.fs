@@ -32,6 +32,7 @@ namespace Prajna.Tools
 
 open System
 open System.Collections.Concurrent
+open System.Collections.Generic
 open System.Diagnostics
 open System.IO
 open System.Security.AccessControl
@@ -87,6 +88,9 @@ type ILoggerProvider =
     /// Parse arguments that configs the behavior of the LoggerProvider
     abstract member ParseArgs : string[] -> unit
 
+    /// Retrieve non-logger arguments
+    abstract member NonLoggerArgs : unit -> string[]
+
     /// Get arguments
     abstract member Args : unit -> string
 
@@ -118,6 +122,7 @@ type internal DefaultLogger () as x =
     let mutable logListener : TextWriterTraceListener = null
     let mutable shouldShowStackTrace = false
     let mutable defaultLogLevel = LogLevel.Info
+    let nonLoggerArgs = List<string>() 
 
     let CreateNewLogFile( ) = 
         let extName = Path.GetExtension( logFileName ) 
@@ -212,6 +217,7 @@ type internal DefaultLogger () as x =
                            // Trace.Listeners.Add( new TextWriterTraceListener(args.[i+1]) ) |> ignore
                            AddLogFile( args.[i+1] )
                            args.[i + 1] <- String.Empty
+                           i <- i + 1
                        else
                            failwith "incorrect arguments"
                 | Prefixi "-con" _ 
@@ -238,10 +244,11 @@ type internal DefaultLogger () as x =
                        if i+1 < args.Length then 
                           defaultLogLevel <- ParseLogLevel (args.[i+1])
                           args.[i + 1] <- String.Empty
+                          i <- i + 1
                        else
                           failwith "Incorrect Arguments"
                 | _ 
-                    -> ()
+                    ->  nonLoggerArgs.Add(args.[i])
             i <- i+1
             x.LoggerArgs <- x.LoggerArgs + " "
 
@@ -334,6 +341,9 @@ type internal DefaultLogger () as x =
         member this.Args() =
             x.LoggerArgs
 
+        member this.NonLoggerArgs() =
+            nonLoggerArgs.ToArray()
+
         member this.GetArgsUsage() =
             usage
 
@@ -407,6 +417,9 @@ type Logger internal ()=
     static member ParseArgs(args : string[]) =
         Logger.LoggerProvider.ParseArgs(args)
         defaultLogIdLogLevel <- calculateDefaultLogIdLogLevel()
+
+    static member NonLoggerArgs() =
+        Logger.LoggerProvider.NonLoggerArgs()
 
     static member Args() =
         Logger.LoggerProvider.Args()
