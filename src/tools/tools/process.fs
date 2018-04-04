@@ -638,6 +638,9 @@ type private TimerPool<'K>() as x =
             int64 Timeout.Infinite
         x.AddTimer(key, wrappedFunc, timeMs)
 
+    member x.RemoveTimer(key : 'K) =
+        todo.TryRemove(key) |> ignore
+
     member x.Fire() =
         let mutable nextFiringTime = Int64.MaxValue
         let curTime = stopwatch.ElapsedMilliseconds
@@ -671,7 +674,7 @@ type private TimerPool<'K>() as x =
         member x.Dispose() = 
             if Utils.IsNotNull timer then
                 timer.Dispose()
-            GC.SuppressFinalize(x);
+            GC.SuppressFinalize(x)
 
 type PoolTimer() =
     // TimerPoolInt is IDisposable. However, it's a static variable thus cannot be disposed mnaully. 
@@ -684,14 +687,20 @@ type PoolTimer() =
     static member AddTimer(cb : unit->int64, timeMs : int64) =
         let key = Interlocked.Increment(PoolTimer.TimerPoolInt.Count)
         PoolTimer.TimerPoolInt.AddTimer(key, cb, timeMs)
+        key
 
     static member AddTimer(cb : unit->unit, timeMs : int64, periodMs : int64) =
         let key = Interlocked.Increment(PoolTimer.TimerPoolInt.Count)
         PoolTimer.TimerPoolInt.AddTimer(key, cb, timeMs, periodMs)
+        key
 
     static member AddTimer(cb : unit->unit, timeMs : int64) =
         let key = Interlocked.Increment(PoolTimer.TimerPoolInt.Count)
         PoolTimer.TimerPoolInt.AddTimer(key, cb, timeMs)
+        key
+
+    static member RemoveTimer(key : int64) =
+        PoolTimer.TimerPoolInt.RemoveTimer(key)
 
 // ============================================
 
@@ -2180,7 +2189,7 @@ and [<AllowNullLiteral>]
         then
             x.ThreadPoolName <- name
 //            ThreadPoolWait.RegisterThreadPool(name)
-            PoolTimer.AddTimer(x.ToMonitor, 100L, 100L)
+            PoolTimer.AddTimer(x.ToMonitor, 100L, 100L) |> ignore
             x.ThreadPoolCleanUp <- CleanUp.Current.Register( 1500, x, (x.CloseAllThreadPoolByCleanup), (fun _ -> sprintf "ThreadPoolWithWaitHandlesSystem for %s" name) )
             ()
     new (name : string, numThreads : int) as x =

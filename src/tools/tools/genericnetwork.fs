@@ -192,7 +192,7 @@ and [<AllowNullLiteral>] GenericConn() as x =
             (true, eSendFinished)
         else
             tryAgain.Reset() |> ignore
-            PoolTimer.AddTimer(setTryAgain, 5L) // try again after 5ms
+            PoolTimer.AddTimer(setTryAgain, 5L) |> ignore // try again after 5ms
             (false, tryAgain)
         // sync send - thread pool anyways
 //        NetUtils.SyncSendOrClose(xConn, e.Buffer, 0, e.Count)

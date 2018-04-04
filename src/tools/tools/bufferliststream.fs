@@ -1304,7 +1304,7 @@ type BufferListStream<'T> internal (bufSize : int, doNotUseDefault : bool) =
 #if DEBUG
                 if (BufferListDebugging.DebugLeak) then
                     // start monitor timer
-                    PoolTimer.AddTimer(BufferListStream<'T>.DumpStreamsInUse, 10000L, 10000L)
+                    PoolTimer.AddTimer(BufferListStream<'T>.DumpStreamsInUse, 10000L, 10000L) |> ignore
 #endif
             )
 
@@ -2191,7 +2191,7 @@ type RWHQueue() =
     static member Add(rwh : RegisteredWaitHandle, wh : WaitHandle) =
         q.Enqueue(rwh, wh)
         if (Interlocked.Increment(count) = 1) then
-            PoolTimer.AddTimer(RWHQueue.Release, 1000L)
+            PoolTimer.AddTimer(RWHQueue.Release, 1000L) |> ignore
 
     static member RegisterWaitForSingleObject(event : WaitHandle, b : WaitOrTimerCallback, c : obj, d : int, e : bool) =
         let rwh = ThreadPool.RegisterWaitForSingleObject(event, b, c, d, e)
