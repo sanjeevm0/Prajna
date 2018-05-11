@@ -597,6 +597,7 @@ type private TimerPool<'K>() as x =
     let instance = Interlocked.Increment(instanceCount)
     let stopwatch = Stopwatch()
     let mutable firingTime = Int64.MaxValue
+    let executionLock = Object()
     do stopwatch.Start()
 
     member x.Instance with get() = instance
@@ -639,7 +640,10 @@ type private TimerPool<'K>() as x =
         x.AddTimer(key, wrappedFunc, timeMs)
 
     member x.RemoveTimer(key : 'K) =
-        todo.TryRemove(key) |> ignore
+        // wait to make sure no callback is executing before removing
+        lock executionLock (fun _ ->
+            todo.TryRemove(key) |> ignore
+        )
 
     member x.Fire() =
         let mutable nextFiringTime = Int64.MaxValue
@@ -647,11 +651,18 @@ type private TimerPool<'K>() as x =
         // reset the firing time
         firingTime <- Int64.MaxValue
         for pair in todo do
+            let execKey = pair.Key
             let (timeFire, cb) = pair.Value
             if (timeFire + 1L <= curTime) then
                 let nextWaitTime =
                     try
-                        cb()
+                        lock executionLock (fun _ ->
+                            if todo.ContainsKey(pair.Key) then
+                                // check as it may have been removed
+                                cb()
+                            else
+                                int64 Timeout.Infinite
+                        )
                     with e ->
                         Logger.LogF( LogLevel.Error, (fun _ -> sprintf "Timerpool callback with key %A throws Exception %A" pair.Key e))
                         int64 Timeout.Infinite
