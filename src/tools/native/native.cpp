@@ -480,7 +480,7 @@ namespace Prajna {
                     if (INVALID_HANDLE_VALUE == h)
                     {
                         int e = GetLastError();
-                        printf("Last error on CreateFile: 0x%x, name: filename: %S", e, pName);
+                        printf("Last error on CreateFile: 0x%x, name: filename: %S\n", e, pName);
                         throw gcnew IOException("Unable to open file handle " + name);
                     }
                     return (IntPtr)h;
